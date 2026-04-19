@@ -5,6 +5,11 @@
 <!-- Badges -->
 [![CI](https://github.com/JoshDoesIT/Lemma/actions/workflows/ci.yml/badge.svg)](https://github.com/JoshDoesIT/Lemma/actions/workflows/ci.yml)
 [![Security](https://github.com/JoshDoesIT/Lemma/actions/workflows/security.yml/badge.svg)](https://github.com/JoshDoesIT/Lemma/actions/workflows/security.yml)
+[![Coverage](https://codecov.io/gh/JoshDoesIT/Lemma/branch/main/graph/badge.svg)](https://codecov.io/gh/JoshDoesIT/Lemma)
+[![Snyk](https://snyk.io/test/github/JoshDoesIT/Lemma/badge.svg)](https://snyk.io/test/github/JoshDoesIT/Lemma)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/JoshDoesIT/Lemma/badge)](https://securityscorecards.dev/viewer/?uri=github.com/JoshDoesIT/Lemma)
+[![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF-Best_Practices-gold.svg)](#)
+[![OSCAL Native](https://img.shields.io/badge/OSCAL-Native-00FF41.svg)](#)
 [![License](https://img.shields.io/github/license/JoshDoesIT/Lemma)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-00FF41.svg)](CONTRIBUTING.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/JoshDoesIT/Lemma)](https://github.com/JoshDoesIT/Lemma/discussions)

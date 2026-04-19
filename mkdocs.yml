@@ -1,0 +1,67 @@
+site_name: Lemma
+site_description: Provable Compliance. No Black Boxes.
+site_author: JoshDoesIT
+repo_url: https://github.com/JoshDoesIT/Lemma
+repo_name: JoshDoesIT/Lemma
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  palette:
+    # Dark mode (default for Lemma)
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - content.code.copy
+  logo: assets/logo.svg
+  favicon: assets/favicon.ico
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: getting-started/index.md
+  - Concepts:
+    - Architecture: concepts/index.md
+  - Guides:
+    - Tutorials: guides/index.md
+  - Reference:
+    - API & CLI: reference/index.md
+  - Contributing:
+    - Developer Guide: contributing/index.md
