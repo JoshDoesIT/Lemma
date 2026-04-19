@@ -1,0 +1,25 @@
+graph TD
+    classDef default fill:#0A0A0A,stroke:#333333,stroke-width:2px,color:#FFFFFF,rx:0,ry:0;
+    classDef core fill:#0A0A0A,stroke:#00FF41,stroke-width:2px,color:#FFFFFF,rx:0,ry:0;
+    classDef agent fill:#0A0A0A,stroke:#EAB308,stroke-width:2px,color:#FFFFFF,rx:0,ry:0;
+
+    A[Proprietary Policies<br>PDFs / Spreadsheets]:::default --> B
+    C[OSCAL Catalogs<br>NIST 800-53 / CIS]:::default --> B
+
+    subgraph "Lemma Core Engine"
+        B[Parse<br>Docling Integration]:::core --> D
+        D[Index<br>ChromaDB Vectors]:::core --> E
+        
+        E[Map<br>AI + Vector Search]:::core --> F
+        F[Harmonize<br>Common Control Framework]:::core
+    end
+
+    F --> G[Compliance Knowledge Graph<br>OSCAL Native Data]:::default
+
+    subgraph "Infrastructure Mesh"
+        G --> H[Federated Agent<br>AWS Environment]:::agent
+        G --> I[Federated Agent<br>On-Prem Data Center]:::agent
+    end
+
+    H --> J[Continuous Proof Chain<br>Merkle Evidence Log]:::default
+    I --> J
