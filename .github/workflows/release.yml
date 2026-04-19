@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      # TODO: Phase 1
+      # Remove placeholders and implement real build/release steps
+      
+      - name: Build Platform
+        run: echo "Building platform artifacts..."
+        
+      - name: Generate SBOM
+        run: echo "Generating release SBOM..."
+        
+      - name: Create GitHub Release
+        run: echo "Creating GitHub release via gh CLI..."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
