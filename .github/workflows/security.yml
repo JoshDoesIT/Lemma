@@ -13,7 +13,7 @@ jobs:
     name: Snyk SCA & Code Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       # TODO: Phase 1
       # - name: Setup Node
@@ -43,7 +43,7 @@ jobs:
   #   name: License Compliance Check
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v6
   #     - name: Run license-checker
   #       run: npx license-checker --onlyAllow "Apache-2.0; MIT; ISC; BSD-2-Clause; BSD-3-Clause"
 
@@ -51,7 +51,7 @@ jobs:
     name: Generate SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # TODO: Phase 1
       # - name: Generate CycloneDX SBOM
       #   run: echo "Generate SBOM here"
