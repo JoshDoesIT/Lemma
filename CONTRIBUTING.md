@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Lemma! We are building an open-so
 
 We welcome contributions from GRC engineers, security practitioners, and developers.
 
-## 🏗️ Development Workflow
+## Development Workflow
 
 Lemma follows a strict **Test-Driven Development (TDD)** and **Spec-Driven Development (SDD)** approach.
 
@@ -19,7 +19,7 @@ If you are writing production code, there must be a failing test for it first. I
 3. Install dependencies 
 4. Verify your environment by running the test suite
 
-## 🌿 Branch Naming Conventions
+## Branch Naming Conventions
 
 We use conventional branch names to organize work:
 
@@ -29,7 +29,7 @@ We use conventional branch names to organize work:
 - `ref/what-you-refactored` — For code refactoring without behavior changes.
 - `chore/maintenance-task` — For tooling, dependency updates, or repository maintenance.
 
-## 📝 Commit Message Conventions
+## Commit Message Conventions
 
 We adhere strictly to [Conventional Commits](https://www.conventionalcommits.org/). Your PR title and commits must follow this format:
 
@@ -56,7 +56,7 @@ We adhere strictly to [Conventional Commits](https://www.conventionalcommits.org
 
 *If your PR resolves an open issue, please include `Fixes #<issue-number>` in the commit body or PR description.*
 
-## ✅ Pre-Submission Checklist
+## Pre-Submission Checklist
 
 Before submitting your pull request, ensure you have completed the following:
 
@@ -68,7 +68,7 @@ Before submitting your pull request, ensure you have completed the following:
 - [ ] Updated any relevant documentation (README, API docs, architecture diagrams)
 - [ ] Ensure any new AI logic is highly transparent and logs its trace
 
-## 🤝 Getting Help
+## Getting Help
 
 If you have questions or need guidance on a feature, please start a discussion in [GitHub Discussions](https://github.com/JoshDoesIT/Lemma/discussions) or comment on the relevant issue.
 

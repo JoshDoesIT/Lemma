@@ -1,24 +1,24 @@
 ---
-name: 🔧 Chore / Task
+name: Chore / Task
 about: Maintenance tasks, refactors, or dependency updates
 title: "chore: "
 labels: chore
 assignees: ''
 ---
 
-## 📝 Task Description
+## Task Description
 A clear and concise description of the maintenance or refactoring task.
 
-## 🎯 Objectives
+## Objectives
 - [ ] Goal 1
 - [ ] Goal 2
 
-## 🛠 Implementation Details
+## Implementation Details
 Any specific technical details, tools to use, or services affected.
 
-## ✅ Acceptance Criteria
+## Acceptance Criteria
 - [ ] Requirement 1
 - [ ] Requirement 2
 
-## 📝 Additional Context
+## Additional Context
 Add any other context or reference PRs/Issues here.

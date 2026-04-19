@@ -4,7 +4,7 @@ Because Lemma is a highly governed repository, some administrative configuration
 
 This document serves as the checklist for the repository owners to finalize the Phase 0 platform scaffolding.
 
-## 🔐 1. Branch Protection (`main`)
+## 1. Branch Protection (`main`)
 Navigate to **Settings > Branches > Add branch protection rule**:
 - **Branch name pattern:** `main`
 - [x] **Require a pull request before merging**
@@ -18,14 +18,14 @@ Navigate to **Settings > Branches > Add branch protection rule**:
 - [x] **Require linear history** (Prevents merge commits; forces squash or rebase)
 - [x] **Do not allow bypassing the above settings**
 
-## 🧹 2. Pull Request Settings
+## 2. Pull Request Settings
 Navigate to **Settings > General > Pull Requests**:
 - [x] **Allow squash merging** (Recommended defaults: Pull request title and description)
 - [x] **Allow rebase merging** 
 - [ ] *Disable* "Allow merge commits" (To enforce linear history)
 - [x] **Automatically delete head branches** (Keeps the repo clean after PRs are merged)
 
-## 🛡️ 3. Security & Analysis
+## 3. Security & Analysis
 Navigate to **Settings > Code security and analysis**:
 - [x] Enable **Private vulnerability reporting**
 - [x] Enable **Dependabot alerts**
@@ -34,7 +34,7 @@ Navigate to **Settings > Code security and analysis**:
 - [x] Enable **Secret scanning**
 - [x] Enable **Secret scanning push protection**
 
-## 🏷️ 4. Labels
+## 4. Labels
 Standardize the repository labels for issue triage. (Can be done quickly via `gh label create <name> --color <hex> --description "<desc>"`)
 
 **Types:**
@@ -52,7 +52,7 @@ Standardize the repository labels for issue triage. (Can be done quickly via `gh
 - `blocked`, `needs-review`, `in-progress`
 - `good-first-issue`, `help-wanted`
 
-## 🎯 5. Milestones
+## 5. Milestones
 Navigate to **Issues > Milestones** and create the roadmap phases:
 - `Phase 1: Core Engine`
 - `Phase 2: Intelligence Layer`
@@ -60,5 +60,5 @@ Navigate to **Issues > Milestones** and create the roadmap phases:
 - `Phase 4: Platform & Community`
 - `Phase 5: Enterprise Readiness`
 
-## 💬 6. Community
+## 6. Community
 - Navigate to **Settings > Features** and check **Discussions**. Set up categories according to the prompt (Announcements, Q&A, Ideas, Show & Tell).
