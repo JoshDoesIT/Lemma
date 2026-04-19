@@ -11,7 +11,7 @@ jobs:
     name: Validate Governance Artifacts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Check required files
         run: |
@@ -30,7 +30,7 @@ jobs:
   #   name: Lint & Format
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v6
   #     - name: Setup environment
   #       run: echo "Setup step"
   #     - name: Run Linter
@@ -42,7 +42,7 @@ jobs:
   #   name: Type Check
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v6
   #     - name: Setup environment
   #       run: echo "Setup step"
   #     - name: Run Type Check
@@ -52,7 +52,7 @@ jobs:
   #   name: Unit Tests
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v6
   #     - name: Setup environment
   #       run: echo "Setup step"
   #     - name: Run Tests
