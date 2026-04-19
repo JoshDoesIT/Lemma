@@ -20,14 +20,14 @@ Our brand visual identity reflects **mathematical precision, structural engineer
 - **Body & Data:** `JetBrains Mono` or `Fira Code`. Standardizing tabular and matrix outputs.
 
 ## Logo Usage
-The Lemma logo geometrically combines the turnstile proof symbol (`⊢`) and the therefore symbol (`∴`) framed by structural scoping brackets.
+The Lemma logo is a massive, geometrically complex node network that forms the letter 'L'. It is constructed from sharp Chalk White intersecting structural wireframes, glowing Terminal Green matrix connection nodes, and intersected by a decisive Theorem Yellow logic gate turnstile arrow. This emphasizes our "AI-native structural engineering" ethos and the translation of complex logic into clear direction.
 
-- **`logo.svg`**: Transparent background primary logo. Usage: navigation bars, documents, diagrams.
-- **`logo-dark-bg.svg`**: Void Black background logo. Usage: avatars, favicons.
-- **`wordmark.svg`**: Logo accompanied by the "lemma." text.
+- **`logo.png`**: High-fidelity primary icon asset (the wireframe 'L' with yellow turnstile arrow). Usage: avatars, hero sections, and main branding elements.
+- **`wordmark.png`**: Primary icon vertically stacked with the "Lemma" typography and the "AI-NATIVE GRC ENGINE" tagline. Usage: Key branding headers and prominent lockups.
+- **`marketing/social-banner.png`**: Wide-format 16:9 Open Graph asset. Usage: LinkedIn/Twitter link sharing previews.
 
 ### Dos and Donts
-- ✅ **DO** use the logo strictly on Void Black or Chalk White backgrounds.
-- ❌ **DON'T** round the corners of the structural brackets.
-- ❌ **DON'T** recolor the `∴` (therefore) dots anything but Terminal Green or monochrome matching the turnstile.
-- ❌ **DON'T** rasterize the logo. Only scale the mathematical SVG vectors.
+- ✅ **DO** use the logo strictly against the Void Black background to preserve the high-impact glowing aesthetics.
+- ❌ **DON'T** round the corners of the geometric wireframe.
+- ❌ **DON'T** recolor the `∴` (therefore) dots or internal nodes anything but Terminal Green.
+- ❌ **DON'T** use low-resolution screenshots. Always use the official PNG assets from the `brand/` directory.
