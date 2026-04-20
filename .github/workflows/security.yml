@@ -58,7 +58,7 @@ jobs:
       - name: Run license check
         run: |
           uv run pip-licenses \
-            --allow-only="Apache;MIT;ISC;BSD;PSF;Python;0BSD" \
+            --allow-only="Apache;MIT;ISC;BSD;PSF;Python;0BSD;MPL;Mozilla" \
             --partial-match
 
   sboms:
