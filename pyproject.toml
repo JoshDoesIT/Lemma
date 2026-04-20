@@ -26,9 +26,15 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "chromadb>=0.5",
 ]
 
 [project.optional-dependencies]
+ingest = [
+    "docling>=2.0",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
