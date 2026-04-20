@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [
-    { name = "Josh Jones", email = "josh@joshdoes.it" },
+    { name = "Josh Jones", email = "contact@joshdoes.it" },
 ]
 keywords = ["grc", "compliance", "oscal", "security", "audit"]
 classifiers = [
