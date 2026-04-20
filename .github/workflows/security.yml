@@ -58,8 +58,7 @@ jobs:
       - name: Run license check
         run: |
           uv run pip-licenses \
-            --allow-only="Apache-2.0;MIT;ISC;BSD-2-Clause;BSD-3-Clause;PSF-2.0;Python-2.0;0BSD" \
-            --fail-on-error
+            --allow-only="Apache-2.0;MIT;ISC;BSD-2-Clause;BSD-3-Clause;PSF-2.0;Python-2.0;0BSD"
 
   sboms:
     name: Generate SBOM

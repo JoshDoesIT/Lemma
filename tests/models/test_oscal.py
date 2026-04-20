@@ -334,4 +334,3 @@ class TestNistCatalogImport:
 
         assert restored.metadata.title == original.metadata.title
         assert len(restored.groups) == len(original.groups)
-
