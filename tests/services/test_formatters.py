@@ -1,0 +1,92 @@
+"""Tests for output formatters.
+
+Follows TDD: tests written BEFORE the implementation.
+"""
+
+import json
+
+import pytest
+
+
+class TestFormatters:
+    """Tests for mapping output format registry."""
+
+    def test_format_json(self):
+        """JSON formatter produces valid JSON string."""
+        from lemma.models.mapping import MappingReport, MappingResult
+        from lemma.services.formatters import format_json
+
+        report = MappingReport(
+            framework="nist-800-53",
+            results=[
+                MappingResult(
+                    chunk_id="p.md#1",
+                    chunk_text="Encrypt data.",
+                    control_id="sc-28",
+                    control_title="Protection of Information at Rest",
+                    confidence=0.9,
+                    rationale="Direct match.",
+                    status="MAPPED",
+                ),
+            ],
+            threshold=0.6,
+        )
+
+        output = format_json(report)
+        parsed = json.loads(output)
+
+        assert parsed["framework"] == "nist-800-53"
+        assert len(parsed["results"]) == 1
+        assert parsed["results"][0]["control_id"] == "sc-28"
+
+    def test_format_oscal(self):
+        """OSCAL formatter produces valid Assessment Results structure."""
+        from lemma.models.mapping import MappingReport, MappingResult
+        from lemma.services.formatters import format_oscal
+
+        report = MappingReport(
+            framework="nist-800-53",
+            results=[
+                MappingResult(
+                    chunk_id="p.md#1",
+                    chunk_text="Encrypt data.",
+                    control_id="sc-28",
+                    control_title="Protection of Information at Rest",
+                    confidence=0.9,
+                    rationale="Direct match.",
+                    status="MAPPED",
+                ),
+            ],
+            threshold=0.6,
+        )
+
+        output = format_oscal(report)
+        parsed = json.loads(output)
+
+        # OSCAL Assessment Results structure
+        assert "assessment-results" in parsed
+        ar = parsed["assessment-results"]
+        assert "uuid" in ar
+        assert "metadata" in ar
+        assert "results" in ar
+
+    def test_get_formatter_json(self):
+        """Registry returns JSON formatter for 'json' key."""
+        from lemma.services.formatters import get_formatter
+
+        formatter = get_formatter("json")
+        assert callable(formatter)
+
+    def test_get_formatter_oscal(self):
+        """Registry returns OSCAL formatter for 'oscal' key."""
+        from lemma.services.formatters import get_formatter
+
+        formatter = get_formatter("oscal")
+        assert callable(formatter)
+
+    def test_get_formatter_unknown_errors(self):
+        """Unknown format name raises ValueError."""
+        from lemma.services.formatters import get_formatter
+
+        with pytest.raises(ValueError, match=r"[Uu]nsupported"):
+            get_formatter("xml")

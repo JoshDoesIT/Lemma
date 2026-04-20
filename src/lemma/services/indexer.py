@@ -82,3 +82,44 @@ class ControlIndexer:
         """
         collections = self._client.list_collections()
         return [c.name for c in collections]
+
+    def query_similar(
+        self,
+        framework_name: str,
+        text: str,
+        n_results: int = 5,
+    ) -> list[dict]:
+        """Query a framework collection for controls similar to the given text.
+
+        Args:
+            framework_name: Collection name to query.
+            text: Query text to find similar controls for.
+            n_results: Maximum number of results to return.
+
+        Returns:
+            List of dicts with 'control_id', 'title', 'distance', 'document'.
+            Returns empty list if collection doesn't exist.
+        """
+        try:
+            collection = self._client.get_collection(name=framework_name)
+        except Exception:
+            return []
+
+        results = collection.query(
+            query_texts=[text],
+            n_results=min(n_results, collection.count()),
+        )
+
+        matches = []
+        if results and results["ids"] and results["ids"][0]:
+            for i, control_id in enumerate(results["ids"][0]):
+                matches.append(
+                    {
+                        "control_id": control_id,
+                        "title": results["metadatas"][0][i].get("title", ""),
+                        "distance": results["distances"][0][i] if results.get("distances") else 0.0,
+                        "document": results["documents"][0][i] if results.get("documents") else "",
+                    }
+                )
+
+        return matches
