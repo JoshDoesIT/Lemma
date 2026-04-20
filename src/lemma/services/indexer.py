@@ -123,3 +123,31 @@ class ControlIndexer:
                 )
 
         return matches
+
+    def get_all_controls(self, framework_name: str) -> dict:
+        """Retrieve all controls from a framework collection.
+
+        Returns IDs, documents, metadatas, and embeddings for all controls.
+
+        Args:
+            framework_name: Collection name to retrieve from.
+
+        Returns:
+            Dict with 'ids', 'documents', 'metadatas', 'embeddings' lists.
+            Returns empty lists if collection doesn't exist.
+        """
+        try:
+            collection = self._client.get_collection(name=framework_name)
+        except Exception:
+            return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
+
+        result = collection.get(
+            include=["documents", "metadatas", "embeddings"],
+        )
+
+        return {
+            "ids": result.get("ids", []),
+            "documents": result.get("documents", []),
+            "metadatas": result.get("metadatas", []),
+            "embeddings": result.get("embeddings", []),
+        }
