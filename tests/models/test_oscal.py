@@ -283,3 +283,55 @@ class TestPlanOfActionAndMilestones:
         )
         restored = PlanOfActionAndMilestones.model_validate_json(original.model_dump_json())
         assert restored.metadata.title == original.metadata.title
+
+
+class TestNistCatalogImport:
+    """Tests for importing official NIST OSCAL catalogs."""
+
+    def test_import_nist_800_53_catalog(self):
+        """Importing the bundled NIST 800-53 Rev 5 OSCAL JSON produces a valid Catalog."""
+        import json
+        from pathlib import Path
+
+        from lemma.models.oscal import Catalog
+
+        catalog_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "lemma"
+            / "data"
+            / "frameworks"
+            / "nist-800-53-rev5.json"
+        )
+        raw = json.loads(catalog_path.read_text())
+        catalog = Catalog.model_validate(raw["catalog"], strict=False)
+
+        assert "800-53" in catalog.metadata.title
+        assert len(catalog.groups) == 20
+        total_controls = sum(len(g.controls) for g in catalog.groups)
+        assert total_controls >= 300
+
+    def test_nist_catalog_round_trip(self):
+        """NIST 800-53 catalog survives JSON round-trip without data loss."""
+        import json
+        from pathlib import Path
+
+        from lemma.models.oscal import Catalog
+
+        catalog_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "lemma"
+            / "data"
+            / "frameworks"
+            / "nist-800-53-rev5.json"
+        )
+        raw = json.loads(catalog_path.read_text())
+        original = Catalog.model_validate(raw["catalog"], strict=False)
+
+        json_str = original.model_dump_json()
+        restored = Catalog.model_validate_json(json_str)
+
+        assert restored.metadata.title == original.metadata.title
+        assert len(restored.groups) == len(original.groups)
+
