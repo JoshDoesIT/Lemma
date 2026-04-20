@@ -1,0 +1,9 @@
+{
+  "catalog": {
+    "uuid": "not-a-valid-uuid",
+    "metadata": {
+      "title": 12345,
+      "last-modified": "not-a-date"
+    }
+  }
+}
