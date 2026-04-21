@@ -1,0 +1,325 @@
+"""Tests for the AI trace log — append-only audit trail for AI decisions.
+
+Follows TDD: tests written BEFORE the implementation.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from lemma.models.trace import AITrace, TraceStatus
+from lemma.services.trace_log import TraceLog
+
+
+class TestAITraceModel:
+    """Tests for the AITrace Pydantic model."""
+
+    def test_trace_has_required_fields(self):
+        """AITrace model has all required schema fields."""
+        trace = AITrace(
+            operation="map",
+            input_text="MFA is required for all users",
+            prompt="You are a GRC compliance analyst...",
+            model_id="ollama/llama3.2",
+            model_version="3.2",
+            raw_output='{"confidence": 0.85, "rationale": "..."}',
+            confidence=0.85,
+            determination="MAPPED",
+            control_id="ac-7",
+            framework="nist-800-53",
+        )
+
+        assert trace.operation == "map"
+        assert trace.model_id == "ollama/llama3.2"
+        assert trace.confidence == 0.85
+        assert trace.determination == "MAPPED"
+        assert trace.timestamp is not None
+
+    def test_trace_defaults_to_proposed_status(self):
+        """Traces default to PROPOSED review status."""
+        trace = AITrace(
+            operation="map",
+            input_text="test",
+            prompt="test",
+            model_id="ollama/llama3.2",
+            model_version="3.2",
+            raw_output="test",
+            confidence=0.5,
+            determination="LOW_CONFIDENCE",
+            control_id="ac-1",
+            framework="nist-800-53",
+        )
+
+        assert trace.status == TraceStatus.PROPOSED
+
+    def test_trace_serializes_to_json(self):
+        """AITrace can be serialized to JSON."""
+        trace = AITrace(
+            operation="map",
+            input_text="test input",
+            prompt="test prompt",
+            model_id="ollama/llama3.2",
+            model_version="3.2",
+            raw_output='{"confidence": 0.9}',
+            confidence=0.9,
+            determination="MAPPED",
+            control_id="ac-1",
+            framework="nist-800-53",
+        )
+
+        data = json.loads(trace.model_dump_json())
+        assert data["operation"] == "map"
+        assert data["model_id"] == "ollama/llama3.2"
+        assert "timestamp" in data
+        assert "trace_id" in data
+
+
+class TestTraceLog:
+    """Tests for the append-only trace log."""
+
+    def test_append_writes_trace_to_file(self, tmp_path: Path):
+        """append() writes a trace entry as a JSON line."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        trace = AITrace(
+            operation="map",
+            input_text="test",
+            prompt="test prompt",
+            model_id="ollama/llama3.2",
+            model_version="3.2",
+            raw_output="output",
+            confidence=0.8,
+            determination="MAPPED",
+            control_id="ac-1",
+            framework="nist-800-53",
+        )
+
+        log.append(trace)
+
+        log_files = list((tmp_path / ".lemma" / "traces").glob("*.jsonl"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["operation"] == "map"
+
+    def test_append_is_additive(self, tmp_path: Path):
+        """Multiple appends add lines without overwriting."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        for i in range(3):
+            trace = AITrace(
+                operation="map",
+                input_text=f"policy {i}",
+                prompt="prompt",
+                model_id="ollama/llama3.2",
+                model_version="3.2",
+                raw_output="output",
+                confidence=0.5 + i * 0.1,
+                determination="MAPPED",
+                control_id=f"ac-{i}",
+                framework="nist-800-53",
+            )
+            log.append(trace)
+
+        log_files = list((tmp_path / ".lemma" / "traces").glob("*.jsonl"))
+        lines = log_files[0].read_text().strip().splitlines()
+        assert len(lines) == 3
+
+    def test_read_all_returns_all_traces(self, tmp_path: Path):
+        """read_all() returns all trace entries from the log."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        for i in range(2):
+            trace = AITrace(
+                operation="map",
+                input_text=f"text {i}",
+                prompt="prompt",
+                model_id="ollama/llama3.2",
+                model_version="3.2",
+                raw_output="out",
+                confidence=0.7,
+                determination="MAPPED",
+                control_id=f"c-{i}",
+                framework="fw",
+            )
+            log.append(trace)
+
+        all_traces = log.read_all()
+        assert len(all_traces) == 2
+        assert all(isinstance(t, AITrace) for t in all_traces)
+
+    def test_filter_by_model(self, tmp_path: Path):
+        """filter_by_model() returns only traces from a specific model."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        log.append(
+            AITrace(
+                operation="map",
+                input_text="a",
+                prompt="p",
+                model_id="ollama/llama3.2",
+                model_version="3.2",
+                raw_output="o",
+                confidence=0.8,
+                determination="MAPPED",
+                control_id="c-1",
+                framework="fw",
+            )
+        )
+        log.append(
+            AITrace(
+                operation="map",
+                input_text="b",
+                prompt="p",
+                model_id="openai/gpt-4o-mini",
+                model_version="2024-07-18",
+                raw_output="o",
+                confidence=0.9,
+                determination="MAPPED",
+                control_id="c-2",
+                framework="fw",
+            )
+        )
+
+        ollama_traces = log.filter_by_model("ollama/llama3.2")
+        assert len(ollama_traces) == 1
+        assert ollama_traces[0].model_id == "ollama/llama3.2"
+
+    def test_filter_by_operation(self, tmp_path: Path):
+        """filter_by_operation() returns only traces of a specific type."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        log.append(
+            AITrace(
+                operation="map",
+                input_text="a",
+                prompt="p",
+                model_id="m",
+                model_version="1",
+                raw_output="o",
+                confidence=0.8,
+                determination="MAPPED",
+                control_id="c-1",
+                framework="fw",
+            )
+        )
+        log.append(
+            AITrace(
+                operation="evaluate",
+                input_text="b",
+                prompt="p",
+                model_id="m",
+                model_version="1",
+                raw_output="o",
+                confidence=0.9,
+                determination="PASS",
+                control_id="c-2",
+                framework="fw",
+            )
+        )
+
+        map_traces = log.filter_by_operation("map")
+        assert len(map_traces) == 1
+        assert map_traces[0].operation == "map"
+
+    def test_trace_log_is_immutable(self, tmp_path: Path):
+        """Existing trace entries cannot be modified via the TraceLog API."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        trace = AITrace(
+            operation="map",
+            input_text="original",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.8,
+            determination="MAPPED",
+            control_id="c-1",
+            framework="fw",
+        )
+        log.append(trace)
+
+        # TraceLog has no update/delete methods
+        assert not hasattr(log, "update")
+        assert not hasattr(log, "delete")
+        assert not hasattr(log, "clear")
+
+    def test_review_trace_transitions_status(self, tmp_path: Path):
+        """review() appends a new trace entry with updated status."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        trace = AITrace(
+            operation="map",
+            input_text="text",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.9,
+            determination="MAPPED",
+            control_id="c-1",
+            framework="fw",
+        )
+        log.append(trace)
+
+        log.review(trace.trace_id, status=TraceStatus.ACCEPTED)
+
+        all_traces = log.read_all()
+        # Original + review entry
+        assert len(all_traces) == 2
+        review_entry = all_traces[-1]
+        assert review_entry.status == TraceStatus.ACCEPTED
+
+    def test_review_rejected_requires_rationale(self, tmp_path: Path):
+        """Rejecting a trace without a rationale raises ValueError."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        trace = AITrace(
+            operation="map",
+            input_text="text",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.5,
+            determination="LOW_CONFIDENCE",
+            control_id="c-1",
+            framework="fw",
+        )
+        log.append(trace)
+
+        with pytest.raises(ValueError, match=r"[Rr]ationale"):
+            log.review(trace.trace_id, status=TraceStatus.REJECTED)
+
+    def test_review_rejected_with_rationale_succeeds(self, tmp_path: Path):
+        """Rejecting a trace with a rationale succeeds."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        trace = AITrace(
+            operation="map",
+            input_text="text",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.5,
+            determination="LOW_CONFIDENCE",
+            control_id="c-1",
+            framework="fw",
+        )
+        log.append(trace)
+
+        log.review(
+            trace.trace_id,
+            status=TraceStatus.REJECTED,
+            rationale="Control is not relevant to this policy scope.",
+        )
+
+        all_traces = log.read_all()
+        rejection = all_traces[-1]
+        assert rejection.status == TraceStatus.REJECTED
+        assert "not relevant" in rejection.review_rationale
