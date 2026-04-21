@@ -3,10 +3,15 @@
 Provides serializers for mapping reports in different formats:
 - JSON: Plain JSON output
 - OSCAL: OSCAL Assessment Results document
+- CSV: Flat CSV export for spreadsheet import
+- HTML: Styled HTML report for stakeholder review
 """
 
 from __future__ import annotations
 
+import csv
+import html as html_mod
+import io
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -94,9 +99,120 @@ def format_oscal(report: MappingReport) -> str:
     return json.dumps(oscal_doc, indent=2)
 
 
+def format_csv(report: MappingReport) -> str:
+    """Format mapping report as CSV.
+
+    Args:
+        report: The mapping report to format.
+
+    Returns:
+        CSV string of the report.
+    """
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Write header
+    writer.writerow(
+        [
+            "Chunk ID",
+            "Control ID",
+            "Control Title",
+            "Confidence",
+            "Status",
+            "Rationale",
+        ]
+    )
+
+    # Write rows
+    for r in report.results:
+        writer.writerow(
+            [
+                r.chunk_id,
+                r.control_id,
+                r.control_title,
+                str(r.confidence),
+                r.status,
+                r.rationale,
+            ]
+        )
+
+    return output.getvalue()
+
+
+def format_html(report: MappingReport) -> str:
+    """Format mapping report as a styled HTML document.
+
+    Args:
+        report: The mapping report to format.
+
+    Returns:
+        HTML string of the report.
+    """
+    esc = html_mod.escape
+    fw = esc(report.framework)
+    html_parts = [
+        "<!DOCTYPE html>",
+        "<html>",
+        "<head>",
+        '  <meta charset="utf-8">',
+        f"  <title>Lemma Mapping Report — {fw}</title>",
+        "  <style>",
+        "    body { font-family: system-ui, -apple-system, sans-serif; "
+        "line-height: 1.5; padding: 2rem; color: #333; }",
+        "    h1 { color: #111; border-bottom: 2px solid #eaeaea; padding-bottom: 0.5rem; }",
+        "    table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; "
+        "box-shadow: 0 1px 3px rgba(0,0,0,0.1); }",
+        "    th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #eaeaea; }",
+        "    th { background-color: #f8f9fa; font-weight: 600; color: #444; }",
+        "    tr:hover { background-color: #fcfcfc; }",
+        "    .status-mapped { color: #0f5132; background-color: #d1e7dd; padding: 0.25rem 0.5rem; "
+        "border-radius: 4px; font-size: 0.875em; }",
+        "    .status-low { color: #842029; background-color: #f8d7da; padding: 0.25rem 0.5rem; "
+        "border-radius: 4px; font-size: 0.875em; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        f"  <h1>Control Mapping — {fw}</h1>",
+        f"  <p>Automated mapping of policy documents to {fw} controls.</p>",
+        "  <table>",
+        "    <thead>",
+        "      <tr>",
+        "        <th>Chunk ID</th>",
+        "        <th>Control ID</th>",
+        "        <th>Control Title</th>",
+        "        <th>Confidence</th>",
+        "        <th>Status</th>",
+        "        <th>Rationale</th>",
+        "      </tr>",
+        "    </thead>",
+        "    <tbody>",
+    ]
+
+    for r in report.results:
+        status_class = "status-mapped" if r.status == "MAPPED" else "status-low"
+        html_parts.extend(
+            [
+                "      <tr>",
+                f"        <td><code>{esc(r.chunk_id)}</code></td>",
+                f"        <td><strong>{esc(r.control_id)}</strong></td>",
+                f"        <td>{esc(r.control_title)}</td>",
+                f"        <td>{r.confidence}</td>",
+                f'        <td><span class="{status_class}">{esc(r.status)}</span></td>',
+                f"        <td>{esc(r.rationale)}</td>",
+                "      </tr>",
+            ]
+        )
+
+    html_parts.extend(["    </tbody>", "  </table>", "</body>", "</html>"])
+
+    return "\n".join(html_parts) + "\n"
+
+
 _FORMATTERS: dict[str, Callable[[MappingReport], str]] = {
     "json": format_json,
     "oscal": format_oscal,
+    "csv": format_csv,
+    "html": format_html,
 }
 
 
@@ -104,7 +220,7 @@ def get_formatter(format_name: str) -> Callable[[MappingReport], str]:
     """Get a formatter function by name.
 
     Args:
-        format_name: Format identifier ('json' or 'oscal').
+        format_name: Format identifier ('json', 'oscal', 'csv', or 'html').
 
     Returns:
         Formatter callable.
