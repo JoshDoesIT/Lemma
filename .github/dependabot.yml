@@ -7,8 +7,8 @@ updates:
       interval: "weekly"
       day: "monday"
     labels:
-      - "chore"
-      - "dependencies"
+      - "type: chore"
+      - "scope: dependencies"
 
   # Maintain dependencies for npm (Phase 1 platform core/UI)
   - package-ecosystem: "npm"
@@ -17,8 +17,8 @@ updates:
       interval: "weekly"
       day: "monday"
     labels:
-      - "chore"
-      - "dependencies"
+      - "type: chore"
+      - "scope: dependencies"
       
     # Group minor and patch updates to reduce PR noise
     groups:
