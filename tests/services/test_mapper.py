@@ -188,3 +188,137 @@ class TestMapper:
                 project_dir=tmp_path,
                 llm_client=mock_llm,
             )
+
+
+class TestMapperTraceIntegration:
+    """Tests for automatic trace logging during mapping."""
+
+    def test_map_writes_trace_entries(self, tmp_path):
+        """map_policies writes an AITrace entry for each AI call."""
+        from lemma.services.indexer import ControlIndexer
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        lemma_dir = tmp_path / ".lemma"
+        lemma_dir.mkdir()
+        policies_dir = tmp_path / "policies"
+        policies_dir.mkdir()
+        (policies_dir / "access.md").write_text("# Access Control\n\nAll users must use MFA.\n")
+
+        indexer = ControlIndexer(index_dir=tmp_path / ".lemma" / "index")
+        indexer.index_controls(
+            "nist-800-53",
+            [
+                {
+                    "id": "ac-7",
+                    "title": "Unsuccessful Logon Attempts",
+                    "prose": "Enforce lockout after failed logon attempts.",
+                    "family": "AC",
+                },
+            ],
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.9, "rationale": "MFA maps to logon controls."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+        )
+
+        # Verify trace entries were written
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        traces = trace_log.read_all()
+
+        assert len(traces) >= 1
+        trace = traces[0]
+        assert trace.operation == "map"
+        assert trace.model_id != ""
+        assert trace.confidence == 0.9
+        assert trace.control_id == "ac-7"
+        assert trace.framework == "nist-800-53"
+        assert trace.status.value == "PROPOSED"
+
+    def test_trace_contains_prompt_and_output(self, tmp_path):
+        """Trace entries include the full prompt and raw model output."""
+        from lemma.services.indexer import ControlIndexer
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        lemma_dir = tmp_path / ".lemma"
+        lemma_dir.mkdir()
+        policies_dir = tmp_path / "policies"
+        policies_dir.mkdir()
+        (policies_dir / "test.md").write_text("# Test Policy\n\nEncrypt all data at rest.\n")
+
+        indexer = ControlIndexer(index_dir=tmp_path / ".lemma" / "index")
+        indexer.index_controls(
+            "test-fw",
+            [
+                {
+                    "id": "sc-28",
+                    "title": "Protection of Information at Rest",
+                    "prose": "Protect confidentiality of data at rest.",
+                    "family": "SC",
+                },
+            ],
+        )
+
+        raw_response = '{"confidence": 0.92, "rationale": "Direct encryption match."}'
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = raw_response
+
+        map_policies(
+            framework="test-fw",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+        )
+
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        traces = trace_log.read_all()
+
+        assert len(traces) >= 1
+        trace = traces[0]
+        # Prompt should contain the policy text and control info
+        assert "Encrypt all data" in trace.input_text
+        assert "sc-28" in trace.prompt.lower() or "SC-28" in trace.prompt
+        assert trace.raw_output == raw_response
+
+    def test_trace_records_llm_parse_failure(self, tmp_path):
+        """When LLM returns unparseable output, trace still records it."""
+        from lemma.services.indexer import ControlIndexer
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        lemma_dir = tmp_path / ".lemma"
+        lemma_dir.mkdir()
+        policies_dir = tmp_path / "policies"
+        policies_dir.mkdir()
+        (policies_dir / "test.md").write_text("# Test\n\nSome policy.\n")
+
+        indexer = ControlIndexer(index_dir=tmp_path / ".lemma" / "index")
+        indexer.index_controls(
+            "test-fw",
+            [{"id": "c-1", "title": "C1", "prose": "Test.", "family": "F"}],
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "NOT VALID JSON"
+
+        map_policies(
+            framework="test-fw",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+        )
+
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        traces = trace_log.read_all()
+
+        assert len(traces) >= 1
+        trace = traces[0]
+        assert trace.confidence == 0.0
+        assert trace.raw_output == "NOT VALID JSON"
