@@ -17,6 +17,8 @@ Edge types:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -292,3 +294,33 @@ class ComplianceGraph:
             edges.append({"source": source, "target": target, **attrs})
 
         return {"nodes": nodes, "edges": edges}
+
+    # --- Persistence ---
+
+    def save(self, path: Path) -> None:
+        """Save the graph to a JSON file.
+
+        Args:
+            path: File path to save the graph to.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = nx.node_link_data(self._graph)
+        path.write_text(json.dumps(data, indent=2, default=str))
+
+    @classmethod
+    def load(cls, path: Path) -> ComplianceGraph:
+        """Load a graph from a JSON file.
+
+        If the file does not exist, returns an empty graph.
+
+        Args:
+            path: File path to load the graph from.
+
+        Returns:
+            Loaded ComplianceGraph instance.
+        """
+        instance = cls()
+        if path.exists():
+            data = json.loads(path.read_text())
+            instance._graph = nx.node_link_graph(data, directed=True, multigraph=True)
+        return instance
