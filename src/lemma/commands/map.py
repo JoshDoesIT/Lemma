@@ -27,7 +27,7 @@ def map_command(
     ),
     output: str = typer.Option(
         "json",
-        help="Output format (json, oscal)",
+        help="Output format (json, oscal, html, csv)",
     ),
     threshold: float = typer.Option(
         0.6,
