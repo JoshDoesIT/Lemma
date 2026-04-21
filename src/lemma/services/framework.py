@@ -3,6 +3,11 @@
 Provides the business logic layer between CLI commands and the
 parser/indexer infrastructure. All framework operations go through
 this service.
+
+Bundled public domain catalogs:
+- nist-800-53: NIST SP 800-53 Rev 5
+- nist-csf-2.0: NIST Cybersecurity Framework 2.0
+- nist-800-171: NIST SP 800-171 Rev 3
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ def get_framework_registry() -> dict[str, Path]:
     data_dir = Path(__file__).parent.parent / "data" / "frameworks"
     return {
         "nist-800-53": data_dir / "nist-800-53-rev5.json",
+        "nist-csf-2.0": data_dir / "nist-csf-2.0.json",
+        "nist-800-171": data_dir / "nist-800-171-rev3.json",
     }
 
 
