@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _get_converter():
+def _get_converter():  # pragma: no cover
     """Create a Docling DocumentConverter.
 
     Raises:

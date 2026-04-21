@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 
 class TestExcelParser:
@@ -14,7 +17,7 @@ class TestExcelParser:
 
     def test_parse_excel_xlsx_named_columns(self, tmp_path: Path):
         """parse_excel extracts controls from XLSX with named headers."""
-        import openpyxl
+        openpyxl = pytest.importorskip("openpyxl")
 
         from lemma.services.parsers.excel import parse_excel
 
@@ -92,8 +95,6 @@ class TestExcelParser:
 
     def test_parse_excel_unsupported_extension(self, tmp_path: Path):
         """parse_excel raises ValueError for unsupported file extensions."""
-        import pytest
-
         from lemma.services.parsers.excel import parse_excel
 
         bad_file = tmp_path / "framework.txt"
@@ -101,3 +102,30 @@ class TestExcelParser:
 
         with pytest.raises(ValueError, match=r"[Uu]nsupported"):
             parse_excel(bad_file)
+
+    def test_parse_excel_empty_csv(self, tmp_path: Path):
+        """parse_excel handles an empty CSV file gracefully."""
+        from lemma.services.parsers.excel import parse_excel
+
+        csv_path = tmp_path / "empty.csv"
+        csv_path.write_text("")
+
+        controls = parse_excel(csv_path)
+
+        assert controls == []
+
+    def test_parse_excel_xlsx_import_error(self, tmp_path: Path):
+        """parse_excel raises ImportError when openpyxl is unavailable for .xlsx."""
+        xlsx_path = tmp_path / "framework.xlsx"
+        xlsx_path.write_bytes(b"dummy")
+
+        with patch.dict("sys.modules", {"openpyxl": None}):
+            # Clear cached import in excel module
+            import importlib
+
+            import lemma.services.parsers.excel as excel_mod
+
+            importlib.reload(excel_mod)
+
+            with pytest.raises(ImportError, match=r"[Ii]ngest"):
+                excel_mod.parse_excel(xlsx_path)
