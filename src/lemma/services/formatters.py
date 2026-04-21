@@ -3,11 +3,14 @@
 Provides serializers for mapping reports in different formats:
 - JSON: Plain JSON output
 - OSCAL: OSCAL Assessment Results document
+- CSV: Flat CSV export for spreadsheet import
+- HTML: Styled HTML report for stakeholder review
 """
 
 from __future__ import annotations
 
 import csv
+import html as html_mod
 import io
 import json
 from collections.abc import Callable
@@ -145,12 +148,14 @@ def format_html(report: MappingReport) -> str:
     Returns:
         HTML string of the report.
     """
+    esc = html_mod.escape
+    fw = esc(report.framework)
     html_parts = [
         "<!DOCTYPE html>",
         "<html>",
         "<head>",
         '  <meta charset="utf-8">',
-        f"  <title>Lemma Mapping Report — {report.framework}</title>",
+        f"  <title>Lemma Mapping Report — {fw}</title>",
         "  <style>",
         "    body { font-family: system-ui, -apple-system, sans-serif; "
         "line-height: 1.5; padding: 2rem; color: #333; }",
@@ -167,8 +172,8 @@ def format_html(report: MappingReport) -> str:
         "  </style>",
         "</head>",
         "<body>",
-        f"  <h1>Control Mapping — {report.framework}</h1>",
-        f"  <p>Automated mapping of policy documents to {report.framework} controls.</p>",
+        f"  <h1>Control Mapping — {fw}</h1>",
+        f"  <p>Automated mapping of policy documents to {fw} controls.</p>",
         "  <table>",
         "    <thead>",
         "      <tr>",
@@ -188,12 +193,12 @@ def format_html(report: MappingReport) -> str:
         html_parts.extend(
             [
                 "      <tr>",
-                f"        <td><code>{r.chunk_id}</code></td>",
-                f"        <td><strong>{r.control_id}</strong></td>",
-                f"        <td>{r.control_title}</td>",
+                f"        <td><code>{esc(r.chunk_id)}</code></td>",
+                f"        <td><strong>{esc(r.control_id)}</strong></td>",
+                f"        <td>{esc(r.control_title)}</td>",
                 f"        <td>{r.confidence}</td>",
-                f'        <td><span class="{status_class}">{r.status}</span></td>',
-                f"        <td>{r.rationale}</td>",
+                f'        <td><span class="{status_class}">{esc(r.status)}</span></td>',
+                f"        <td>{esc(r.rationale)}</td>",
                 "      </tr>",
             ]
         )
@@ -215,7 +220,7 @@ def get_formatter(format_name: str) -> Callable[[MappingReport], str]:
     """Get a formatter function by name.
 
     Args:
-        format_name: Format identifier ('json' or 'oscal').
+        format_name: Format identifier ('json', 'oscal', 'csv', or 'html').
 
     Returns:
         Formatter callable.

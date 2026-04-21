@@ -95,6 +95,7 @@ class TestFormatters:
         """CSV formatter produces valid CSV mapping."""
         import csv
         import io
+
         from lemma.models.mapping import MappingReport, MappingResult
         from lemma.services.formatters import format_csv
 
