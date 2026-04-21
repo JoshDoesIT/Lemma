@@ -4,7 +4,8 @@ Orchestrates the full mapping pipeline:
 1. Chunk policy documents
 2. Retrieve similar controls via vector search
 3. Enrich with LLM-generated rationales and confidence scores
-4. Aggregate results into a MappingReport
+4. Log every AI decision to the append-only trace log
+5. Aggregate results into a MappingReport
 """
 
 from __future__ import annotations
@@ -13,9 +14,11 @@ import json
 from pathlib import Path
 
 from lemma.models.mapping import MappingReport, MappingResult
+from lemma.models.trace import AITrace
 from lemma.services.chunker import chunk_policies
 from lemma.services.indexer import ControlIndexer
 from lemma.services.llm import LLMClient
+from lemma.services.trace_log import TraceLog
 
 _MAPPING_PROMPT = """\
 You are a GRC compliance analyst. Given a policy excerpt and a security control, \
@@ -35,6 +38,25 @@ Example: {{"confidence": 0.85, "rationale": "The policy directly addresses..."}}
 """
 
 
+def _get_model_id(llm_client: LLMClient) -> str:
+    """Extract model identifier from an LLM client.
+
+    Args:
+        llm_client: LLM client instance.
+
+    Returns:
+        Model identifier string (e.g., 'ollama/llama3.2').
+    """
+    model = str(getattr(llm_client, "model", "unknown"))
+    # Determine provider from class name
+    class_name = type(llm_client).__name__.lower()
+    if "ollama" in class_name:
+        return f"ollama/{model}"
+    if "openai" in class_name:
+        return f"openai/{model}"
+    return model
+
+
 def map_policies(
     *,
     framework: str,
@@ -45,6 +67,9 @@ def map_policies(
     output_format: str = "json",
 ) -> MappingReport:
     """Run the full control mapping pipeline.
+
+    Every AI call is automatically logged to the append-only trace log
+    at ``<project_dir>/.lemma/traces/``.
 
     Args:
         framework: Name of the indexed framework to map against.
@@ -74,6 +99,10 @@ def map_policies(
         msg = "No policy documents found in policies/. Add .md files and try again."
         raise ValueError(msg)
 
+    # Initialize trace log
+    trace_log = TraceLog(log_dir=project_dir / ".lemma" / "traces")
+    model_id = _get_model_id(llm_client)
+
     # Map each chunk to controls
     results: list[MappingResult] = []
 
@@ -100,6 +129,22 @@ def map_policies(
                 rationale = f"LLM response could not be parsed: {raw_response[:200]}"
 
             status = "MAPPED" if confidence >= threshold else "LOW_CONFIDENCE"
+
+            # Log trace entry for this AI decision
+            trace_log.append(
+                AITrace(
+                    operation="map",
+                    input_text=chunk["text"][:500],
+                    prompt=prompt,
+                    model_id=model_id,
+                    model_version="",
+                    raw_output=raw_response,
+                    confidence=confidence,
+                    determination=status,
+                    control_id=candidate["control_id"],
+                    framework=framework,
+                )
+            )
 
             results.append(
                 MappingResult(
