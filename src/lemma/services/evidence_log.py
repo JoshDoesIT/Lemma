@@ -30,6 +30,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from lemma.models.key_metadata import KeyStatus
 from lemma.models.ocsf import OcsfBaseEvent
 from lemma.models.signed_evidence import (
     EvidenceIntegrityState,
@@ -242,16 +243,38 @@ class EvidenceLog:
                     signature_bytes,
                     producer=producer,
                     key_dir=self._key_dir,
+                    key_id=envelope.signer_key_id,
                 )
-                if ok:
+                if not ok:
                     return VerificationResult(
-                        EvidenceIntegrityState.PROVEN,
-                        f"Hash, chain, and signature all valid for producer '{producer}'.",
+                        EvidenceIntegrityState.DEGRADED,
+                        f"Hash and chain valid, but signer's key "
+                        f"{envelope.signer_key_id} for producer "
+                        f"'{producer}' is unavailable or the signature doesn't verify.",
+                    )
+
+                # Signature verifies. Now check the key's lifecycle for
+                # revocation — a signature made before the key was
+                # revoked is still PROVEN; one made at or after the
+                # revocation timestamp is VIOLATED.
+                lifecycle = crypto.read_lifecycle(producer, key_dir=self._key_dir)
+                record = lifecycle.find(envelope.signer_key_id)
+                if (
+                    record is not None
+                    and record.status == KeyStatus.REVOKED
+                    and record.revoked_at is not None
+                    and envelope.signed_at >= record.revoked_at
+                ):
+                    return VerificationResult(
+                        EvidenceIntegrityState.VIOLATED,
+                        f"Signer key {envelope.signer_key_id} was revoked at "
+                        f"{record.revoked_at.isoformat()} "
+                        f"({record.revoked_reason or 'no reason given'}); "
+                        f"this entry was signed at or after revocation.",
                     )
                 return VerificationResult(
-                    EvidenceIntegrityState.DEGRADED,
-                    f"Hash and chain valid, but signer's key for producer "
-                    f"'{producer}' is unavailable or the signature doesn't verify.",
+                    EvidenceIntegrityState.PROVEN,
+                    f"Hash, chain, and signature all valid for producer '{producer}'.",
                 )
 
         return VerificationResult(

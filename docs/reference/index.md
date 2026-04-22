@@ -350,6 +350,40 @@ lemma evidence log
 
 Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, and the integrity verdict.
 
+### `lemma evidence rotate-key`
+
+Retire the producer's active signing key and generate a new one. Pre-rotation entries keep verifying PROVEN under the retired key; new entries are signed with the successor.
+
+```bash
+lemma evidence rotate-key --producer <NAME>
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--producer` | Yes | Producer name (e.g. `Lemma`, `Okta`, `AWS`) |
+
+### `lemma evidence revoke-key`
+
+Mark a specific signing key as revoked with a required reason. Signatures made at or after `revoked_at` under a revoked key verify as `VIOLATED`; signatures made before revocation remain `PROVEN`.
+
+```bash
+lemma evidence revoke-key --producer <NAME> --key-id <ID> --reason <TEXT>
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--producer` | Yes | Producer name whose key is being revoked |
+| `--key-id` | Yes | Exact key identifier (e.g. `ed25519:abcd1234`) to revoke |
+| `--reason` | Yes | Why this key is being revoked (operator note) |
+
+### `lemma evidence keys`
+
+List every signing key on file with its lifecycle state, activation timestamp, retirement/revocation timestamp, and revocation reason.
+
+```bash
+lemma evidence keys
+```
+
 ---
 
 ## `lemma ai`

@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.models.signed_evidence import EvidenceIntegrityState
+from lemma.services import crypto
 from lemma.services.evidence_log import EvidenceLog
 
 console = Console()
@@ -102,3 +103,96 @@ def log_command() -> None:
         )
 
     console.print(table)
+
+
+def _key_status_style(status_value: str) -> str:
+    if status_value == "ACTIVE":
+        return "[green]ACTIVE[/green]"
+    if status_value == "RETIRED":
+        return "[yellow]RETIRED[/yellow]"
+    return "[red]REVOKED[/red]"
+
+
+@evidence_app.command(
+    name="rotate-key",
+    help="Retire the producer's active signing key and generate a new one.",
+)
+def rotate_key_command(
+    producer: str = typer.Option(..., "--producer", help="Producer name (e.g. Lemma, Okta, AWS)"),
+) -> None:
+    project_dir = _require_lemma_project()
+    key_dir = project_dir / ".lemma" / "keys"
+    try:
+        new_key_id = crypto.rotate_key(producer=producer, key_dir=key_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from e
+
+    console.print(
+        f"Rotated signing key for [cyan]{producer}[/cyan]. "
+        f"Prior key marked RETIRED; new active key [green]{new_key_id}[/green]."
+    )
+
+
+@evidence_app.command(
+    name="revoke-key",
+    help="Revoke a specific signing key with a required reason.",
+)
+def revoke_key_command(
+    producer: str = typer.Option(
+        ..., "--producer", help="Producer name whose key is being revoked"
+    ),
+    key_id: str = typer.Option(
+        ..., "--key-id", help="Exact key_id (e.g. ed25519:abcd1234) to revoke"
+    ),
+    reason: str = typer.Option(..., "--reason", help="Why this key is being revoked (required)"),
+) -> None:
+    project_dir = _require_lemma_project()
+    key_dir = project_dir / ".lemma" / "keys"
+
+    try:
+        record = crypto.revoke_key(producer=producer, key_id=key_id, reason=reason, key_dir=key_dir)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from e
+
+    console.print(
+        f"Key [cyan]{record.key_id}[/cyan] for producer [cyan]{producer}[/cyan] "
+        f"is now [red]REVOKED[/red] (reason: {record.revoked_reason})."
+    )
+
+
+@evidence_app.command(
+    name="keys",
+    help="List every signing key with its lifecycle state.",
+)
+def keys_command() -> None:
+    project_dir = _require_lemma_project()
+    key_dir = project_dir / ".lemma" / "keys"
+
+    if not key_dir.exists():
+        console.print("[dim]No keys on file. 0 producers.[/dim]")
+        return
+
+    producers: list[str] = sorted([p.name for p in key_dir.iterdir() if p.is_dir()])
+    if not producers:
+        console.print("[dim]No keys on file. 0 producers.[/dim]")
+        return
+
+    # Plain-text output — Rich tables truncate in narrow terminals.
+    console.print("[bold]Evidence Signing Keys[/bold]")
+    for producer in producers:
+        lifecycle = crypto.read_lifecycle(producer, key_dir=key_dir)
+        for record in lifecycle.keys:
+            lifecycle_ts = record.revoked_at or record.retired_at
+            timestamp_suffix = (
+                f"  (→ {lifecycle_ts.strftime('%Y-%m-%d %H:%M:%S')})" if lifecycle_ts else ""
+            )
+            reason_suffix = f"  reason: {record.revoked_reason}" if record.revoked_reason else ""
+            console.print(
+                f"  [cyan]{producer}[/cyan]  "
+                f"{_key_status_style(record.status.value)}  "
+                f"{record.key_id}  "
+                f"activated {record.activated_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"{timestamp_suffix}{reason_suffix}"
+            )
