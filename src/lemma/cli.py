@@ -10,11 +10,13 @@ Usage:
     lemma coverage       Per-framework coverage percentages
     lemma gaps           Identify unmapped controls
     lemma diff           Compare framework versions
+    lemma graph          Query the compliance knowledge graph
 """
 
 import typer
 
 from lemma.commands.framework import framework_app
+from lemma.commands.graph import graph_app
 from lemma.commands.harmonize import (
     coverage_command,
     diff_command,
@@ -41,6 +43,7 @@ app.command(name="coverage", help="Per-framework coverage percentages")(coverage
 app.command(name="gaps", help="Identify unmapped controls")(gaps_command)
 app.command(name="diff", help="Compare framework versions")(diff_command)
 app.add_typer(framework_app, name="framework", help="Manage compliance frameworks")
+app.add_typer(graph_app, name="graph", help="Query the compliance knowledge graph")
 
 
 if __name__ == "__main__":
