@@ -126,6 +126,133 @@ def test_append_content_hash_dedupe_when_uid_absent(tmp_path: Path):
     assert len(files[0].read_text().strip().splitlines()) == 1
 
 
+def test_append_writes_signed_chained_envelope(tmp_path: Path):
+    """Every appended entry is wrapped in a SignedEvidence envelope with chain + signature."""
+    import json
+
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+    log.append(normalize(_compliance_payload("e-2")))
+
+    # Inspect the raw JSONL — confirm every line is an envelope shape
+    files = list((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+    lines = [line for f in files for line in f.read_text().strip().splitlines()]
+
+    first = json.loads(lines[0])
+    second = json.loads(lines[1])
+
+    # Envelope fields
+    for payload in (first, second):
+        assert "event" in payload
+        assert "entry_hash" in payload
+        assert "signature" in payload
+        assert "signer_key_id" in payload
+        assert payload["signer_key_id"].startswith("ed25519:")
+
+    # Genesis entry has zeroed prev_hash; second chains to first's entry_hash
+    assert first["prev_hash"] == "0" * 64
+    assert second["prev_hash"] == first["entry_hash"]
+
+
+def test_read_all_still_returns_unwrapped_ocsf_events(tmp_path: Path):
+    """Signing is transparent to callers using read_all()."""
+    from lemma.models.ocsf import ComplianceFinding
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+
+    events = log.read_all()
+    assert len(events) == 1
+    assert isinstance(events[0], ComplianceFinding)
+    assert events[0].metadata["uid"] == "e-1"
+
+
+def test_verify_entry_returns_proven_for_untampered_chain(tmp_path: Path):
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+    log.append(normalize(_compliance_payload("e-2")))
+
+    envelopes = log.read_envelopes()
+    for env in envelopes:
+        result = log.verify_entry(env.entry_hash)
+        assert result.state == EvidenceIntegrityState.PROVEN
+
+
+def test_verify_entry_returns_violated_when_content_modified(tmp_path: Path):
+    import json
+
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+
+    # Tamper: rewrite the entry's event message in-place on disk
+    files = list((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+    payload = json.loads(files[0].read_text().strip())
+    payload["event"]["message"] = "tampered message"
+    files[0].write_text(json.dumps(payload) + "\n")
+
+    envelope = log.read_envelopes()[0]
+    result = log.verify_entry(envelope.entry_hash)
+    assert result.state == EvidenceIntegrityState.VIOLATED
+    assert "hash" in result.detail.lower() or "content" in result.detail.lower()
+
+
+def test_verify_entry_returns_violated_when_chain_broken(tmp_path: Path):
+    import json
+
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+    log.append(normalize(_compliance_payload("e-2")))
+
+    # Tamper: rewrite the second entry's prev_hash so the chain breaks
+    files = list((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+    lines = files[0].read_text().strip().splitlines()
+    second = json.loads(lines[1])
+    second["prev_hash"] = "f" * 64
+    lines[1] = json.dumps(second)
+    files[0].write_text("\n".join(lines) + "\n")
+
+    envelopes = log.read_envelopes()
+    result = log.verify_entry(envelopes[1].entry_hash)
+    assert result.state == EvidenceIntegrityState.VIOLATED
+    assert "chain" in result.detail.lower() or "prev" in result.detail.lower()
+
+
+def test_verify_entry_returns_degraded_when_signer_key_unknown(tmp_path: Path):
+    import shutil
+
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("e-1")))
+
+    # Simulate a lost key: delete the keystore after signing
+    shutil.rmtree(tmp_path / ".lemma" / "keys")
+
+    envelope = log.read_envelopes()[0]
+    result = log.verify_entry(envelope.entry_hash)
+    assert result.state == EvidenceIntegrityState.DEGRADED
+    assert "key" in result.detail.lower()
+
+
 def test_filter_by_class_and_time_range(tmp_path: Path):
     from lemma.services.evidence_log import EvidenceLog
     from lemma.services.ocsf_normalizer import normalize

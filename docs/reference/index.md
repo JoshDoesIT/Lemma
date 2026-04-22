@@ -316,6 +316,42 @@ lemma graph impact policy:access-control.md
 
 ---
 
+## `lemma evidence`
+
+Inspect and verify the append-only, signed, hash-chained evidence log.
+
+### `lemma evidence verify`
+
+Verify the integrity of a single evidence entry by its `entry_hash`.
+
+```bash
+lemma evidence verify <ENTRY_HASH>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `ENTRY_HASH` | Yes | Hex-encoded SHA-256 entry hash of the evidence to verify |
+
+The verdict is one of:
+
+- **PROVEN** — hash consistent, chain link to the prior entry intact, signature verifies under the producer's key.
+- **DEGRADED** — hash and chain are intact, but the signer's public key is unavailable (key rotated, revoked, or never imported).
+- **VIOLATED** — content has been modified or the chain has been broken somewhere at or before this entry.
+
+Exit code is `0` only on PROVEN; anything else exits `1` so scripts can fail-fast.
+
+### `lemma evidence log`
+
+Show every entry in the evidence log with its per-entry integrity state.
+
+```bash
+lemma evidence log
+```
+
+Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, and the integrity verdict.
+
+---
+
 ## `lemma ai`
 
 AI transparency and governance commands.

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Continuous proof chains on the evidence log. Every entry appended to `.lemma/evidence/YYYY-MM-DD.jsonl` is now wrapped in a `SignedEvidence` envelope with an SHA-256 hash chain (`prev_hash` → `entry_hash`) and an Ed25519 signature produced by the signing key for `metadata.product.name`. Per-producer keypairs live under `.lemma/keys/` with `0600` private-key permissions.
+- `lemma evidence verify <entry_hash>` — integrity check returning PROVEN (hash + chain + signature all valid), DEGRADED (hash + chain valid but signer's key unavailable), or VIOLATED (hash or chain broken). Non-zero exit on anything other than PROVEN.
+- `lemma evidence log` — Rich-table timeline showing time, class, producer, entry hash prefix, and per-row integrity state.
+- `EvidenceIntegrityState` enum, `SignedEvidence` envelope model, and `ProvenanceRecord` model. The storage-stage provenance record is populated today; earlier stages populate as connectors (#26/#27) arrive.
 - `lemma harmonize` now records every cross-framework equivalence decision as an `AITrace` with `operation="harmonize"`, honors `ai.automation.thresholds.harmonize` for confidence-gated auto-accept, and persists the result as an OSCAL Profile at `.lemma/harmonization.oscal.json`. The Profile imports each source catalog and encodes clusters as back-matter resources with `lemma:harmonized-cluster` properties and `rlinks` to member controls.
 - `related_control_id` and `related_framework` fields on `AITrace` to carry pair-event endpoints. Map traces (single-control) default them to empty strings; harmonize traces populate both sides with a deterministic primary/secondary ordering so each equivalence is one trace.
 - `lemma ai audit --operation <op>` filter for querying traces by operation type (e.g., `harmonize`, `map`).
