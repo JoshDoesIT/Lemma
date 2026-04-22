@@ -59,9 +59,12 @@ nav:
     - Quickstart: getting-started/index.md
   - Concepts:
     - Architecture: concepts/index.md
+    - How Lemma's AI Works: concepts/ai.md
   - Guides:
     - Tutorials: guides/index.md
+    - Graph Query Cookbook: guides/graph-queries.md
   - Reference:
     - API & CLI: reference/index.md
+    - AI System Card: reference/ai-system-card.md
   - Contributing:
     - Developer Guide: contributing/index.md
