@@ -11,10 +11,12 @@ Usage:
     lemma gaps           Identify unmapped controls
     lemma diff           Compare framework versions
     lemma graph          Query the compliance knowledge graph
+    lemma ai             AI transparency and governance
 """
 
 import typer
 
+from lemma.commands.ai import ai_app
 from lemma.commands.framework import framework_app
 from lemma.commands.graph import graph_app
 from lemma.commands.harmonize import (
@@ -44,6 +46,7 @@ app.command(name="gaps", help="Identify unmapped controls")(gaps_command)
 app.command(name="diff", help="Compare framework versions")(diff_command)
 app.add_typer(framework_app, name="framework", help="Manage compliance frameworks")
 app.add_typer(graph_app, name="graph", help="Query the compliance knowledge graph")
+app.add_typer(ai_app, name="ai", help="AI transparency and governance")
 
 
 if __name__ == "__main__":
