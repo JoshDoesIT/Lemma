@@ -131,6 +131,42 @@ classDiagram
     Control --> Control : sub-controls
 ```
 
+## OCSF Evidence Models
+
+Lemma's Phase 3 connectors will collect compliance evidence from disparate sources — SIEM, CSPM, ITSM, identity providers. To avoid inventing a proprietary schema, Lemma adopts [**OCSF** (Open Cybersecurity Schema Framework)](https://schema.ocsf.io/) as the wire format for normalized evidence.
+
+OCSF provides a vendor-agnostic taxonomy of security telemetry maintained by a broad industry consortium and licensed Apache-2.0. Each event carries:
+
+- A numeric `class_uid` identifying the specific event class (e.g., `2003` = Compliance Finding).
+- A numeric `category_uid` identifying the high-level category (e.g., `2000` = Findings, `3000` = IAM).
+- Standardized fields for `time`, `severity_id`, `status_id`, `activity_id`, `metadata`, and a free-form `message`.
+
+### Classes modeled today
+
+This release ships the minimum lexicon needed to prove the schema and unblock connector work. All three classes live in `src/lemma/models/ocsf.py`.
+
+| Class | `class_uid` | Category | Why it's here |
+|---|---|---|---|
+| `ComplianceFinding` | 2003 | Findings (2000) | Direct representation of an evaluated compliance control outcome — the most natural OCSF class for GRC evidence. |
+| `DetectionFinding` | 2004 | Findings (2000) | The modern replacement for the deprecated Security Finding (2001) class in OCSF 1.1+. Used when a connector emits a generic detection result that still maps to a control. |
+| `AuthenticationEvent` | 3002 | IAM (3000) | Evidence of identity and access activity (MFA use, SSO logins, privilege escalations) — a common compliance signal. Also proves the base-class design generalizes across categories. |
+
+### Design notes
+
+- **Enums are `IntEnum`, not `StrEnum`.** OCSF serializes identifiers as integers on the wire; `StrEnum` would force lossy coercion. This is a deliberate divergence from the `StrEnum` pattern used by `TraceStatus` and `PolicyEventType`.
+- **Category consistency is enforced.** Each concrete class pins its `class_uid` via `Literal[...]` and validates that `category_uid` matches the expected category — so a misconfigured connector fails loudly on ingestion instead of silently polluting the graph.
+- **Nested OCSF objects (`Actor`, `Device`, full `Metadata`) are typed as `dict[str, Any]` for now.** Strongly-typed sub-schemas will arrive driven by connector demand rather than speculatively modeled.
+
+### What's deferred
+
+The following are intentionally out of scope for this release and will arrive with connector work:
+
+- An event normalization / ingestion service.
+- Connector adapters that emit these events.
+- OCSF-to-control mapping logic (belongs in the harmonization/mapping layer).
+- Additional OCSF event classes beyond the three above.
+- Per-class `activity_id` enums.
+
 ## Project Layout
 
 ```
