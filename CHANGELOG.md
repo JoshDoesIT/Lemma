@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `lemma ai bom` CLI command exports an AI Bill of Materials in CycloneDX 1.6 JSON format, enumerating every model in the system card with name, version, provider, purpose, training data provenance, and optional SHA hash. Output is validated against a bundled CycloneDX 1.6 structural schema before it leaves the process.
+- Optional `model_hash` field on `ModelCard` for supply-chain integrity digests (e.g., `sha256:...`).
 - Confidence-gated automation for AI mapping. `ai.automation.thresholds.<operation>` in `lemma.config.yaml` auto-accepts AI outputs at or above the configured threshold; outputs below remain PROPOSED for human review. Auto-accepted trace entries are marked with `auto_accepted: true` and record the applied threshold in the review rationale.
 - `auto_accepted` field on `AITrace` distinguishes gate-driven acceptances from human-driven ones.
 - Policy event audit log at `.lemma/policy-events/YYYY-MM-DD.jsonl`. Each `lemma map` run diffs `ai.automation.thresholds` against the prior state and appends `threshold_set`, `threshold_changed`, or `threshold_removed` events — so governance-relevant config changes are independently auditable from AI decision traces.

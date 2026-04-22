@@ -338,6 +338,26 @@ lemma ai system-card
 lemma ai system-card --format json
 ```
 
+### `lemma ai bom`
+
+Export the AI Bill of Materials (AIBOM) as a CycloneDX 1.6 JSON document.
+
+```bash
+lemma ai bom
+```
+
+The AIBOM enumerates every AI model registered in the system card and provides a machine-readable inventory suitable for supply-chain review and AI governance (EU AI Act, NIST AI RMF). Each component includes the model name, version, publisher, purpose, training data provenance, and — when available — a cryptographic hash. Output is validated against a bundled CycloneDX 1.6 structural schema before being emitted; invalid BOMs raise an error rather than writing broken JSON.
+
+**Examples:**
+
+```bash
+# Emit AIBOM to stdout
+lemma ai bom
+
+# Pipe to a file for attestation
+lemma ai bom > aibom.cdx.json
+```
+
 ### `lemma ai audit`
 
 Query and filter the AI decision trace log.
