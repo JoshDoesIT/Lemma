@@ -17,6 +17,7 @@ from lemma.models.mapping import MappingReport, MappingResult
 from lemma.models.trace import AITrace
 from lemma.services.chunker import chunk_policies
 from lemma.services.indexer import ControlIndexer
+from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.llm import LLMClient
 from lemma.services.trace_log import TraceLog
 
@@ -157,6 +158,30 @@ def map_policies(
                     status=status,
                 )
             )
+
+    # Populate knowledge graph with mapping results
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    # Track unique policy sources to add as nodes
+    seen_policies: set[str] = set()
+    for result in results:
+        # Extract policy filename from chunk_id (e.g., 'access-control.md#1')
+        policy_path = result.chunk_id.split("#")[0]
+        if policy_path not in seen_policies:
+            graph.add_policy(policy_path, title=policy_path)
+            seen_policies.add(policy_path)
+
+        # Only add SATISFIES edges for MAPPED results
+        if result.status == "MAPPED":
+            graph.add_mapping(
+                policy=policy_path,
+                framework=framework,
+                control_id=result.control_id,
+                confidence=result.confidence,
+            )
+
+    graph.save(graph_path)
 
     return MappingReport(
         framework=framework,
