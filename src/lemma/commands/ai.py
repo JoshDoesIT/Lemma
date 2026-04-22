@@ -85,6 +85,12 @@ def audit_command(
         "-s",
         help="Filter traces by review status (PROPOSED, ACCEPTED, REJECTED)",
     ),
+    operation: str = typer.Option(
+        "",
+        "--operation",
+        "-o",
+        help="Filter traces by operation (e.g., map, harmonize)",
+    ),
     output_format: str = typer.Option(
         "table",
         "--format",
@@ -109,6 +115,9 @@ def audit_command(
 
     if status:
         traces = [t for t in traces if t.status.value == status]
+
+    if operation:
+        traces = [t for t in traces if t.operation == operation]
 
     if summary:
         _show_summary(traces)

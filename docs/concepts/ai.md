@@ -58,9 +58,13 @@ The LLM's rationale is advisory. The policy-to-control link only becomes part of
 
 Harmonization finds semantically equivalent controls across different frameworks (so the same policy can satisfy requirements in NIST 800-53, CSF 2.0, and 800-171 at once).
 
-Today this is done by pairwise cosine similarity with a Union-Find clustering pass — no LLM, no trace emission. Equivalences above the similarity threshold (default 0.85) are grouped into a Common Control Framework.
+This is done by pairwise cosine similarity with a Union-Find clustering pass — no LLM is involved. Equivalences above the similarity threshold (default 0.85) are grouped into a Common Control Framework.
 
-Harmonization does not yet write to the trace log. That's tracked as issue #92 — when that ships, harmonization decisions will carry the same `PROPOSED → ACCEPTED/REJECTED` lifecycle as mapping.
+Every equivalence decision is recorded as an `AITrace` with `operation="harmonize"`, `model_id="sentence-transformers/all-MiniLM-L6-v2"`, and the cosine similarity as `confidence`. Because harmonization is a pair event, the trace populates both the primary side (`control_id` / `framework`) and the related side (`related_control_id` / `related_framework`) — ordered lexicographically so each equivalence appears as exactly one trace.
+
+Harmonize respects the same confidence-gated automation as mapping: set `ai.automation.thresholds.harmonize` in `lemma.config.yaml` to auto-accept equivalences at or above the threshold. Query harmonization traces with `lemma ai audit --operation harmonize`.
+
+`lemma harmonize` also writes an OSCAL Profile to `.lemma/harmonization.oscal.json`. The profile imports each source catalog and encodes each cluster as a back-matter resource with `lemma:harmonized-cluster` properties and `rlinks` to the member controls — making the output consumable by any OSCAL-aware tool.
 
 ## The trust model
 

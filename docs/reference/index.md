@@ -211,6 +211,12 @@ lemma harmonize [OPTIONS]
 lemma harmonize --threshold 0.9
 ```
 
+**Side effects:**
+
+- Writes an OSCAL Profile to `.lemma/harmonization.oscal.json` describing the cross-framework clusters. The profile imports each source catalog and encodes each cluster as a back-matter resource with `lemma:harmonized-cluster` properties.
+- Appends one `AITrace` per equivalence decision to `.lemma/traces/YYYY-MM-DD.jsonl` with `operation="harmonize"`. Audit these with `lemma ai audit --operation harmonize`.
+- Honors `ai.automation.thresholds.harmonize` in `lemma.config.yaml` to auto-accept equivalences at or above the configured threshold.
+
 ---
 
 ## `lemma coverage`
@@ -370,6 +376,7 @@ lemma ai audit [OPTIONS]
 |--------|---------|-------------|
 | `--model` | *(all)* | Filter by model ID (e.g., `ollama/llama3.2`) |
 | `--status` | *(all)* | Filter by review status: `PROPOSED`, `ACCEPTED`, `REJECTED` |
+| `--operation` | *(all)* | Filter by operation type (e.g., `map`, `harmonize`) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--summary` | `false` | Show aggregate statistics instead of individual traces |
 
@@ -386,6 +393,9 @@ lemma ai audit --model ollama/llama3.2
 
 # Only accepted mappings
 lemma ai audit --status ACCEPTED
+
+# Only harmonization traces
+lemma ai audit --operation harmonize
 
 # JSON for CI/scripting
 lemma ai audit --format json

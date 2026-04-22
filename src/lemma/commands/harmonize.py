@@ -10,10 +10,13 @@ from pathlib import Path
 
 import typer
 
+from lemma.services.config import load_automation_config
 from lemma.services.coverage import compute_coverage, compute_gaps
 from lemma.services.differ import diff_frameworks
+from lemma.services.harmonization_oscal import to_oscal_profile
 from lemma.services.harmonizer import harmonize_frameworks
 from lemma.services.indexer import ControlIndexer
+from lemma.services.trace_log import TraceLog
 
 
 def _error(message: str) -> None:
@@ -31,21 +34,49 @@ def _get_indexer() -> ControlIndexer:
     return ControlIndexer(index_dir=project_dir / ".lemma" / "index")
 
 
+def _project_dir_checked() -> Path:
+    project_dir = Path.cwd()
+    if not (project_dir / ".lemma").exists():
+        _error("Not a Lemma project. Run: lemma init")
+    return project_dir
+
+
 def harmonize_command(
     threshold: float = typer.Option(0.85, help="Cosine similarity threshold for clustering"),
     output: str = typer.Option("json", help="Output format (json)"),
 ) -> None:
     """Harmonize all indexed frameworks into a Common Control Framework.
 
-    Identifies semantically equivalent controls across frameworks
-    and groups them into clusters for 'Test Once, Comply Many'.
+    Writes a CycloneDX-adjacent OSCAL Profile describing the cross-framework
+    harmonization clusters to ``.lemma/harmonization.oscal.json``. Every
+    equivalence decision is also recorded in the AI trace log, with
+    confidence-gated auto-accept honoring ``ai.automation.thresholds.harmonize``
+    from ``lemma.config.yaml``.
     """
-    indexer = _get_indexer()
+    project_dir = _project_dir_checked()
+    indexer = ControlIndexer(index_dir=project_dir / ".lemma" / "index")
+
+    trace_log = TraceLog(log_dir=project_dir / ".lemma" / "traces")
 
     try:
-        report = harmonize_frameworks(indexer=indexer, threshold=threshold)
+        automation = load_automation_config(project_dir / "lemma.config.yaml")
     except ValueError as e:
         _error(str(e))
+
+    try:
+        report = harmonize_frameworks(
+            indexer=indexer,
+            threshold=threshold,
+            trace_log=trace_log,
+            automation=automation,
+        )
+    except ValueError as e:
+        _error(str(e))
+
+    # Persist an OSCAL Profile alongside the run.
+    profile = to_oscal_profile(report)
+    profile_path = project_dir / ".lemma" / "harmonization.oscal.json"
+    profile_path.write_text(profile.model_dump_json(by_alias=True, exclude_none=True, indent=2))
 
     typer.echo(report.model_dump_json(indent=2))
 

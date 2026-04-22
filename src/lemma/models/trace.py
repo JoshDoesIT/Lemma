@@ -57,6 +57,10 @@ class AITrace(BaseModel):
         parent_trace_id: For review entries, the trace_id of the original trace.
         auto_accepted: True if the review entry was produced by confidence-gated
             automation rather than a human reviewer.
+        related_control_id: Secondary control identifier for pair events
+            (e.g. harmonization equivalences link two controls). Empty for
+            single-control operations like ``map``.
+        related_framework: Secondary framework name for pair events.
     """
 
     trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -75,3 +79,5 @@ class AITrace(BaseModel):
     review_rationale: str = ""
     parent_trace_id: str = ""
     auto_accepted: bool = False
+    related_control_id: str = ""
+    related_framework: str = ""
