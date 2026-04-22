@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from lemma.services.indexer import ControlIndexer
+from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.parsers.oscal import parse_catalog
 
 
@@ -62,6 +63,12 @@ def add_bundled_framework(name: str, *, project_dir: Path) -> dict:
 
     indexer = ControlIndexer(index_dir=project_dir / ".lemma" / "index")
     indexer.index_controls(name, controls)
+
+    # Populate knowledge graph
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    graph.populate_from_controls(name, controls)
+    graph.save(graph_path)
 
     return {
         "name": name,
@@ -154,6 +161,12 @@ def import_framework(file_path: Path, *, project_dir: Path) -> dict:
 
     indexer = ControlIndexer(index_dir=project_dir / ".lemma" / "index")
     indexer.index_controls(name, controls)
+
+    # Populate knowledge graph
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    graph.populate_from_controls(name, controls)
+    graph.save(graph_path)
 
     return {
         "name": name,
