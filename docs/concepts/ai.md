@@ -8,11 +8,12 @@ This page explains what the AI actually does, what it doesn't do, and how to ver
 
 ```mermaid
 flowchart LR
-    A["Framework ingestion<br/>(semantic indexing)"] --> B["Control mapping<br/>(policy → framework control)"] --> C["Harmonization<br/>(control → control across frameworks)"]
+    A["Framework ingestion<br/>(semantic indexing)"] --> B["Control mapping<br/>(policy → framework control)"] --> C["Harmonization<br/>(control → control across frameworks)"] --> D["NL query<br/>(question → graph traversal)"]
 
     style A fill:#1e293b,stroke:#06b6d4,color:#e2e8f0
     style B fill:#1e293b,stroke:#f59e0b,color:#e2e8f0
     style C fill:#1e293b,stroke:#10b981,color:#e2e8f0
+    style D fill:#1e293b,stroke:#a855f7,color:#e2e8f0
 ```
 
 ### 1. Framework ingestion
@@ -65,6 +66,20 @@ Every equivalence decision is recorded as an `AITrace` with `operation="harmoniz
 Harmonize respects the same confidence-gated automation as mapping: set `ai.automation.thresholds.harmonize` in `lemma.config.yaml` to auto-accept equivalences at or above the threshold. Query harmonization traces with `lemma ai audit --operation harmonize`.
 
 `lemma harmonize` also writes an OSCAL Profile to `.lemma/harmonization.oscal.json`. The profile imports each source catalog and encodes each cluster as a back-matter resource with `lemma:harmonized-cluster` properties and `rlinks` to the member controls — making the output consumable by any OSCAL-aware tool.
+
+### 4. Natural language query — `lemma query`
+
+Users don't always know the graph schema. `lemma query "<question>"` fills that gap:
+
+1. The translator summarizes the live graph (node types, edge types, example node IDs) and sends it along with the question to the LLM.
+2. The LLM returns a structured `QueryPlan` — an executor-bounded object describing entry node, traversal kind, edge filters, and direction.
+3. The translator resolves short entry-node names (`"ac-2"` → `"control:nist-800-53:ac-2"`) against the real graph. Ambiguous short names fail loud.
+4. The executor walks the graph using existing `ComplianceGraph` methods and returns matching nodes.
+5. Every call emits an `AITrace` with `operation="query"`, full prompt, raw LLM output, and the resolved plan — auditable alongside map and harmonize decisions via `lemma ai audit --operation query`.
+
+The LLM cannot generate arbitrary graph code; it can only emit `QueryPlan` instances the executor recognizes. That's the safety contract — the LLM gets to interpret intent creatively, the executor only does what's in the plan.
+
+Query traces use `confidence=0.0` and `determination="QUERY_EXECUTED"` as conventions for the read-only operation kind. A typed discriminator for decision-vs-read ops is a future schema change (see [#104](https://github.com/JoshDoesIT/Lemma/issues/104)).
 
 ## The trust model
 

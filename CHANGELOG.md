@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `lemma query "<question>"` answers natural-language questions about the compliance knowledge graph. An LLM translates the question to a structured `QueryPlan` (bounded to traversals the executor supports — NEIGHBORS, IMPACT, FRAMEWORK_CONTROL_COUNT — with edge-type and direction filters), the executor walks the graph, and every invocation is recorded in the AI trace log with `operation="query"`. `--verbose` prints the resolved plan before the results so "AI that shows its work" extends to read queries too.
+- Short entry-node names (e.g., `"ac-2"`) are resolved against the graph at translate time; ambiguous matches fail loud with all candidate node IDs listed. The translator retries once with validation feedback on malformed LLM output, then raises a clean `ValueError` — no silent fallback.
+- New AI operation type `query` alongside the existing `map` and `harmonize` — filter with `lemma ai audit --operation query`. Query traces use `confidence=0.0` and `determination="QUERY_EXECUTED"` as conventions for the read-only operation kind.
 - Key lifecycle for evidence signing. Per-producer keys now live under `.lemma/keys/<producer>/<key_id>.*.pem` with a sibling `meta.json` tracking every key the producer has held. Status is one of `ACTIVE`, `RETIRED`, or `REVOKED`. Flat pre-lifecycle layouts are auto-migrated to the versioned layout on first access.
 - `lemma evidence rotate-key --producer <name>` retires the producer's active signing key and generates a fresh one. Pre-rotation entries keep verifying PROVEN under the retired key; new entries use the successor.
 - `lemma evidence revoke-key --producer <name> --key-id <id> --reason <str>` marks a key REVOKED. Verification now returns VIOLATED for entries signed at or after `revoked_at` under a revoked key, and stays PROVEN for signatures made before the revocation.
