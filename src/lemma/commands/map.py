@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 import yaml
 
+from lemma.services.config import load_automation_config
 from lemma.services.formatters import get_formatter
 from lemma.services.llm import get_llm_client
 from lemma.services.mapper import map_policies
@@ -59,6 +60,12 @@ def map_command(
     except ImportError as e:
         _error(str(e))
 
+    # Load confidence-gated automation config (thresholds per operation).
+    try:
+        automation = load_automation_config(config_file)
+    except ValueError as e:
+        _error(str(e))
+
     # Run mapping
     try:
         report = map_policies(
@@ -66,6 +73,7 @@ def map_command(
             project_dir=cwd,
             llm_client=llm_client,
             threshold=threshold,
+            automation=automation,
         )
     except ValueError as e:
         _error(str(e))
