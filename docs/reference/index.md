@@ -248,3 +248,111 @@ lemma diff [OPTIONS]
 ```bash
 lemma diff --from nist-800-53 --to nist-csf-2.0
 ```
+
+---
+
+## `lemma graph`
+
+Query and visualize the compliance knowledge graph. The graph is automatically populated when you run `lemma framework add` and `lemma map`.
+
+### `lemma graph export`
+
+Export the full compliance graph as JSON for visualization with D3.js, Cytoscape, or other graph tools.
+
+```bash
+lemma graph export
+```
+
+Outputs the complete node-link graph to stdout in JSON format. Pipe to a file for use with visualization tools:
+
+```bash
+lemma graph export > graph.json
+```
+
+### `lemma graph impact`
+
+Trace all controls and frameworks affected by a specific node.
+
+```bash
+lemma graph impact <NODE_ID>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `NODE_ID` | Yes | Node identifier (e.g., `policy:access-control.md`, `control:nist-800-53:ac-7`) |
+
+Displays a Rich table showing every control and framework reachable from the specified node via graph traversal.
+
+**Example:**
+
+```bash
+lemma graph impact policy:access-control.md
+# Shows all controls and frameworks connected to this policy
+```
+
+---
+
+## `lemma ai`
+
+AI transparency and governance commands.
+
+### `lemma ai system-card`
+
+Display the AI System Card — a versioned transparency document describing every AI model used in Lemma.
+
+```bash
+lemma ai system-card [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--format` | `markdown` | Output format: `markdown` or `json` |
+
+The system card documents model capabilities, known limitations, training data provenance, and risk mitigations.
+
+**Examples:**
+
+```bash
+# Human-readable markdown (default)
+lemma ai system-card
+
+# Machine-readable JSON
+lemma ai system-card --format json
+```
+
+### `lemma ai audit`
+
+Query and filter the AI decision trace log.
+
+```bash
+lemma ai audit [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model` | *(all)* | Filter by model ID (e.g., `ollama/llama3.2`) |
+| `--status` | *(all)* | Filter by review status: `PROPOSED`, `ACCEPTED`, `REJECTED` |
+| `--format` | `table` | Output format: `table` or `json` |
+| `--summary` | `false` | Show aggregate statistics instead of individual traces |
+
+The audit log captures every AI decision: input, prompt, model, raw output, confidence score, and human review status.
+
+**Examples:**
+
+```bash
+# All traces as a Rich table
+lemma ai audit
+
+# Filter by model
+lemma ai audit --model ollama/llama3.2
+
+# Only accepted mappings
+lemma ai audit --status ACCEPTED
+
+# JSON for CI/scripting
+lemma ai audit --format json
+
+# Aggregate statistics
+lemma ai audit --summary
+```
+
