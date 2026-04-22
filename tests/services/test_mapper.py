@@ -469,3 +469,41 @@ class TestMapperConfidenceGate:
         accepted = [t for t in traces if t.status.value == "ACCEPTED"]
         assert len(accepted) >= 1
         assert accepted[0].auto_accepted is True
+
+    def test_threshold_change_does_not_affect_existing_traces(self, tmp_path):
+        """Raising the threshold on a later run must not alter prior trace entries."""
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({"confidence": 0.9, "rationale": "Match."})
+
+        # First run: threshold 0.8, confidence 0.9 => auto-accept
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.8}),
+        )
+        first_run = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        first_snapshot = [(t.trace_id, t.status.value, t.auto_accepted) for t in first_run]
+
+        # Second run: threshold raised to 0.95. Must not rewrite first run entries.
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.95}),
+        )
+        second_run = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+
+        # Every original trace_id must be present with identical status and flag.
+        second_by_id = {t.trace_id: t for t in second_run}
+        for trace_id, status, auto in first_snapshot:
+            assert trace_id in second_by_id
+            assert second_by_id[trace_id].status.value == status
+            assert second_by_id[trace_id].auto_accepted is auto
