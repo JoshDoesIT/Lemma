@@ -111,9 +111,7 @@ def map_policies(
     model_id = _get_model_id(llm_client)
 
     # Resolve auto-accept threshold for the map operation (None = no gating)
-    auto_accept_threshold = (
-        automation.threshold_for("map") if automation is not None else None
-    )
+    auto_accept_threshold = automation.threshold_for("map") if automation is not None else None
 
     # Map each chunk to controls
     results: list[MappingResult] = []
@@ -158,10 +156,7 @@ def map_policies(
             trace_log.append(proposed_trace)
 
             # Confidence-gated automation: auto-accept at/above configured threshold.
-            if (
-                auto_accept_threshold is not None
-                and confidence >= auto_accept_threshold
-            ):
+            if auto_accept_threshold is not None and confidence >= auto_accept_threshold:
                 trace_log.auto_accept(proposed_trace, threshold=auto_accept_threshold)
 
             results.append(

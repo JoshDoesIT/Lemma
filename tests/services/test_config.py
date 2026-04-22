@@ -29,11 +29,11 @@ class TestAutomationConfig:
         AutomationConfig(thresholds={"map": 1.0})
 
     def test_threshold_above_one_rejected(self):
-        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        with pytest.raises(ValueError, match=r"between 0\.0 and 1\.0"):
             AutomationConfig(thresholds={"map": 1.5})
 
     def test_threshold_below_zero_rejected(self):
-        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        with pytest.raises(ValueError, match=r"between 0\.0 and 1\.0"):
             AutomationConfig(thresholds={"map": -0.1})
 
     def test_operation_name_is_preserved_in_error(self):
@@ -75,9 +75,7 @@ class TestLoadAutomationConfig:
 
     def test_invalid_threshold_raises_on_load(self, tmp_path: Path):
         config_file = tmp_path / "lemma.config.yaml"
-        config_file.write_text(
-            yaml.dump({"ai": {"automation": {"thresholds": {"map": 1.7}}}})
-        )
+        config_file.write_text(yaml.dump({"ai": {"automation": {"thresholds": {"map": 1.7}}}}))
 
-        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        with pytest.raises(ValueError, match=r"between 0\.0 and 1\.0"):
             load_automation_config(config_file)
