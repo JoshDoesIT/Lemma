@@ -24,6 +24,8 @@ class ModelCard(BaseModel):
         capabilities: What the model can do well.
         limitations: Known failure modes and weaknesses.
         training_data: Description of training data provenance.
+        model_hash: Optional integrity digest (e.g., ``sha256:...``) for
+            supply-chain verification. Empty string when unavailable.
     """
 
     model_id: str
@@ -33,6 +35,7 @@ class ModelCard(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     training_data: str = ""
+    model_hash: str = ""
 
 
 class AISystemCard(BaseModel):

@@ -3,6 +3,7 @@
 Provides sub-commands for AI transparency and governance:
     lemma ai system-card     — Display the AI System Card
     lemma ai audit           — Query and filter the AI trace log
+    lemma ai bom             — Export the AI Bill of Materials (CycloneDX 1.6)
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.models.system_card import get_default_system_card
+from lemma.services.aibom import build_aibom, validate_aibom
 from lemma.services.trace_log import TraceLog
 
 console = Console()
@@ -55,6 +57,18 @@ def system_card_command(
         print(card.model_dump_json(indent=2))
     else:
         console.print(card.render_markdown())
+
+
+@ai_app.command(
+    name="bom",
+    help="Export the AI Bill of Materials as CycloneDX 1.6 JSON.",
+)
+def bom_command() -> None:
+    """Emit a CycloneDX 1.6 AI BOM for the current system card to stdout."""
+    _require_lemma_project()
+    bom = build_aibom(get_default_system_card())
+    validate_aibom(bom)
+    print(json.dumps(bom, indent=2))
 
 
 @ai_app.command(name="audit", help="Query and filter the AI trace log.")
