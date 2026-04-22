@@ -9,9 +9,11 @@ from pathlib import Path
 import typer
 import yaml
 
+from lemma.services.config import load_automation_config, record_threshold_changes
 from lemma.services.formatters import get_formatter
 from lemma.services.llm import get_llm_client
 from lemma.services.mapper import map_policies
+from lemma.services.policy_log import PolicyEventLog
 
 
 def _error(message: str) -> None:
@@ -59,6 +61,16 @@ def map_command(
     except ImportError as e:
         _error(str(e))
 
+    # Load confidence-gated automation config (thresholds per operation).
+    try:
+        automation = load_automation_config(config_file)
+    except ValueError as e:
+        _error(str(e))
+
+    # Record any threshold changes as auditable policy events before running.
+    policy_log = PolicyEventLog(log_dir=cwd / ".lemma" / "policy-events")
+    record_threshold_changes(automation, policy_log, source=str(config_file))
+
     # Run mapping
     try:
         report = map_policies(
@@ -66,6 +78,7 @@ def map_command(
             project_dir=cwd,
             llm_client=llm_client,
             threshold=threshold,
+            automation=automation,
         )
     except ValueError as e:
         _error(str(e))

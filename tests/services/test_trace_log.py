@@ -323,3 +323,59 @@ class TestTraceLog:
         rejection = all_traces[-1]
         assert rejection.status == TraceStatus.REJECTED
         assert "not relevant" in rejection.review_rationale
+
+
+class TestAutoAccept:
+    """Tests for confidence-gated automatic acceptance."""
+
+    def _proposed(self, confidence: float = 0.9) -> AITrace:
+        return AITrace(
+            operation="map",
+            input_text="text",
+            prompt="p",
+            model_id="ollama/llama3.2",
+            model_version="3.2",
+            raw_output="o",
+            confidence=confidence,
+            determination="MAPPED",
+            control_id="ac-1",
+            framework="nist-800-53",
+        )
+
+    def test_auto_accept_appends_accepted_review_entry(self, tmp_path: Path):
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        original = self._proposed(confidence=0.92)
+        log.append(original)
+
+        log.auto_accept(original, threshold=0.85)
+
+        all_traces = log.read_all()
+        assert len(all_traces) == 2
+        review = all_traces[-1]
+        assert review.status == TraceStatus.ACCEPTED
+        assert review.auto_accepted is True
+        assert review.parent_trace_id == original.trace_id
+
+    def test_auto_accept_rationale_records_threshold(self, tmp_path: Path):
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        original = self._proposed(confidence=0.97)
+        log.append(original)
+
+        log.auto_accept(original, threshold=0.95)
+
+        review = log.read_all()[-1]
+        assert "0.970" in review.review_rationale
+        assert "0.950" in review.review_rationale
+        assert "map" in review.review_rationale
+
+    def test_human_reviews_default_to_not_auto_accepted(self, tmp_path: Path):
+        """Manual review() entries must not carry auto_accepted=True."""
+        log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+        original = self._proposed(confidence=0.5)
+        log.append(original)
+
+        log.review(original.trace_id, status=TraceStatus.ACCEPTED)
+
+        review = log.read_all()[-1]
+        assert review.status == TraceStatus.ACCEPTED
+        assert review.auto_accepted is False

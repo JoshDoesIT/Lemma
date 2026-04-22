@@ -46,6 +46,9 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Claude Code local settings
+.claude/
+
 # Lemma local state
 .lemma/cache/
 .lemma/index/

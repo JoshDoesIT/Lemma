@@ -172,6 +172,24 @@ lemma map --framework nist-800-53 --output csv > mapping.csv
 lemma map --framework nist-800-53 --threshold 0.5
 ```
 
+### Confidence-gated automation
+
+`lemma map` honors per-operation auto-accept thresholds defined in `lemma.config.yaml`. When an AI output's confidence is at or above the configured threshold, its trace entry is automatically promoted from `PROPOSED` to `ACCEPTED` with `auto_accepted: true`. Outputs below the threshold remain `PROPOSED` for human review.
+
+```yaml
+# lemma.config.yaml
+ai:
+  automation:
+    thresholds:
+      map: 0.85
+```
+
+Thresholds must be in the range `0.0`–`1.0`. Operations without a configured threshold are never auto-accepted. Review-status transitions (including auto-accepts) are visible via `lemma ai audit --status ACCEPTED`.
+
+#### Policy event audit trail
+
+Every time `lemma map` loads the automation config, it diffs the current thresholds against the last recorded state and appends any changes as policy events to `.lemma/policy-events/YYYY-MM-DD.jsonl`. Events carry one of three types — `threshold_set`, `threshold_changed`, or `threshold_removed` — plus the previous and new values, the operation affected, and the config file path that triggered the change. The log is append-only so the history of governance changes is independently auditable from AI decision traces.
+
 ---
 
 ## `lemma harmonize`

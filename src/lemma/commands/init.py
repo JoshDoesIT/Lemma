@@ -18,6 +18,12 @@ _DEFAULT_CONFIG = {
         "provider": "ollama",
         "model": "llama3.2",
         "temperature": 0.1,
+        # Confidence-gated automation. Outputs at or above the per-operation
+        # threshold are auto-accepted; outputs below remain PROPOSED for
+        # human review. Omit or leave empty to require human review on all.
+        "automation": {
+            "thresholds": {},
+        },
     },
     "connectors": [],
 }

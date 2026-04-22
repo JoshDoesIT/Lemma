@@ -322,3 +322,188 @@ class TestMapperTraceIntegration:
         trace = traces[0]
         assert trace.confidence == 0.0
         assert trace.raw_output == "NOT VALID JSON"
+
+
+class TestMapperConfidenceGate:
+    """Tests for confidence-gated automation in the mapping pipeline."""
+
+    def _setup_project(self, tmp_path):
+        from lemma.services.indexer import ControlIndexer
+
+        (tmp_path / ".lemma").mkdir()
+        policies_dir = tmp_path / "policies"
+        policies_dir.mkdir()
+        (policies_dir / "access.md").write_text(
+            "# Access Control\n\nAll users must use MFA to authenticate.\n"
+        )
+
+        indexer = ControlIndexer(index_dir=tmp_path / ".lemma" / "index")
+        indexer.index_controls(
+            "nist-800-53",
+            [
+                {
+                    "id": "ac-7",
+                    "title": "Unsuccessful Logon Attempts",
+                    "prose": "Enforce lockout after failed logon attempts.",
+                    "family": "AC",
+                },
+            ],
+        )
+
+    def test_high_confidence_is_auto_accepted(self, tmp_path):
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.92, "rationale": "Strong match."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.85}),
+        )
+
+        traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        # One PROPOSED plus one auto-accepted review per candidate
+        accepted = [t for t in traces if t.status.value == "ACCEPTED"]
+        assert len(accepted) >= 1
+        review = accepted[0]
+        assert review.auto_accepted is True
+        assert review.parent_trace_id != ""
+
+    def test_below_threshold_remains_proposed(self, tmp_path):
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.70, "rationale": "Moderate match."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.95}),
+        )
+
+        traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        accepted = [t for t in traces if t.status.value == "ACCEPTED"]
+        proposed = [t for t in traces if t.status.value == "PROPOSED"]
+        assert accepted == []
+        assert len(proposed) >= 1
+
+    def test_without_automation_config_never_auto_accepts(self, tmp_path):
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.99, "rationale": "Very strong."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+        )
+
+        traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        assert all(t.status.value == "PROPOSED" for t in traces)
+
+    def test_missing_operation_threshold_never_auto_accepts(self, tmp_path):
+        """Thresholds for other operations must not affect 'map'."""
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.99, "rationale": "Very strong."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"harmonize": 0.5}),
+        )
+
+        traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        assert all(t.status.value == "PROPOSED" for t in traces)
+
+    def test_threshold_boundary_auto_accepts(self, tmp_path):
+        """Confidence exactly at the threshold auto-accepts (inclusive)."""
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.8, "rationale": "Exact threshold."}
+        )
+
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.8}),
+        )
+
+        traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        accepted = [t for t in traces if t.status.value == "ACCEPTED"]
+        assert len(accepted) >= 1
+        assert accepted[0].auto_accepted is True
+
+    def test_threshold_change_does_not_affect_existing_traces(self, tmp_path):
+        """Raising the threshold on a later run must not alter prior trace entries."""
+        from lemma.services.config import AutomationConfig
+        from lemma.services.mapper import map_policies
+        from lemma.services.trace_log import TraceLog
+
+        self._setup_project(tmp_path)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({"confidence": 0.9, "rationale": "Match."})
+
+        # First run: threshold 0.8, confidence 0.9 => auto-accept
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.8}),
+        )
+        first_run = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+        first_snapshot = [(t.trace_id, t.status.value, t.auto_accepted) for t in first_run]
+
+        # Second run: threshold raised to 0.95. Must not rewrite first run entries.
+        map_policies(
+            framework="nist-800-53",
+            project_dir=tmp_path,
+            llm_client=mock_llm,
+            threshold=0.5,
+            automation=AutomationConfig(thresholds={"map": 0.95}),
+        )
+        second_run = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+
+        # Every original trace_id must be present with identical status and flag.
+        second_by_id = {t.trace_id: t for t in second_run}
+        for trace_id, status, auto in first_snapshot:
+            assert trace_id in second_by_id
+            assert second_by_id[trace_id].status.value == status
+            assert second_by_id[trace_id].auto_accepted is auto

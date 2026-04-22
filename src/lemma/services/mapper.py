@@ -16,6 +16,7 @@ from pathlib import Path
 from lemma.models.mapping import MappingReport, MappingResult
 from lemma.models.trace import AITrace
 from lemma.services.chunker import chunk_policies
+from lemma.services.config import AutomationConfig
 from lemma.services.indexer import ControlIndexer
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.llm import LLMClient
@@ -66,6 +67,7 @@ def map_policies(
     threshold: float = 0.6,
     top_k: int = 3,
     output_format: str = "json",
+    automation: AutomationConfig | None = None,
 ) -> MappingReport:
     """Run the full control mapping pipeline.
 
@@ -79,6 +81,10 @@ def map_policies(
         threshold: Confidence threshold for LOW_CONFIDENCE flagging.
         top_k: Number of candidate controls per chunk.
         output_format: Output format name (for future use).
+        automation: Optional confidence-gated automation config. When a
+            threshold is configured for the ``map`` operation, outputs
+            at or above the threshold are auto-accepted; outputs below
+            remain PROPOSED for human review.
 
     Returns:
         MappingReport with all mapping results.
@@ -103,6 +109,9 @@ def map_policies(
     # Initialize trace log
     trace_log = TraceLog(log_dir=project_dir / ".lemma" / "traces")
     model_id = _get_model_id(llm_client)
+
+    # Resolve auto-accept threshold for the map operation (None = no gating)
+    auto_accept_threshold = automation.threshold_for("map") if automation is not None else None
 
     # Map each chunk to controls
     results: list[MappingResult] = []
@@ -132,20 +141,23 @@ def map_policies(
             status = "MAPPED" if confidence >= threshold else "LOW_CONFIDENCE"
 
             # Log trace entry for this AI decision
-            trace_log.append(
-                AITrace(
-                    operation="map",
-                    input_text=chunk["text"][:500],
-                    prompt=prompt,
-                    model_id=model_id,
-                    model_version="",
-                    raw_output=raw_response,
-                    confidence=confidence,
-                    determination=status,
-                    control_id=candidate["control_id"],
-                    framework=framework,
-                )
+            proposed_trace = AITrace(
+                operation="map",
+                input_text=chunk["text"][:500],
+                prompt=prompt,
+                model_id=model_id,
+                model_version="",
+                raw_output=raw_response,
+                confidence=confidence,
+                determination=status,
+                control_id=candidate["control_id"],
+                framework=framework,
             )
+            trace_log.append(proposed_trace)
+
+            # Confidence-gated automation: auto-accept at/above configured threshold.
+            if auto_accept_threshold is not None and confidence >= auto_accept_threshold:
+                trace_log.auto_accept(proposed_trace, threshold=auto_accept_threshold)
 
             results.append(
                 MappingResult(

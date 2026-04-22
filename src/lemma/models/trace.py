@@ -55,6 +55,8 @@ class AITrace(BaseModel):
         status: Human review status (PROPOSED, ACCEPTED, REJECTED).
         review_rationale: Rationale for acceptance/rejection (required for REJECTED).
         parent_trace_id: For review entries, the trace_id of the original trace.
+        auto_accepted: True if the review entry was produced by confidence-gated
+            automation rather than a human reviewer.
     """
 
     trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -72,3 +74,4 @@ class AITrace(BaseModel):
     status: TraceStatus = TraceStatus.PROPOSED
     review_rationale: str = ""
     parent_trace_id: str = ""
+    auto_accepted: bool = False

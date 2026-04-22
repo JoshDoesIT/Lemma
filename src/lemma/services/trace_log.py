@@ -146,3 +146,44 @@ class TraceLog:
         )
 
         self.append(review_entry)
+
+    def auto_accept(self, original: AITrace, *, threshold: float) -> AITrace:
+        """Append an ACCEPTED review entry produced by confidence gating.
+
+        Used by confidence-gated automation: when an AI output's confidence
+        is at or above a configured threshold, the mapper calls this to
+        promote the original PROPOSED trace to ACCEPTED without human review.
+        The review entry records the threshold that was applied and carries
+        ``auto_accepted=True`` so it is auditable as policy-driven rather
+        than human-driven.
+
+        Args:
+            original: The PROPOSED trace being auto-accepted.
+            threshold: The configured threshold that was met.
+
+        Returns:
+            The appended review entry.
+        """
+        rationale = (
+            f"Auto-accepted by confidence gate: "
+            f"confidence {original.confidence:.3f} >= threshold {threshold:.3f} "
+            f"for operation '{original.operation}'."
+        )
+        review_entry = AITrace(
+            operation=original.operation,
+            input_text=original.input_text,
+            prompt=original.prompt,
+            model_id=original.model_id,
+            model_version=original.model_version,
+            raw_output=original.raw_output,
+            confidence=original.confidence,
+            determination=original.determination,
+            control_id=original.control_id,
+            framework=original.framework,
+            status=TraceStatus.ACCEPTED,
+            review_rationale=rationale,
+            parent_trace_id=original.trace_id,
+            auto_accepted=True,
+        )
+        self.append(review_entry)
+        return review_entry
