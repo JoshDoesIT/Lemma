@@ -157,15 +157,21 @@ This release ships the minimum lexicon needed to prove the schema and unblock co
 - **Category consistency is enforced.** Each concrete class pins its `class_uid` via `Literal[...]` and validates that `category_uid` matches the expected category — so a misconfigured connector fails loudly on ingestion instead of silently polluting the graph.
 - **Nested OCSF objects (`Actor`, `Device`, full `Metadata`) are typed as `dict[str, Any]` for now.** Strongly-typed sub-schemas will arrive driven by connector demand rather than speculatively modeled.
 
+### Evidence log and ingestion
+
+Normalized OCSF events land in an append-only log at `.lemma/evidence/YYYY-MM-DD.jsonl`, the same pattern already proven by the AI trace log and policy event log.
+
+Two services drive ingestion:
+
+- **`normalize(payload)`** (`src/lemma/services/ocsf_normalizer.py`) — takes an OCSF-shaped dict and returns the correct concrete model (`ComplianceFinding`, `DetectionFinding`, `AuthenticationEvent`) via a Pydantic discriminated union. Rejects payloads with a missing or unknown `class_uid`, and rejects naive datetimes on `time` since OCSF is UTC on the wire.
+- **`EvidenceLog`** (`src/lemma/services/evidence_log.py`) — `append`, `read_all`, `filter_by_class`, `filter_by_time_range`. Dedupe happens at append time: if the event's `metadata.uid` (or, when absent, a content hash of the model) already appears in today's log file, the second `append` is a no-op and returns `False`. Dedupe scope is intentionally today's file only; cross-midnight duplicates are rare enough not to justify scanning the full log on every write.
+
 ### What's deferred
 
-The following are intentionally out of scope for this release and will arrive with connector work:
-
-- An event normalization / ingestion service.
-- Connector adapters that emit these events.
-- OCSF-to-control mapping logic (belongs in the harmonization/mapping layer).
-- Additional OCSF event classes beyond the three above.
-- Per-class `activity_id` enums.
+- Connector adapters that emit these events (#26 SDK, #27 first-party).
+- Linking evidence to controls in the compliance graph (#88).
+- Additional OCSF event classes and per-class `activity_id` enums (#89).
+- `lemma evidence ingest <file>` CLI for manual / operator ingestion (#91).
 
 ## Project Layout
 
