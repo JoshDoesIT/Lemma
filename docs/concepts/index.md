@@ -171,7 +171,7 @@ Two services drive ingestion:
 - Connector adapters that emit these events (#26 SDK, #27 first-party).
 - Linking evidence to controls in the compliance graph (#88).
 - Additional OCSF event classes and per-class `activity_id` enums (#89).
-- CLI surface (`lemma evidence ingest`) — open an issue first if wanted.
+- `lemma evidence ingest <file>` CLI for manual / operator ingestion (#91).
 
 ## Project Layout
 
