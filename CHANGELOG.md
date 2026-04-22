@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Key lifecycle for evidence signing. Per-producer keys now live under `.lemma/keys/<producer>/<key_id>.*.pem` with a sibling `meta.json` tracking every key the producer has held. Status is one of `ACTIVE`, `RETIRED`, or `REVOKED`. Flat pre-lifecycle layouts are auto-migrated to the versioned layout on first access.
+- `lemma evidence rotate-key --producer <name>` retires the producer's active signing key and generates a fresh one. Pre-rotation entries keep verifying PROVEN under the retired key; new entries use the successor.
+- `lemma evidence revoke-key --producer <name> --key-id <id> --reason <str>` marks a key REVOKED. Verification now returns VIOLATED for entries signed at or after `revoked_at` under a revoked key, and stays PROVEN for signatures made before the revocation.
+- `lemma evidence keys` lists every signing key with its lifecycle state, activation timestamp, retirement/revocation timestamp, and revocation reason.
+- `SignedEvidence` gains a `signed_at` field so key-lifecycle checks can compare the signing timestamp (not `event.time`) against `revoked_at`.
 - Continuous proof chains on the evidence log. Every entry appended to `.lemma/evidence/YYYY-MM-DD.jsonl` is now wrapped in a `SignedEvidence` envelope with an SHA-256 hash chain (`prev_hash` → `entry_hash`) and an Ed25519 signature produced by the signing key for `metadata.product.name`. Per-producer keypairs live under `.lemma/keys/` with `0600` private-key permissions.
 - `lemma evidence verify <entry_hash>` — integrity check returning PROVEN (hash + chain + signature all valid), DEGRADED (hash + chain valid but signer's key unavailable), or VIOLATED (hash or chain broken). Non-zero exit on anything other than PROVEN.
 - `lemma evidence log` — Rich-table timeline showing time, class, producer, entry hash prefix, and per-row integrity state.

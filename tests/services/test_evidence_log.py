@@ -253,6 +253,96 @@ def test_verify_entry_returns_degraded_when_signer_key_unknown(tmp_path: Path):
     assert "key" in result.detail.lower()
 
 
+def test_rotation_leaves_prior_entries_proven(tmp_path: Path):
+    """Pre-rotation entries stay PROVEN after the signing key is rotated."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.crypto import rotate_key
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("rot-before")))
+
+    rotate_key(producer="Lemma", key_dir=tmp_path / ".lemma" / "keys")
+    log.append(normalize(_compliance_payload("rot-after")))
+
+    envelopes = log.read_envelopes()
+    for env in envelopes:
+        result = log.verify_entry(env.entry_hash)
+        assert result.state == EvidenceIntegrityState.PROVEN, (
+            f"expected PROVEN, got {result.state}: {result.detail}"
+        )
+
+
+def test_revocation_violates_entries_signed_at_or_after_revoked_at(tmp_path: Path):
+    """REVOKED signer → VIOLATED for entries signed at/after revoked_at, PROVEN before.
+
+    Models the adversarial scenario the revocation check exists to catch: an
+    attacker with a stolen-but-now-revoked key signs new entries after the
+    revocation timestamp. The honest verifier must refuse those entries even
+    though the signature itself is cryptographically valid.
+    """
+    from datetime import timedelta
+
+    from lemma.models.signed_evidence import EvidenceIntegrityState, SignedEvidence
+    from lemma.services import crypto
+    from lemma.services.evidence_log import (
+        EvidenceLog,
+        _compute_entry_hash,
+    )
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    key_dir = tmp_path / ".lemma" / "keys"
+
+    # A legitimate pre-revoke entry signed by the currently-active key.
+    log.append(normalize(_compliance_payload("pre-revoke")))
+    pre_envelope = log.read_envelopes()[0]
+    active_key_id = pre_envelope.signer_key_id
+
+    # Revoke the signing key.
+    crypto.revoke_key(
+        producer="Lemma",
+        key_id=active_key_id,
+        reason="test: simulated compromise",
+        key_dir=key_dir,
+    )
+
+    # Manually craft a "malicious" post-revocation entry that still uses the
+    # revoked key. This is the whole point of the revocation check — the
+    # signature is cryptographically valid, but policy says ignore it.
+    malicious_event = normalize(_compliance_payload("post-revoke"))
+    prev_hash = pre_envelope.entry_hash
+    entry_hash = _compute_entry_hash(prev_hash, malicious_event)
+    # Use the signing primitive directly with the revoked key's private material.
+    private_key = crypto._load_private_by_key_id("Lemma", active_key_id, key_dir)  # type: ignore[attr-defined]
+    signature = private_key.sign(bytes.fromhex(entry_hash)).hex()
+
+    revoked_record = crypto.read_lifecycle("Lemma", key_dir=key_dir).find(active_key_id)
+    malicious_envelope = SignedEvidence(
+        event=malicious_event,
+        prev_hash=prev_hash,
+        entry_hash=entry_hash,
+        signature=signature,
+        signer_key_id=active_key_id,
+        signed_at=revoked_record.revoked_at + timedelta(milliseconds=1),
+    )
+    log_file = next((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+    with log_file.open("a") as f:
+        f.write(malicious_envelope.model_dump_json() + "\n")
+
+    pre_result = log.verify_entry(pre_envelope.entry_hash)
+    post_result = log.verify_entry(malicious_envelope.entry_hash)
+
+    assert pre_result.state == EvidenceIntegrityState.PROVEN, (
+        f"pre-revoke entry should be PROVEN, got {pre_result.state}: {pre_result.detail}"
+    )
+    assert post_result.state == EvidenceIntegrityState.VIOLATED, (
+        f"post-revoke entry should be VIOLATED, got {post_result.state}: {post_result.detail}"
+    )
+    assert "revoked" in post_result.detail.lower()
+
+
 def test_filter_by_class_and_time_range(tmp_path: Path):
     from lemma.services.evidence_log import EvidenceLog
     from lemma.services.ocsf_normalizer import normalize

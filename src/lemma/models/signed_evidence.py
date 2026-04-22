@@ -85,6 +85,12 @@ class SignedEvidence(BaseModel):
         entry_hash: SHA-256 hex over ``prev_hash || canonical_json(event)``.
         signature: Hex-encoded Ed25519 signature over the entry hash bytes.
         signer_key_id: Stable identifier of the public key used to sign.
+        signed_at: When the envelope was produced. Distinct from
+            ``event.time`` (which is when the thing happened in the
+            outside world). Key-lifecycle verification uses this
+            timestamp — revocation semantics say "signatures made at
+            or after ``revoked_at`` are VIOLATED," and that's about
+            when the signing happened, not when the event did.
         provenance: Transformation chain producing this entry.
     """
 
@@ -93,4 +99,5 @@ class SignedEvidence(BaseModel):
     entry_hash: str
     signature: str
     signer_key_id: str
+    signed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     provenance: list[ProvenanceRecord] = Field(default_factory=list)

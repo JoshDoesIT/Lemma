@@ -78,3 +78,19 @@ def test_provenance_record_has_timestamp_by_default():
     record = ProvenanceRecord(stage="storage", actor="lemma", content_hash="x" * 64)
     assert record.timestamp is not None
     assert record.stage == "storage"
+
+
+def test_signed_evidence_has_signed_at_timestamp():
+    """signed_at records when the envelope was written, distinct from event.time."""
+    from lemma.models.signed_evidence import SignedEvidence
+
+    envelope = SignedEvidence(
+        event=_sample_event(),
+        prev_hash="0" * 64,
+        entry_hash="c" * 64,
+        signature="sig",
+        signer_key_id="ed25519:sample00",
+    )
+    assert envelope.signed_at is not None
+    # Default is UTC-aware
+    assert envelope.signed_at.tzinfo is not None

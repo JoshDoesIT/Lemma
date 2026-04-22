@@ -96,3 +96,97 @@ def test_log_requires_lemma_project(tmp_path: Path, monkeypatch):
 
     result = runner.invoke(app, ["evidence", "log"])
     assert result.exit_code == 1
+
+
+def test_rotate_key_command_retires_active_and_prints_new_id(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.crypto import read_lifecycle
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_signed_entries(tmp_path, count=1)
+
+    result = runner.invoke(app, ["evidence", "rotate-key", "--producer", "Lemma"])
+    assert result.exit_code == 0, result.stdout
+    assert "ed25519:" in result.stdout  # printed new key_id
+    assert "RETIRED" in result.stdout or "rotated" in result.stdout.lower()
+
+    lifecycle = read_lifecycle("Lemma", key_dir=tmp_path / ".lemma" / "keys")
+    statuses = [r.status.value for r in lifecycle.keys]
+    assert statuses.count("ACTIVE") == 1
+    assert statuses.count("RETIRED") == 1
+
+
+def test_rotate_key_requires_lemma_project(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["evidence", "rotate-key", "--producer", "Lemma"])
+    assert result.exit_code == 1
+
+
+def test_revoke_key_requires_reason(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_signed_entries(tmp_path, count=1)
+
+    # Grab the active key_id.
+    from lemma.services.crypto import read_lifecycle
+
+    active_key_id = read_lifecycle("Lemma", key_dir=tmp_path / ".lemma" / "keys").active().key_id
+
+    # Missing --reason should fail with a non-zero exit.
+    result = runner.invoke(
+        app, ["evidence", "revoke-key", "--producer", "Lemma", "--key-id", active_key_id]
+    )
+    assert result.exit_code != 0
+
+
+def test_revoke_key_marks_record_and_prints_confirmation(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.crypto import read_lifecycle
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_signed_entries(tmp_path, count=1)
+
+    active_key_id = read_lifecycle("Lemma", key_dir=tmp_path / ".lemma" / "keys").active().key_id
+
+    result = runner.invoke(
+        app,
+        [
+            "evidence",
+            "revoke-key",
+            "--producer",
+            "Lemma",
+            "--key-id",
+            active_key_id,
+            "--reason",
+            "test compromise",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "REVOKED" in result.stdout
+
+    lifecycle = read_lifecycle("Lemma", key_dir=tmp_path / ".lemma" / "keys")
+    assert lifecycle.find(active_key_id).status.value == "REVOKED"
+
+
+def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.crypto import rotate_key
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_signed_entries(tmp_path, count=1)
+    rotate_key(producer="Lemma", key_dir=tmp_path / ".lemma" / "keys")
+
+    result = runner.invoke(app, ["evidence", "keys"])
+    assert result.exit_code == 0, result.stdout
+    # Both the retired and active key should surface.
+    assert "ACTIVE" in result.stdout
+    assert "RETIRED" in result.stdout
+    assert "Lemma" in result.stdout
