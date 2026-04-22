@@ -345,6 +345,43 @@ lemma graph impact policy:access-control.md
 
 ---
 
+## `lemma connector`
+
+Build, scaffold, and test Lemma evidence connectors. Every connector declares a `ConnectorManifest` (the `producer` is the signing identity) and implements a `collect()` method that yields OCSF events. `Connector.run(evidence_log)` pipes the stream into the signed, hash-chained evidence log from [`lemma evidence`](#lemma-evidence).
+
+### `lemma connector init`
+
+Scaffold a new connector project.
+
+```bash
+lemma connector init <NAME> [--producer <ID>]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `NAME` | Yes | Connector project name (path-safe); creates `./<NAME>/` |
+| `--producer` | No | Signing identity for emitted events. Defaults to the project name. |
+
+The scaffolded project is runnable out of the box — it subclasses the reference JSONL connector and reads from `fixtures/events.jsonl`. Drop a few OCSF events into that file and run `lemma connector test ./<NAME>` to verify.
+
+### `lemma connector test`
+
+Validate a connector project by importing it, running `collect()`, and checking every event against the OCSF schema.
+
+```bash
+lemma connector test <PATH>
+```
+
+Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
+
+**Status — v0 slice (#26):** Python SDK, reference JSONL connector, `init`/`test` CLIs. Deferred to follow-ups:
+- TypeScript SDK → [#108](https://github.com/JoshDoesIT/Lemma/issues/108)
+- `lemma connector publish` → [#109](https://github.com/JoshDoesIT/Lemma/issues/109)
+- Certification workflow → [#110](https://github.com/JoshDoesIT/Lemma/issues/110)
+- Push/pull execution models → [#111](https://github.com/JoshDoesIT/Lemma/issues/111)
+
+---
+
 ## `lemma evidence`
 
 Inspect and verify the append-only, signed, hash-chained evidence log.

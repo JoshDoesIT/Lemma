@@ -17,6 +17,7 @@ Usage:
 import typer
 
 from lemma.commands.ai import ai_app
+from lemma.commands.connector import connector_app
 from lemma.commands.evidence import evidence_app
 from lemma.commands.framework import framework_app
 from lemma.commands.graph import graph_app
@@ -53,6 +54,7 @@ app.add_typer(framework_app, name="framework", help="Manage compliance framework
 app.add_typer(graph_app, name="graph", help="Query the compliance knowledge graph")
 app.add_typer(ai_app, name="ai", help="AI transparency and governance")
 app.add_typer(evidence_app, name="evidence", help="Inspect and verify the evidence log")
+app.add_typer(connector_app, name="connector", help="Build, scaffold, and test connectors")
 
 
 if __name__ == "__main__":
