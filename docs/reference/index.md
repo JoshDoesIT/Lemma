@@ -186,6 +186,10 @@ ai:
 
 Thresholds must be in the range `0.0`–`1.0`. Operations without a configured threshold are never auto-accepted. Review-status transitions (including auto-accepts) are visible via `lemma ai audit --status ACCEPTED`.
 
+#### Policy event audit trail
+
+Every time `lemma map` loads the automation config, it diffs the current thresholds against the last recorded state and appends any changes as policy events to `.lemma/policy-events/YYYY-MM-DD.jsonl`. Events carry one of three types — `threshold_set`, `threshold_changed`, or `threshold_removed` — plus the previous and new values, the operation affected, and the config file path that triggered the change. The log is append-only so the history of governance changes is independently auditable from AI decision traces.
+
 ---
 
 ## `lemma harmonize`

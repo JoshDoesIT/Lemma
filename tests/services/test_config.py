@@ -79,3 +79,93 @@ class TestLoadAutomationConfig:
 
         with pytest.raises(ValueError, match=r"between 0\.0 and 1\.0"):
             load_automation_config(config_file)
+
+
+class TestRecordThresholdChanges:
+    """Tests for the automation-config → policy-event diff function."""
+
+    def test_first_configured_threshold_emits_threshold_set(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        emitted = record_threshold_changes(AutomationConfig(thresholds={"map": 0.85}), log)
+
+        assert len(emitted) == 1
+        event = emitted[0]
+        assert event.event_type.value == "threshold_set"
+        assert event.operation == "map"
+        assert event.previous_value is None
+        assert event.new_value == 0.85
+        assert log.latest_threshold("map") == 0.85
+
+    def test_unchanged_threshold_emits_nothing(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        record_threshold_changes(AutomationConfig(thresholds={"map": 0.85}), log)
+        emitted = record_threshold_changes(AutomationConfig(thresholds={"map": 0.85}), log)
+
+        assert emitted == []
+        assert len(log.read_all()) == 1
+
+    def test_changed_threshold_emits_threshold_changed(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        record_threshold_changes(AutomationConfig(thresholds={"map": 0.85}), log)
+        emitted = record_threshold_changes(AutomationConfig(thresholds={"map": 0.95}), log)
+
+        assert len(emitted) == 1
+        event = emitted[0]
+        assert event.event_type.value == "threshold_changed"
+        assert event.operation == "map"
+        assert event.previous_value == 0.85
+        assert event.new_value == 0.95
+
+    def test_removed_threshold_emits_threshold_removed(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        record_threshold_changes(AutomationConfig(thresholds={"map": 0.85}), log)
+        emitted = record_threshold_changes(AutomationConfig(), log)
+
+        assert len(emitted) == 1
+        event = emitted[0]
+        assert event.event_type.value == "threshold_removed"
+        assert event.operation == "map"
+        assert event.previous_value == 0.85
+        assert event.new_value is None
+
+    def test_source_is_recorded_on_emitted_events(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        emitted = record_threshold_changes(
+            AutomationConfig(thresholds={"map": 0.85}),
+            log,
+            source="lemma.config.yaml",
+        )
+        assert emitted[0].source == "lemma.config.yaml"
+
+    def test_multiple_ops_diffed_independently(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig, record_threshold_changes
+        from lemma.services.policy_log import PolicyEventLog
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        record_threshold_changes(
+            AutomationConfig(thresholds={"map": 0.80, "harmonize": 0.90}),
+            log,
+        )
+        emitted = record_threshold_changes(
+            AutomationConfig(thresholds={"map": 0.85, "harmonize": 0.90}),
+            log,
+        )
+
+        assert len(emitted) == 1
+        assert emitted[0].operation == "map"
+        assert emitted[0].event_type.value == "threshold_changed"

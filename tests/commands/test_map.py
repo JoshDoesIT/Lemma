@@ -123,3 +123,61 @@ class TestMapCommand:
             )
         assert result.exit_code == 0
         assert "ac-2" in result.stdout or "nist-800-53" in result.stdout
+
+    def test_map_records_policy_event_when_threshold_changes(self, tmp_path, monkeypatch):
+        """Editing ai.automation.thresholds between runs emits a policy event."""
+        from lemma.cli import app
+        from lemma.services.indexer import ControlIndexer
+        from lemma.services.policy_log import PolicyEventLog
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({"confidence": 0.85, "rationale": "Match."})
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["init"])
+
+        Path("policies/access.md").write_text("# Access Control\n\nAll users use MFA.\n")
+
+        index_dir = (tmp_path / ".lemma" / "index").resolve()
+        indexer = ControlIndexer(index_dir=index_dir)
+        indexer.index_controls(
+            "nist-800-53",
+            [
+                {
+                    "id": "ac-2",
+                    "title": "Account Management",
+                    "prose": "Manage system accounts.",
+                    "family": "AC",
+                },
+            ],
+        )
+        del indexer
+
+        config_path = Path("lemma.config.yaml")
+
+        def _run_with_threshold(threshold: float) -> None:
+            config_path.write_text(
+                "ai:\n"
+                "  provider: ollama\n"
+                "  model: llama3.2\n"
+                "  temperature: 0.1\n"
+                "  automation:\n"
+                "    thresholds:\n"
+                f"      map: {threshold}\n"
+                "frameworks: []\n"
+                "connectors: []\n"
+            )
+            with patch("lemma.commands.map.get_llm_client", return_value=mock_llm):
+                runner.invoke(app, ["map", "--framework", "nist-800-53"])
+
+        _run_with_threshold(0.80)
+        _run_with_threshold(0.95)
+
+        log = PolicyEventLog(log_dir=tmp_path / ".lemma" / "policy-events")
+        events = log.read_all()
+        assert len(events) == 2
+        assert events[0].event_type.value == "threshold_set"
+        assert events[0].new_value == 0.80
+        assert events[1].event_type.value == "threshold_changed"
+        assert events[1].previous_value == 0.80
+        assert events[1].new_value == 0.95
