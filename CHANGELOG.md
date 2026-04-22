@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `lemma harmonize` now records every cross-framework equivalence decision as an `AITrace` with `operation="harmonize"`, honors `ai.automation.thresholds.harmonize` for confidence-gated auto-accept, and persists the result as an OSCAL Profile at `.lemma/harmonization.oscal.json`. The Profile imports each source catalog and encodes clusters as back-matter resources with `lemma:harmonized-cluster` properties and `rlinks` to member controls.
+- `related_control_id` and `related_framework` fields on `AITrace` to carry pair-event endpoints. Map traces (single-control) default them to empty strings; harmonize traces populate both sides with a deterministic primary/secondary ordering so each equivalence is one trace.
+- `lemma ai audit --operation <op>` filter for querying traces by operation type (e.g., `harmonize`, `map`).
 - Auditor-facing documentation: "How Lemma's AI Works" (`docs/concepts/ai.md`) walking through framework indexing, mapping, harmonization, the PROPOSED→ACCEPTED/REJECTED lifecycle, and confidence-gated automation; a Graph Query Cookbook with 10 worked examples (`docs/guides/graph-queries.md`); a static AI System Card page (`docs/reference/ai-system-card.md`) surfacing the model registry in the published docs.
 - End-to-end integration tests covering the full Phase 2 CLI pipeline: cross-artifact consistency between the compliance graph, the AI trace log, and the audit CLI; graph integrity (no orphaned policies, no phantom edges); auto-accept behavior wired through config; policy-event emission on threshold changes between `lemma map` runs.
 - Shared `lemma_project` pytest fixture (`tests/conftest.py`) that lands an initialized project with `nist-csf-2.0` indexed, for use by integration tests and future PRs.

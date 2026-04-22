@@ -14,14 +14,21 @@ from lemma.models.harmonization import (
     HarmonizationReport,
     SourceControl,
 )
+from lemma.models.trace import AITrace
+from lemma.services.config import AutomationConfig
 from lemma.services.indexer import ControlIndexer
+from lemma.services.trace_log import TraceLog
 from lemma.services.union_find import UnionFind
+
+_EMBED_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def harmonize_frameworks(
     *,
     indexer: ControlIndexer,
     threshold: float = 0.85,
+    trace_log: TraceLog | None = None,
+    automation: AutomationConfig | None = None,
 ) -> HarmonizationReport:
     """Harmonize all indexed frameworks via semantic clustering.
 
@@ -34,6 +41,12 @@ def harmonize_frameworks(
     Args:
         indexer: ControlIndexer with indexed frameworks.
         threshold: Cosine similarity threshold for merging (0.0-1.0).
+        trace_log: Optional append-only trace log. When provided, every
+            equivalence decision at or above the clustering threshold is
+            recorded as an ``AITrace`` with ``operation="harmonize"``.
+        automation: Optional confidence-gated automation config. When a
+            threshold is configured for the ``harmonize`` operation,
+            equivalences at or above that threshold are auto-accepted.
 
     Returns:
         HarmonizationReport with clusters and metadata.
@@ -69,6 +82,9 @@ def harmonize_frameworks(
     # Step 2: Pairwise cosine similarity across different frameworks
     uf = UnionFind()
     keys = sorted(all_controls.keys())
+    auto_accept_threshold = (
+        automation.threshold_for("harmonize") if automation is not None else None
+    )
 
     for i in range(len(keys)):
         for j in range(i + 1, len(keys)):
@@ -87,6 +103,11 @@ def harmonize_frameworks(
             similarity = _cosine_similarity(emb_a, emb_b)
             if similarity >= threshold:
                 uf.union(keys[i], keys[j])
+                if trace_log is not None:
+                    trace = _build_harmonize_trace(ctrl_a, ctrl_b, similarity)
+                    trace_log.append(trace)
+                    if auto_accept_threshold is not None and similarity >= auto_accept_threshold:
+                        trace_log.auto_accept(trace, threshold=auto_accept_threshold)
 
     # Step 3: Build clusters
     groups = uf.clusters(keys)
@@ -126,6 +147,34 @@ def harmonize_frameworks(
         frameworks=sorted(framework_names),
         clusters=clusters,
         threshold=threshold,
+    )
+
+
+def _build_harmonize_trace(ctrl_a: dict, ctrl_b: dict, similarity: float) -> AITrace:
+    """Construct a harmonize trace with the pair ordered deterministically.
+
+    The lexicographically smaller ``(framework, control_id)`` tuple becomes
+    the primary side so downstream filters (``lemma ai audit``) don't see
+    two traces for the same equivalence.
+    """
+    pair_a = (ctrl_a["framework"], ctrl_a["control_id"])
+    pair_b = (ctrl_b["framework"], ctrl_b["control_id"])
+    primary, secondary = sorted([pair_a, pair_b])
+    primary_ctrl = ctrl_a if pair_a == primary else ctrl_b
+
+    return AITrace(
+        operation="harmonize",
+        input_text=primary_ctrl["document"][:500],
+        prompt="",
+        model_id=_EMBED_MODEL_ID,
+        model_version="",
+        raw_output="",
+        confidence=similarity,
+        determination="HARMONIZED",
+        control_id=primary[1],
+        framework=primary[0],
+        related_control_id=secondary[1],
+        related_framework=secondary[0],
     )
 
 

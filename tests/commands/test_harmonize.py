@@ -5,9 +5,36 @@ Follows TDD: tests written BEFORE implementation.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+def test_harmonize_persists_oscal_profile_to_disk(lemma_project: Path, monkeypatch):
+    """`lemma harmonize` writes an OSCAL Profile to .lemma/harmonization.oscal.json."""
+    from lemma.cli import app
+    from lemma.models.oscal import Profile
+    from lemma.services.framework import add_bundled_framework
+
+    monkeypatch.chdir(lemma_project)
+    # lemma_project indexes nist-csf-2.0; add nist-800-171 to get two frameworks
+    add_bundled_framework(name="nist-800-171", project_dir=lemma_project)
+
+    result = runner.invoke(app, ["harmonize", "--threshold", "0.5"])
+    assert result.exit_code == 0, result.stdout
+
+    profile_path = lemma_project / ".lemma" / "harmonization.oscal.json"
+    assert profile_path.is_file(), "Profile was not written"
+
+    payload = json.loads(profile_path.read_text())
+    # OSCAL kebab-case on the wire
+    assert "back-matter" in payload
+    # Round-trips as a valid Profile
+    profile = Profile.model_validate_json(profile_path.read_text())
+    assert len(profile.imports) == 2
 
 
 class TestHarmonizeCommand:

@@ -5,6 +5,8 @@ Follows TDD: tests written BEFORE implementation.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from lemma.services.indexer import ControlIndexer
@@ -184,3 +186,129 @@ class TestHarmonizer:
             if "a-1" in ctrl_ids and "b-1" in ctrl_ids:
                 assert len(cluster.primary_description) >= len(long_prose)
                 break
+
+
+class TestHarmonizerTraceIntegration:
+    """Trace emission for cross-framework equivalence decisions."""
+
+    def _setup_cross_framework_indexer(self, tmp_path: Path) -> ControlIndexer:
+        indexer = ControlIndexer(index_dir=tmp_path / "index")
+        indexer.index_controls(
+            "framework-a",
+            [
+                {
+                    "id": "a-1",
+                    "title": "Account Management",
+                    "prose": "The organization manages information system accounts.",
+                    "family": "AC",
+                }
+            ],
+        )
+        indexer.index_controls(
+            "framework-b",
+            [
+                {
+                    "id": "b-1",
+                    "title": "User Account Administration",
+                    "prose": "The organization administers user accounts for information systems.",
+                    "family": "AC",
+                }
+            ],
+        )
+        return indexer
+
+    def test_harmonize_emits_one_trace_per_equivalence(self, tmp_path: Path):
+        from lemma.services.harmonizer import harmonize_frameworks
+        from lemma.services.trace_log import TraceLog
+
+        indexer = self._setup_cross_framework_indexer(tmp_path)
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        harmonize_frameworks(indexer=indexer, threshold=0.5, trace_log=trace_log)
+
+        traces = trace_log.read_all()
+        harmonize_traces = [t for t in traces if t.operation == "harmonize"]
+        assert harmonize_traces, "expected at least one harmonize trace"
+
+        t = harmonize_traces[0]
+        assert t.confidence > 0.5  # similarity met threshold
+        assert t.determination == "HARMONIZED"
+        assert t.model_id == "sentence-transformers/all-MiniLM-L6-v2"
+        # pair fields populated on both sides
+        assert t.control_id and t.framework
+        assert t.related_control_id and t.related_framework
+        assert (t.framework, t.control_id) != (t.related_framework, t.related_control_id)
+
+    def test_harmonize_trace_pair_is_deterministically_ordered(self, tmp_path: Path):
+        """Primary side of the pair is the lexicographically smaller (framework, control)."""
+        from lemma.services.harmonizer import harmonize_frameworks
+        from lemma.services.trace_log import TraceLog
+
+        indexer = self._setup_cross_framework_indexer(tmp_path)
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        harmonize_frameworks(indexer=indexer, threshold=0.5, trace_log=trace_log)
+
+        harmonize_traces = [t for t in trace_log.read_all() if t.operation == "harmonize"]
+        for t in harmonize_traces:
+            primary = (t.framework, t.control_id)
+            secondary = (t.related_framework, t.related_control_id)
+            assert primary < secondary, (
+                f"trace pair not ordered: primary={primary}, secondary={secondary}"
+            )
+
+    def test_harmonize_without_trace_log_still_works(self, tmp_path: Path):
+        """trace_log is optional — omitting it preserves prior behavior."""
+        from lemma.services.harmonizer import harmonize_frameworks
+
+        indexer = self._setup_cross_framework_indexer(tmp_path)
+
+        report = harmonize_frameworks(indexer=indexer, threshold=0.5)
+        # Still produces a real report without crashing
+        assert report.cluster_count >= 1
+
+    def test_auto_accept_gate_promotes_high_similarity_equivalences(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig
+        from lemma.services.harmonizer import harmonize_frameworks
+        from lemma.services.trace_log import TraceLog
+
+        indexer = self._setup_cross_framework_indexer(tmp_path)
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        harmonize_frameworks(
+            indexer=indexer,
+            threshold=0.5,
+            trace_log=trace_log,
+            automation=AutomationConfig(thresholds={"harmonize": 0.6}),
+        )
+
+        traces = trace_log.read_all()
+        accepted = [
+            t for t in traces if t.operation == "harmonize" and t.status.value == "ACCEPTED"
+        ]
+        assert accepted, "expected auto-accepted harmonize trace when similarity >= 0.6"
+        for t in accepted:
+            assert t.auto_accepted is True
+            assert t.parent_trace_id  # links to PROPOSED entry
+            assert t.related_control_id  # pair fields preserved on the review entry
+
+    def test_auto_accept_skipped_when_below_operation_threshold(self, tmp_path: Path):
+        from lemma.services.config import AutomationConfig
+        from lemma.services.harmonizer import harmonize_frameworks
+        from lemma.services.trace_log import TraceLog
+
+        indexer = self._setup_cross_framework_indexer(tmp_path)
+        trace_log = TraceLog(log_dir=tmp_path / ".lemma" / "traces")
+
+        harmonize_frameworks(
+            indexer=indexer,
+            threshold=0.5,
+            trace_log=trace_log,
+            automation=AutomationConfig(thresholds={"harmonize": 0.99}),
+        )
+
+        traces = trace_log.read_all()
+        accepted = [
+            t for t in traces if t.operation == "harmonize" and t.status.value == "ACCEPTED"
+        ]
+        assert accepted == []

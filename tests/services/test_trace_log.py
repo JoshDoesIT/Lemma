@@ -55,6 +55,47 @@ class TestAITraceModel:
 
         assert trace.status == TraceStatus.PROPOSED
 
+    def test_pair_event_fields_default_empty_and_round_trip(self):
+        """AITrace carries optional related_* fields for pair events like harmonize."""
+        trace = AITrace(
+            operation="harmonize",
+            input_text="",
+            prompt="",
+            model_id="sentence-transformers/all-MiniLM-L6-v2",
+            model_version="",
+            raw_output="",
+            confidence=0.92,
+            determination="HARMONIZED",
+            control_id="ac-7",
+            framework="nist-800-53",
+            related_control_id="pr.aa-07",
+            related_framework="nist-csf-2.0",
+        )
+
+        assert trace.related_control_id == "pr.aa-07"
+        assert trace.related_framework == "nist-csf-2.0"
+
+        data = json.loads(trace.model_dump_json())
+        assert data["related_control_id"] == "pr.aa-07"
+        assert data["related_framework"] == "nist-csf-2.0"
+
+    def test_pair_event_fields_default_to_empty_strings(self):
+        """Map traces (non-pair) default related_* fields to empty strings."""
+        trace = AITrace(
+            operation="map",
+            input_text="text",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.8,
+            determination="MAPPED",
+            control_id="c-1",
+            framework="fw",
+        )
+        assert trace.related_control_id == ""
+        assert trace.related_framework == ""
+
     def test_trace_serializes_to_json(self):
         """AITrace can be serialized to JSON."""
         trace = AITrace(

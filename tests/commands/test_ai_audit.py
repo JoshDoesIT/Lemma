@@ -63,10 +63,61 @@ def _seed_traces(project_dir: Path) -> list[AITrace]:
         ),
     ]
 
+    # Add one harmonize trace for operation-filter tests.
+    traces.append(
+        AITrace(
+            operation="harmonize",
+            input_text="",
+            prompt="",
+            model_id="sentence-transformers/all-MiniLM-L6-v2",
+            model_version="",
+            raw_output="",
+            confidence=0.92,
+            determination="HARMONIZED",
+            control_id="3.1.1",
+            framework="nist-800-171",
+            related_control_id="pr.aa-1",
+            related_framework="nist-csf-2.0",
+        )
+    )
+
     for trace in traces:
         trace_log.append(trace)
 
     return traces
+
+
+class TestAuditOperationFilter:
+    """Tests for `lemma ai audit --operation`."""
+
+    def test_filter_by_operation_harmonize(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_traces(tmp_path)
+
+        result = runner.invoke(app, ["ai", "audit", "--operation", "harmonize", "--format", "json"])
+        assert result.exit_code == 0, result.stdout
+
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["operation"] == "harmonize"
+        assert data[0]["related_control_id"] == "pr.aa-1"
+
+    def test_filter_by_operation_map(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_traces(tmp_path)
+
+        result = runner.invoke(app, ["ai", "audit", "--operation", "map", "--format", "json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.stdout)
+        assert all(t["operation"] == "map" for t in data)
+        assert len(data) == 3
 
 
 class TestAuditCommand:
@@ -146,7 +197,8 @@ class TestAuditCommand:
 
         data = json.loads(result.stdout)
         assert isinstance(data, list)
-        assert len(data) == 3
+        # 3 map traces + 1 harmonize trace from the shared seed helper
+        assert len(data) == 4
         assert data[0]["control_id"] == "ac-7"
 
     def test_audit_empty_log(self, tmp_path: Path, monkeypatch):
