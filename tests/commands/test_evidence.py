@@ -255,3 +255,184 @@ def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch)
     assert "ACTIVE" in result.stdout
     assert "RETIRED" in result.stdout
     assert "Lemma" in result.stdout
+
+
+# --- `lemma evidence ingest` ---
+
+
+import json  # noqa: E402
+
+
+def _write_json(path: Path, payload: dict) -> Path:
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _write_jsonl(path: Path, payloads: list[dict]) -> Path:
+    path.write_text("\n".join(json.dumps(p) for p in payloads) + "\n")
+    return path
+
+
+def test_ingest_requires_lemma_project(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    file = _write_json(tmp_path / "evt.json", _compliance_payload("i-0"))
+
+    result = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert result.exit_code == 1
+    stdout = result.stdout.lower()
+    assert "not a lemma project" in stdout or "lemma init" in stdout
+
+
+def test_ingest_rejects_unknown_extension_and_names_file(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    bad = tmp_path / "evt.txt"
+    bad.write_text(json.dumps(_compliance_payload("i-0")))
+
+    result = runner.invoke(app, ["evidence", "ingest", str(bad)])
+    assert result.exit_code != 0
+    assert "evt.txt" in result.stdout
+    # Accepted extensions should be named in the error.
+    assert ".json" in result.stdout and ".jsonl" in result.stdout
+
+
+def test_ingest_malformed_json_names_file(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    bad = _write_json(tmp_path / "bad.json", {"class_uid": 9999, "time": "bogus"})
+
+    result = runner.invoke(app, ["evidence", "ingest", str(bad)])
+    assert result.exit_code != 0
+    assert "bad.json" in result.stdout
+
+
+def test_ingest_malformed_jsonl_names_line(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    payloads_file = tmp_path / "mixed.jsonl"
+    good = _compliance_payload("i-good-1")
+    good2 = _compliance_payload("i-good-2")
+    bad = {"class_uid": 9999, "time": "bogus"}
+    payloads_file.write_text(
+        json.dumps(good) + "\n" + json.dumps(good2) + "\n" + json.dumps(bad) + "\n"
+    )
+
+    result = runner.invoke(app, ["evidence", "ingest", str(payloads_file)])
+    assert result.exit_code != 0
+    assert "mixed.jsonl" in result.stdout
+    # Line 3 is where the bad record lives.
+    assert ":3" in result.stdout or "line 3" in result.stdout.lower()
+    # Atomicity: nothing should have been written.
+    from lemma.services.evidence_log import EvidenceLog
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert log.read_envelopes() == []
+
+
+def test_ingest_single_json_appends_one_envelope(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    file = _write_json(tmp_path / "evt.json", _compliance_payload("single-1"))
+
+    result = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert result.exit_code == 0, result.stdout
+    assert "1 ingested" in result.stdout
+    assert "0 skipped" in result.stdout
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 1
+
+
+def test_ingest_jsonl_appends_every_record(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    file = _write_jsonl(
+        tmp_path / "batch.jsonl",
+        [_compliance_payload(f"batch-{i}") for i in range(3)],
+    )
+
+    result = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert result.exit_code == 0, result.stdout
+    assert "3 ingested" in result.stdout
+    assert "0 skipped" in result.stdout
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 3
+
+
+def test_ingest_second_run_reports_dedupe(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    file = _write_jsonl(
+        tmp_path / "batch.jsonl",
+        [_compliance_payload(f"rep-{i}") for i in range(3)],
+    )
+
+    first = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert first.exit_code == 0
+
+    second = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert second.exit_code == 0, second.stdout
+    assert "0 ingested" in second.stdout
+    assert "3 skipped" in second.stdout
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 3  # unchanged
+
+
+def test_ingest_dry_run_writes_nothing(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    file = _write_jsonl(
+        tmp_path / "preview.jsonl",
+        [_compliance_payload(f"dr-{i}") for i in range(2)],
+    )
+
+    result = runner.invoke(app, ["evidence", "ingest", str(file), "--dry-run"])
+    assert result.exit_code == 0, result.stdout
+    assert "dry run" in result.stdout.lower()
+    assert "2 valid" in result.stdout
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert log.read_envelopes() == []
+
+
+def test_ingest_stdin_reads_jsonl(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    stdin_text = (
+        json.dumps(_compliance_payload("stdin-0"))
+        + "\n"
+        + json.dumps(_compliance_payload("stdin-1"))
+        + "\n"
+    )
+
+    result = runner.invoke(app, ["evidence", "ingest", "-"], input=stdin_text)
+    assert result.exit_code == 0, result.stdout
+    assert "2 ingested" in result.stdout
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 2

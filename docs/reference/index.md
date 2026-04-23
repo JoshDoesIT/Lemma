@@ -450,6 +450,39 @@ List every signing key on file with its lifecycle state, activation timestamp, r
 lemma evidence keys
 ```
 
+### `lemma evidence ingest`
+
+Read OCSF events from a file (or stdin) and append them to the signed evidence log. Intended for sandbox testing and one-off operator loads when no connector is in place.
+
+```bash
+lemma evidence ingest <FILE> [--dry-run]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `FILE` | Yes | Path to a `.json` (single OCSF payload) or `.jsonl` (newline-delimited OCSF payloads). Use `-` to read JSONL from stdin. |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dry-run` | off | Validate every record without writing to the evidence log. |
+
+**Format detection.** The extension decides: `.json` is a single payload, `.jsonl` is newline-delimited. Stdin (`-`) is always JSONL. Any other extension is rejected with an error naming the accepted ones — no content sniffing.
+
+**Atomicity.** The run is all-or-nothing. Every record is validated against the OCSF normalizer before the first `append()`, so a malformed record anywhere in a JSONL file means nothing is written. The error message names the file, and for JSONL the line number, so the fix is obvious. Re-run once the file is clean; dedupe guarantees already-ingested records won't duplicate.
+
+**Summary output.** On success, a single line: `N ingested, M skipped (duplicate).` — the skip count comes from the evidence log's existing `metadata.uid`-keyed dedupe guard. `--dry-run` instead prints `N valid (dry run — nothing written).`
+
+**Example:**
+
+```bash
+lemma init sandbox && cd sandbox
+echo '{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-04-23T12:00:00+00:00","metadata":{"version":"1.3.0","product":{"name":"Manual"},"uid":"smoke-1"}}' > smoke.jsonl
+lemma evidence ingest smoke.jsonl
+# 1 ingested, 0 skipped (duplicate).
+lemma evidence ingest smoke.jsonl
+# 0 ingested, 1 skipped (duplicate).
+```
+
 ### `lemma evidence collect`
 
 Run a first-party connector and append its OCSF output to the signed evidence log. Each event is normalized, deduped on `metadata.uid`, and wrapped in a `SignedEvidence` envelope hash-chained to the prior entry.
