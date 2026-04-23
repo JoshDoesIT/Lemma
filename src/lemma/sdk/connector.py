@@ -24,6 +24,7 @@ from lemma.models.connector_manifest import ConnectorManifest
 from lemma.models.ocsf import OcsfBaseEvent
 from lemma.models.signed_evidence import ProvenanceRecord
 from lemma.services.evidence_log import EvidenceLog
+from lemma.services.ocsf_normalizer import NORMALIZER_VERSION
 
 CONNECTOR_SDK_VERSION = "lemma.sdk.connector/1"
 
@@ -79,12 +80,22 @@ class Connector(ABC):
         skipped = 0
         actor = f"{self.manifest.producer}/{self.manifest.version}"
         for event in self.collect():
+            event_hash = hashlib.sha256(event.model_dump_json().encode()).hexdigest()
             source = ProvenanceRecord(
                 stage="source",
                 actor=actor,
-                content_hash=hashlib.sha256(event.model_dump_json().encode()).hexdigest(),
+                content_hash=event_hash,
             )
-            wrote = evidence_log.append(event, provenance=[source])
+            # Connectors construct typed events directly via the OCSF Pydantic
+            # models — validation has already happened by the time we get here.
+            # Stamp a normalization record with the typed-event hash so the
+            # chain stays three-deep for connector-produced evidence too.
+            normalization = ProvenanceRecord(
+                stage="normalization",
+                actor=NORMALIZER_VERSION,
+                content_hash=event_hash,
+            )
+            wrote = evidence_log.append(event, provenance=[source, normalization])
             if wrote:
                 ingested += 1
             else:

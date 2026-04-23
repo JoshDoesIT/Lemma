@@ -119,7 +119,11 @@ def test_connector_run_stamps_source_provenance(tmp_path: Path):
 
     env = evidence_log.read_envelopes()[0]
     stages = [r.stage for r in env.provenance]
-    assert stages == ["source", "storage"]
+    assert stages == ["source", "normalization", "storage"]
     source = env.provenance[0]
     assert source.actor == "ToyProducer/2.3.4"
     assert len(source.content_hash) == 64  # sha256 hex
+    # Normalization record stamps the typed-event hash under the normalizer version.
+    norm = env.provenance[1]
+    assert norm.actor == "lemma.ocsf_normalizer/1"
+    assert norm.content_hash == source.content_hash
