@@ -31,6 +31,7 @@ from lemma.commands.harmonize import (
 from lemma.commands.init import init_command
 from lemma.commands.map import map_command
 from lemma.commands.query import query_command
+from lemma.commands.scope import scope_app
 from lemma.commands.status import status_command
 from lemma.commands.validate import validate_command
 
@@ -59,6 +60,7 @@ app.add_typer(graph_app, name="graph", help="Query the compliance knowledge grap
 app.add_typer(ai_app, name="ai", help="AI transparency and governance")
 app.add_typer(evidence_app, name="evidence", help="Inspect and verify the evidence log")
 app.add_typer(connector_app, name="connector", help="Build, scaffold, and test connectors")
+app.add_typer(scope_app, name="scope", help="Manage scope-as-code definitions")
 
 
 if __name__ == "__main__":

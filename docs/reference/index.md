@@ -559,6 +559,59 @@ lemma check --format json | jq '.failed'      # machine-readable for CI
 
 ---
 
+## `lemma scope`
+
+Scope-as-code — declare which compliance frameworks apply to which slice of your infrastructure, and validate the declaration with a strict schema before it ever reaches an auditor.
+
+This is the v0 slice of the [Living Scope Engine](https://github.com/JoshDoesIT/Lemma/issues/24). Auto-discovery (AWS, Azure, GCP, K8s, Terraform, vSphere, Ansible, CMDB), the scope ring model, cross-scope evidence reuse, `lemma scope impact --plan`, and `lemma scope visualize` remain open tasks inside that issue.
+
+### `lemma scope init`
+
+Scaffold a starter scope-as-code YAML file at `scopes/<name>.yaml`. Refuses to overwrite an existing file — operators delete it manually if they want to regenerate.
+
+```bash
+lemma scope init [--name <NAME>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--name` | `default` | Writes `scopes/<NAME>.yaml` |
+
+### `lemma scope status`
+
+Parse every `scopes/*.yaml` and `scopes/*.yml` file, validate it against the schema, and render a table of declared scopes. Exit code is `0` on success or empty state; `1` if any file has a parse or schema error.
+
+```bash
+lemma scope status
+```
+
+Error output is line-aware: a YAML syntax mistake or a schema violation is reported as `<file>:<line>:<col>: <reason>` so the operator can jump straight to the offending record. When multiple files have errors, all errors are reported in one pass.
+
+### Scope-as-code schema
+
+```yaml
+name: prod-us-east                      # required; unique scope identifier
+frameworks:                             # required; non-empty list of framework IDs
+  - nist-800-53
+  - nist-csf-2.0
+justification: >-                       # optional; free-text audit rationale
+  Customer-facing production environment subject to contractual
+  obligations with our enterprise customers.
+match_rules:                            # optional; rules selecting in-scope resources
+  - source: aws.tags.Environment
+    operator: equals                    # equals | contains | in | matches
+    value: prod
+  - source: aws.region
+    operator: in
+    value:
+      - us-east-1
+      - us-east-2
+```
+
+Unknown top-level fields are rejected — a typo such as `match_rule` (singular) fails with a line-numbered error rather than being silently dropped.
+
+---
+
 ## `lemma ai`
 
 AI transparency and governance commands.
