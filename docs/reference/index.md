@@ -406,6 +406,19 @@ The verdict is one of:
 
 Exit code is `0` only on PROVEN; anything else exits `1` so scripts can fail-fast.
 
+**Provenance chain.** When the state is PROVEN or DEGRADED, verify prints the full transformation chain attached to the envelope — one indented line per stage, with timestamp, actor, and truncated content hash. A typical ingested record's chain:
+
+```
+PROVEN  a1b2c3d4e5f60718…
+  Hash, chain, and signature all valid for producer 'Lemma'.
+  Provenance chain:
+    source (2026-04-23T12:00:00Z) actor: ingest-cli:batch.jsonl  hash: 9a1e4c5b2f01…
+    normalization (2026-04-23T12:00:00Z) actor: lemma.ocsf_normalizer/1  hash: e78d12ab4c5f…
+    storage (2026-04-23T12:00:00Z) actor: lemma.services.evidence_log  hash: a1b2c3d4e5f6…
+```
+
+The source and normalization records are part of the signed hash — tampering with any of them breaks verification the same way tampering with the event body does. The storage record carries the entry hash as its `content_hash` and is appended last so the chain always terminates at this log.
+
 ### `lemma evidence log`
 
 Show every entry in the evidence log with its per-entry integrity state.

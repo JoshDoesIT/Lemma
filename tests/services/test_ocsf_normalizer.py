@@ -81,3 +81,36 @@ def test_normalize_rejects_naive_time():
 
     with pytest.raises(ValueError, match=r"time.*tzinfo|tzinfo.*time|timezone"):
         normalize(payload)
+
+
+class TestNormalizeWithProvenance:
+    def test_returns_event_and_normalization_record(self):
+        import hashlib
+        import json
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.services.ocsf_normalizer import NORMALIZER_VERSION, normalize_with_provenance
+
+        payload = _base_payload(2003, "Compliance Finding", 2000, "Findings")
+
+        event, record = normalize_with_provenance(payload)
+
+        assert isinstance(event, ComplianceFinding)
+        assert record.stage == "normalization"
+        assert record.actor == NORMALIZER_VERSION
+
+        expected_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert record.content_hash == expected_hash
+
+    def test_propagates_validation_errors(self):
+        import pytest
+
+        from lemma.services.ocsf_normalizer import normalize_with_provenance
+
+        payload = _base_payload(2003, "Compliance Finding", 2000, "Findings")
+        del payload["class_uid"]
+
+        with pytest.raises(ValueError, match="class_uid"):
+            normalize_with_provenance(payload)

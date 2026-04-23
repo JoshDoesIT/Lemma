@@ -100,3 +100,26 @@ def test_connector_run_counts_duplicates_as_skipped(tmp_path: Path):
 
     assert result.ingested == 1
     assert result.skipped_duplicates == 1
+
+
+def test_connector_run_stamps_source_provenance(tmp_path: Path):
+    """Each envelope gets a source record whose actor names producer/version."""
+    from lemma.models.connector_manifest import ConnectorManifest
+    from lemma.sdk.connector import Connector
+    from lemma.services.evidence_log import EvidenceLog
+
+    class Toy(Connector):
+        manifest = ConnectorManifest(name="toy", version="2.3.4", producer="ToyProducer")
+
+        def collect(self) -> Iterable:
+            yield _sample_event("prov-1")
+
+    evidence_log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    Toy().run(evidence_log)
+
+    env = evidence_log.read_envelopes()[0]
+    stages = [r.stage for r in env.provenance]
+    assert stages == ["source", "storage"]
+    source = env.provenance[0]
+    assert source.actor == "ToyProducer/2.3.4"
+    assert len(source.content_hash) == 64  # sha256 hex

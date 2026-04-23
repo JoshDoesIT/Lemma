@@ -8,6 +8,7 @@ Sub-commands:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -17,11 +18,11 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.models.ocsf import OcsfBaseEvent
-from lemma.models.signed_evidence import EvidenceIntegrityState
+from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecord
 from lemma.sdk.connector import Connector
 from lemma.services import crypto
 from lemma.services.evidence_log import EvidenceLog
-from lemma.services.ocsf_normalizer import normalize
+from lemma.services.ocsf_normalizer import normalize_with_provenance
 
 console = Console()
 
@@ -73,6 +74,19 @@ def verify_command(
     result = log.verify_entry(entry_hash)
     console.print(f"{_state_style(result.state)}  {entry_hash[:16]}…")
     console.print(f"  {result.detail}")
+
+    # Provenance chain — skipped when VIOLATED (the records can't be trusted).
+    if result.state != EvidenceIntegrityState.VIOLATED:
+        envelope = next((env for env in log.read_envelopes() if env.entry_hash == entry_hash), None)
+        if envelope is not None and envelope.provenance:
+            console.print("  [bold]Provenance chain:[/bold]")
+            for record in envelope.provenance:
+                ts = record.timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+                console.print(
+                    f"    [cyan]{record.stage}[/cyan] ({ts}) "
+                    f"actor: {record.actor}  "
+                    f"hash: [dim]{record.content_hash[:12]}…[/dim]"
+                )
 
     if result.state != EvidenceIntegrityState.PROVEN:
         raise typer.Exit(code=1)
@@ -253,32 +267,34 @@ def keys_command() -> None:
             )
 
 
-def _parse_records(source_label: str, text: str, *, is_jsonl: bool) -> list[OcsfBaseEvent]:
-    """Parse and validate OCSF records. Raises ValueError on any failure.
+def _parse_records(
+    source_label: str, text: str, *, is_jsonl: bool
+) -> list[tuple[OcsfBaseEvent, ProvenanceRecord]]:
+    """Parse and validate OCSF records, pairing each with a normalization record.
 
     Runs in a single pass: on the first bad record the whole batch is
     rejected, so the caller can write all-or-nothing. For JSONL the
     error message carries the line number; for single JSON it doesn't.
     """
-    events: list[OcsfBaseEvent] = []
+    pairs: list[tuple[OcsfBaseEvent, ProvenanceRecord]] = []
     if is_jsonl:
         for lineno, raw in enumerate(text.splitlines(), start=1):
             if not raw.strip():
                 continue
             try:
                 payload = json.loads(raw)
-                events.append(normalize(payload))
+                pairs.append(normalize_with_provenance(payload))
             except (json.JSONDecodeError, ValueError) as exc:
                 msg = f"{source_label}:{lineno}: {exc}"
                 raise ValueError(msg) from exc
     else:
         try:
             payload = json.loads(text)
-            events.append(normalize(payload))
+            pairs.append(normalize_with_provenance(payload))
         except (json.JSONDecodeError, ValueError) as exc:
             msg = f"{source_label}: {exc}"
             raise ValueError(msg) from exc
-    return events
+    return pairs
 
 
 @evidence_app.command(
@@ -303,6 +319,7 @@ def ingest_command(
     if file == "-":
         source_label = "<stdin>"
         text = sys.stdin.read()
+        raw_bytes = text.encode()
         is_jsonl = True
     else:
         path = Path(file)
@@ -321,23 +338,30 @@ def ingest_command(
             console.print(f"[red]Error:[/red] {path}: file not found.")
             raise typer.Exit(code=1)
         source_label = path.name
-        text = path.read_text()
+        raw_bytes = path.read_bytes()
+        text = raw_bytes.decode()
 
     try:
-        events = _parse_records(source_label, text, is_jsonl=is_jsonl)
+        pairs = _parse_records(source_label, text, is_jsonl=is_jsonl)
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     if dry_run:
-        console.print(f"{len(events)} valid (dry run — nothing written).")
+        console.print(f"{len(pairs)} valid (dry run — nothing written).")
         return
+
+    source_record = ProvenanceRecord(
+        stage="source",
+        actor=f"ingest-cli:{source_label}",
+        content_hash=hashlib.sha256(raw_bytes).hexdigest(),
+    )
 
     log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
     ingested = 0
     skipped = 0
-    for event in events:
-        if log.append(event):
+    for event, norm_record in pairs:
+        if log.append(event, provenance=[source_record, norm_record]):
             ingested += 1
         else:
             skipped += 1

@@ -284,7 +284,11 @@ def test_revocation_violates_entries_signed_at_or_after_revoked_at(tmp_path: Pat
     """
     from datetime import timedelta
 
-    from lemma.models.signed_evidence import EvidenceIntegrityState, SignedEvidence
+    from lemma.models.signed_evidence import (
+        EvidenceIntegrityState,
+        ProvenanceRecord,
+        SignedEvidence,
+    )
     from lemma.services import crypto
     from lemma.services.evidence_log import (
         EvidenceLog,
@@ -313,7 +317,8 @@ def test_revocation_violates_entries_signed_at_or_after_revoked_at(tmp_path: Pat
     # signature is cryptographically valid, but policy says ignore it.
     malicious_event = normalize(_compliance_payload("post-revoke"))
     prev_hash = pre_envelope.entry_hash
-    entry_hash = _compute_entry_hash(prev_hash, malicious_event)
+    # Match the new-algorithm shape: empty pre-storage prefix → storage-only envelope.
+    entry_hash = _compute_entry_hash(prev_hash, malicious_event, [])
     # Use the signing primitive directly with the revoked key's private material.
     private_key = crypto._load_private_by_key_id("Lemma", active_key_id, key_dir)  # type: ignore[attr-defined]
     signature = private_key.sign(bytes.fromhex(entry_hash)).hex()
@@ -326,6 +331,13 @@ def test_revocation_violates_entries_signed_at_or_after_revoked_at(tmp_path: Pat
         signature=signature,
         signer_key_id=active_key_id,
         signed_at=revoked_record.revoked_at + timedelta(milliseconds=1),
+        provenance=[
+            ProvenanceRecord(
+                stage="storage",
+                actor="lemma.services.evidence_log",
+                content_hash=entry_hash,
+            )
+        ],
     )
     log_file = next((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
     with log_file.open("a") as f:
@@ -366,3 +378,124 @@ def test_filter_by_class_and_time_range(tmp_path: Path):
     # filter_by_time_range — half-open [start, end)
     window = log.filter_by_time_range(t_early, t_late)
     assert {e.metadata["uid"] for e in window} == {"c-early", "a-mid"}
+
+
+# --- Provenance chain (issue #99) ---
+
+
+def test_append_accepts_incoming_provenance_and_appends_storage_last(tmp_path: Path):
+    from lemma.models.signed_evidence import ProvenanceRecord
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / "evidence")
+    event = normalize(_compliance_payload("prov-1"))
+    source = ProvenanceRecord(
+        stage="source",
+        actor="ingest-cli:sandbox.jsonl",
+        content_hash="a" * 64,
+    )
+    normalization = ProvenanceRecord(
+        stage="normalization",
+        actor="lemma.ocsf_normalizer/1",
+        content_hash="b" * 64,
+    )
+
+    assert log.append(event, provenance=[source, normalization]) is True
+
+    envelopes = log.read_envelopes()
+    assert len(envelopes) == 1
+    env = envelopes[0]
+    stages = [r.stage for r in env.provenance]
+    assert stages == ["source", "normalization", "storage"]
+    assert env.provenance[0].actor == "ingest-cli:sandbox.jsonl"
+    assert env.provenance[-1].content_hash == env.entry_hash
+
+
+def test_append_without_provenance_kwarg_still_works(tmp_path: Path):
+    """Back-compat: callers that don't pass provenance get a storage-only envelope."""
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / "evidence")
+    event = normalize(_compliance_payload("no-prov"))
+    assert log.append(event) is True
+
+    env = log.read_envelopes()[0]
+    assert [r.stage for r in env.provenance] == ["storage"]
+
+
+def test_entry_hash_changes_when_provenance_changes(tmp_path: Path):
+    """Same event, different pre-storage provenance → different entry_hash."""
+    from lemma.models.signed_evidence import ProvenanceRecord
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    event = normalize(_compliance_payload("hash-sensitive"))
+
+    log_a = EvidenceLog(log_dir=tmp_path / "log_a")
+    log_a.append(
+        event, provenance=[ProvenanceRecord(stage="source", actor="A", content_hash="a" * 64)]
+    )
+    hash_a = log_a.read_envelopes()[0].entry_hash
+
+    # Different provenance → different content bytes → different hash.
+    log_b = EvidenceLog(log_dir=tmp_path / "log_b")
+    log_b.append(
+        event, provenance=[ProvenanceRecord(stage="source", actor="B", content_hash="b" * 64)]
+    )
+    hash_b = log_b.read_envelopes()[0].entry_hash
+
+    assert hash_a != hash_b
+
+
+def test_verify_returns_proven_for_untouched_envelope_with_provenance(tmp_path: Path):
+    """Happy-path regression under the new algorithm."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecord
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / "evidence")
+    event = normalize(_compliance_payload("happy-prov"))
+    log.append(
+        event,
+        provenance=[
+            ProvenanceRecord(stage="source", actor="src", content_hash="a" * 64),
+            ProvenanceRecord(stage="normalization", actor="norm", content_hash="b" * 64),
+        ],
+    )
+    env = log.read_envelopes()[0]
+
+    result = log.verify_entry(env.entry_hash)
+    assert result.state == EvidenceIntegrityState.PROVEN, result.detail
+
+
+def test_verify_detects_tampered_source_provenance(tmp_path: Path):
+    """Mutating a pre-storage provenance record on disk must break verify."""
+    import json
+
+    from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecord
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / "evidence")
+    event = normalize(_compliance_payload("tamper-me"))
+    log.append(
+        event,
+        provenance=[
+            ProvenanceRecord(stage="source", actor="src", content_hash="a" * 64),
+            ProvenanceRecord(stage="normalization", actor="norm", content_hash="b" * 64),
+        ],
+    )
+    env = log.read_envelopes()[0]
+    target_hash = env.entry_hash
+
+    # Rewrite the on-disk line with source.content_hash flipped.
+    log_file = next((tmp_path / "evidence").glob("*.jsonl"))
+    lines = log_file.read_text().strip().splitlines()
+    tampered = json.loads(lines[0])
+    tampered["provenance"][0]["content_hash"] = "f" * 64
+    log_file.write_text(json.dumps(tampered) + "\n")
+
+    result = log.verify_entry(target_hash)
+    assert result.state == EvidenceIntegrityState.VIOLATED
