@@ -17,6 +17,7 @@ Usage:
 import typer
 
 from lemma.commands.ai import ai_app
+from lemma.commands.check import check_command
 from lemma.commands.connector import connector_app
 from lemma.commands.evidence import evidence_app
 from lemma.commands.framework import framework_app
@@ -45,6 +46,9 @@ app.command(name="validate", help="Validate an OSCAL JSON file")(validate_comman
 app.command(name="map", help="Map policies to framework controls")(map_command)
 app.command(name="query", help="Ask the compliance graph a question in plain English")(
     query_command
+)
+app.command(name="check", help="Run the CI/CD compliance gate over the knowledge graph")(
+    check_command
 )
 app.command(name="harmonize", help="Harmonize controls across frameworks")(harmonize_command)
 app.command(name="coverage", help="Per-framework coverage percentages")(coverage_command)
