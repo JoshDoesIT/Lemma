@@ -1,0 +1,114 @@
+"""Implementation of the ``lemma scope`` CLI sub-commands.
+
+Sub-commands:
+    lemma scope init [--name <name>]  — scaffold a starter scopes/<name>.yaml
+    lemma scope status                — parse and report declared scopes
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from lemma.services.scope import load_all_scopes
+
+console = Console()
+
+scope_app = typer.Typer(
+    name="scope",
+    help="Manage scope-as-code definitions.",
+    no_args_is_help=True,
+)
+
+
+_STARTER_TEMPLATE = """\
+# Scope-as-code definition. Edit the fields below to declare the
+# compliance frameworks that apply to a slice of your infrastructure,
+# plus the rules that decide which resources fall inside the slice.
+#
+# `lemma scope status` parses every *.yaml in this directory and
+# validates the schema; errors point to the offending file and line.
+
+name: default
+frameworks:
+  - nist-csf-2.0
+justification: >-
+  Replace this with a short statement of why these frameworks apply
+  to the resources that match the rules below. Auditors read this.
+match_rules:
+  - source: aws.tags.Environment
+    operator: equals
+    value: prod
+"""
+
+
+def _require_lemma_project() -> Path:
+    cwd = Path.cwd()
+    if not (cwd / ".lemma").exists():
+        console.print("[red]Error:[/red] Not a Lemma project.")
+        console.print("Run [bold]lemma init[/bold] first.")
+        raise typer.Exit(code=1)
+    return cwd
+
+
+@scope_app.command(name="init", help="Scaffold a starter scope-as-code YAML file.")
+def init_command(
+    name: str = typer.Option(
+        "default",
+        "--name",
+        help="Scope file name (writes scopes/<name>.yaml).",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+    scopes_dir.mkdir(exist_ok=True)
+
+    target = scopes_dir / f"{name}.yaml"
+    if target.exists():
+        console.print(
+            f"[red]Error:[/red] {target.relative_to(project_dir)} already exists; "
+            "refusing to overwrite. Delete it first if you want to regenerate."
+        )
+        raise typer.Exit(code=1)
+
+    target.write_text(_STARTER_TEMPLATE)
+    console.print(f"[green]Created[/green] {target.relative_to(project_dir)}.")
+    console.print("Edit it to match your environment, then run [bold]lemma scope status[/bold].")
+
+
+@scope_app.command(name="status", help="Parse and display every declared scope.")
+def status_command() -> None:
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+
+    try:
+        scopes = load_all_scopes(scopes_dir)
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    if not scopes:
+        console.print(
+            "[dim]No scopes defined. Run [bold]lemma scope init[/bold] to create one.[/dim]"
+        )
+        return
+
+    table = Table(title=f"Declared Scopes ({len(scopes)})")
+    table.add_column("Scope", style="bold cyan")
+    table.add_column("Frameworks")
+    table.add_column("Rules", justify="right")
+    table.add_column("Justification", style="dim")
+
+    for scope in scopes:
+        table.add_row(
+            scope.name,
+            ", ".join(scope.frameworks),
+            str(len(scope.match_rules)),
+            scope.justification or "—",
+        )
+
+    console.print(table)
