@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.models.signed_evidence import EvidenceIntegrityState
+from lemma.sdk.connector import Connector
 from lemma.services import crypto
 from lemma.services.evidence_log import EvidenceLog
 
@@ -159,6 +160,55 @@ def revoke_key_command(
     console.print(
         f"Key [cyan]{record.key_id}[/cyan] for producer [cyan]{producer}[/cyan] "
         f"is now [red]REVOKED[/red] (reason: {record.revoked_reason})."
+    )
+
+
+def _first_party_connector(name: str, *, repo: str | None) -> Connector:
+    """Instantiate a first-party connector by short name.
+
+    Raises ``ValueError`` with the list of known names when the given
+    name is unrecognized.
+    """
+    if name == "github":
+        from lemma.sdk.connectors.github import GitHubConnector
+
+        if not repo:
+            msg = "The github connector requires --repo owner/name."
+            raise ValueError(msg)
+        return GitHubConnector(repo=repo)
+
+    known = ["github"]
+    msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
+    raise ValueError(msg)
+
+
+@evidence_app.command(
+    name="collect",
+    help="Run a first-party connector and append its output to the evidence log.",
+)
+def collect_command(
+    connector_name: str = typer.Argument(
+        help="First-party connector name (e.g. 'github')",
+    ),
+    repo: str = typer.Option("", "--repo", help="Repository in owner/name form (github connector)"),
+) -> None:
+    project_dir = _require_lemma_project()
+    try:
+        connector = _first_party_connector(connector_name, repo=repo or None)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    evidence_log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    try:
+        result = connector.run(evidence_log)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]{connector.manifest.name}[/green]: "
+        f"{result.ingested} ingested, {result.skipped_duplicates} skipped (duplicate)."
     )
 
 

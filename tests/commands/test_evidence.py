@@ -175,6 +175,71 @@ def test_revoke_key_marks_record_and_prints_confirmation(tmp_path: Path, monkeyp
     assert lifecycle.find(active_key_id).status.value == "REVOKED"
 
 
+def test_collect_runs_github_connector_and_appends_signed_evidence(tmp_path: Path, monkeypatch):
+    """`lemma evidence collect github --repo owner/name` drives the connector end-to-end."""
+    import httpx
+
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/branches/main/protection" in url:
+            return httpx.Response(200, json={})
+        if "/contents/CODEOWNERS" in url:
+            return httpx.Response(404, json={"message": "Not Found"})
+        if "/dependabot/alerts" in url:
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    mock_client = httpx.Client(
+        base_url="https://api.github.com", transport=httpx.MockTransport(_handler)
+    )
+
+    # Patch the connector's default client construction so the CLI picks up the mock.
+    from lemma.sdk.connectors import github as gh_module
+
+    original_init = gh_module.GitHubConnector.__init__
+
+    def _patched_init(self, *, repo, client=None, token=None):
+        original_init(self, repo=repo, client=client or mock_client, token=token)
+
+    monkeypatch.setattr(gh_module.GitHubConnector, "__init__", _patched_init)
+
+    result = runner.invoke(app, ["evidence", "collect", "github", "--repo", "JoshDoesIT/Lemma"])
+    assert result.exit_code == 0, result.stdout
+    assert "ingested" in result.stdout.lower()
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) >= 2  # branch protection + codeowners at minimum
+
+
+def test_collect_requires_lemma_project(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["evidence", "collect", "github", "--repo", "owner/name"])
+    assert result.exit_code == 1
+
+
+def test_collect_rejects_unknown_connector_name(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+
+    result = runner.invoke(app, ["evidence", "collect", "not-a-real-connector", "--repo", "x/y"])
+    assert result.exit_code == 1
+    assert (
+        "unknown" in result.stdout.lower()
+        or "not a recognized" in result.stdout.lower()
+        or "not recognized" in result.stdout.lower()
+    )
+
+
 def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch):
     from lemma.cli import app
     from lemma.services.crypto import rotate_key

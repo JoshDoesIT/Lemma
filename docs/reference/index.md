@@ -450,6 +450,28 @@ List every signing key on file with its lifecycle state, activation timestamp, r
 lemma evidence keys
 ```
 
+### `lemma evidence collect`
+
+Run a first-party connector and append its OCSF output to the signed evidence log. Each event is normalized, deduped on `metadata.uid`, and wrapped in a `SignedEvidence` envelope hash-chained to the prior entry.
+
+```bash
+lemma evidence collect <CONNECTOR> [OPTIONS]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `CONNECTOR` | Yes | First-party connector name. Currently: `github`. |
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--repo` | For `github` | Repository in `owner/name` form |
+
+**First-party connectors**
+
+- `github` — collects branch protection on `main`, CODEOWNERS presence, and open Dependabot alert counts bucketed by severity. Auth via the `LEMMA_GITHUB_TOKEN` environment variable (optional for public repos within GitHub's 60-req/hr unauthenticated cap; required for private repos and to lift the rate limit to 5000/hr). Rate-limited responses raise a clean error naming the endpoint.
+
+Output reports how many events were ingested and how many were skipped as duplicates (same `metadata.uid` already in the log — stable per `event_type`, `repo`, and UTC date).
+
 ---
 
 ## `lemma ai`
