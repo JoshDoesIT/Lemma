@@ -3,20 +3,25 @@
 Sub-commands:
     lemma evidence verify <entry_hash>   — integrity check for a single entry
     lemma evidence log                   — timeline with integrity state per row
+    lemma evidence ingest <FILE>         — load OCSF JSON/JSONL into the log
 """
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from lemma.models.ocsf import OcsfBaseEvent
 from lemma.models.signed_evidence import EvidenceIntegrityState
 from lemma.sdk.connector import Connector
 from lemma.services import crypto
 from lemma.services.evidence_log import EvidenceLog
+from lemma.services.ocsf_normalizer import normalize
 
 console = Console()
 
@@ -246,3 +251,94 @@ def keys_command() -> None:
                 f"activated {record.activated_at.strftime('%Y-%m-%d %H:%M:%S')}"
                 f"{timestamp_suffix}{reason_suffix}"
             )
+
+
+def _parse_records(source_label: str, text: str, *, is_jsonl: bool) -> list[OcsfBaseEvent]:
+    """Parse and validate OCSF records. Raises ValueError on any failure.
+
+    Runs in a single pass: on the first bad record the whole batch is
+    rejected, so the caller can write all-or-nothing. For JSONL the
+    error message carries the line number; for single JSON it doesn't.
+    """
+    events: list[OcsfBaseEvent] = []
+    if is_jsonl:
+        for lineno, raw in enumerate(text.splitlines(), start=1):
+            if not raw.strip():
+                continue
+            try:
+                payload = json.loads(raw)
+                events.append(normalize(payload))
+            except (json.JSONDecodeError, ValueError) as exc:
+                msg = f"{source_label}:{lineno}: {exc}"
+                raise ValueError(msg) from exc
+    else:
+        try:
+            payload = json.loads(text)
+            events.append(normalize(payload))
+        except (json.JSONDecodeError, ValueError) as exc:
+            msg = f"{source_label}: {exc}"
+            raise ValueError(msg) from exc
+    return events
+
+
+@evidence_app.command(
+    name="ingest",
+    help="Read OCSF events from a file (or stdin) and append them to the evidence log.",
+)
+def ingest_command(
+    file: str = typer.Argument(
+        help=(
+            "Path to a .json (single payload) or .jsonl (newline-delimited) file. "
+            "Use '-' for stdin (JSONL)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate every record without writing to the evidence log.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    if file == "-":
+        source_label = "<stdin>"
+        text = sys.stdin.read()
+        is_jsonl = True
+    else:
+        path = Path(file)
+        suffix = path.suffix.lower()
+        if suffix == ".jsonl":
+            is_jsonl = True
+        elif suffix == ".json":
+            is_jsonl = False
+        else:
+            console.print(
+                f"[red]Error:[/red] {path.name}: unsupported extension '{suffix or '(none)'}'. "
+                "Accepted: .json (single payload) or .jsonl (newline-delimited)."
+            )
+            raise typer.Exit(code=1)
+        if not path.exists():
+            console.print(f"[red]Error:[/red] {path}: file not found.")
+            raise typer.Exit(code=1)
+        source_label = path.name
+        text = path.read_text()
+
+    try:
+        events = _parse_records(source_label, text, is_jsonl=is_jsonl)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        console.print(f"{len(events)} valid (dry run — nothing written).")
+        return
+
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    ingested = 0
+    skipped = 0
+    for event in events:
+        if log.append(event):
+            ingested += 1
+        else:
+            skipped += 1
+    console.print(f"{ingested} ingested, {skipped} skipped (duplicate).")
