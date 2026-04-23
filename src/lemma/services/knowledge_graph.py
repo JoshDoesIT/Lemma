@@ -116,6 +116,66 @@ class ComplianceGraph:
             confidence=confidence,
         )
 
+    def add_scope(
+        self,
+        *,
+        name: str,
+        frameworks: list[str],
+        justification: str = "",
+        rule_count: int = 0,
+    ) -> None:
+        """Add a Scope node with APPLIES_TO edges to each bound framework.
+
+        Args:
+            name: Scope identifier (unique within the graph).
+            frameworks: Framework short names the scope binds to. Every
+                name must already be in the graph — we refuse to create
+                edges to non-existent frameworks because a scope that
+                references an un-indexed framework is an operator error,
+                not a silent warning.
+            justification: Free-text audit rationale copied into the node.
+            rule_count: How many match rules the scope declares; kept on
+                the node so callers can render a summary without reparsing
+                the YAML.
+
+        Raises:
+            ValueError: If any named framework has no corresponding
+                Framework node. The error names the missing frameworks so
+                the operator can run ``lemma framework add`` for them.
+        """
+        missing = [fw for fw in frameworks if f"framework:{fw}" not in self._graph]
+        if missing:
+            msg = (
+                f"Scope '{name}' references framework(s) not indexed in the graph: "
+                f"{', '.join(sorted(missing))}. Run 'lemma framework add <name>' first."
+            )
+            raise ValueError(msg)
+
+        node_id = f"scope:{name}"
+        self._graph.add_node(
+            node_id,
+            type="Scope",
+            name=name,
+            justification=justification,
+            rule_count=rule_count,
+        )
+
+        # Idempotent: remove any existing APPLIES_TO edges from this scope
+        # before rebuilding, so re-adding a scope with fewer frameworks
+        # drops the stale bindings cleanly.
+        for _source, target, key, attrs in list(
+            self._graph.out_edges(node_id, keys=True, data=True)
+        ):
+            if attrs.get("relationship") == "APPLIES_TO":
+                self._graph.remove_edge(node_id, target, key=key)
+
+        for framework in frameworks:
+            self._graph.add_edge(
+                node_id,
+                f"framework:{framework}",
+                relationship="APPLIES_TO",
+            )
+
     def add_harmonization(
         self,
         *,
