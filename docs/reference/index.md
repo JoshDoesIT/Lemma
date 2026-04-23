@@ -474,6 +474,58 @@ Output reports how many events were ingested and how many were skipped as duplic
 
 ---
 
+## `lemma check`
+
+Run the CI/CD compliance gate over the knowledge graph. Exits non-zero if any control in the selected framework has zero satisfying policies, so pipelines can fail builds on compliance regressions.
+
+```bash
+lemma check [--framework <ID>] [--format text|json]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--framework` | all frameworks in the graph | Restrict the check to a single framework (e.g. `nist-800-53`) |
+| `--format` | `text` | Output format: `text` (human-readable Rich table) or `json` (machine-parseable) |
+
+**Pass criterion (v0).** A control is `PASSED` if at least one policy has a `SATISFIES` edge pointing at it in the compliance graph, and `FAILED` otherwise. The check does not currently weight edges by confidence score — any recorded mapping counts — and does not consider evidence-node integrity. These refinements are tracked as follow-ups (see below).
+
+**Exit codes.** `0` only when every control in scope passes; `1` on any failure, on unknown `--framework`, or outside a Lemma project.
+
+**JSON output shape** (stable for CI/CD integrations):
+
+```json
+{
+  "framework": "nist-800-53",
+  "outcomes": [
+    {
+      "control_id": "control:nist-800-53:ac-2",
+      "framework": "nist-800-53",
+      "short_id": "ac-2",
+      "title": "Account Management",
+      "status": "FAILED",
+      "satisfying_policies": []
+    }
+  ],
+  "total": 1,
+  "passed": 0,
+  "failed": 1
+}
+```
+
+**Example workflow:**
+
+```bash
+lemma init
+lemma framework add nist-csf-2.0
+lemma map                                     # creates SATISFIES edges
+lemma check                                   # human-readable gate
+lemma check --format json | jq '.failed'      # machine-readable for CI
+```
+
+**Follow-ups tracked separately** — SARIF output ([#119](https://github.com/JoshDoesIT/Lemma/issues/119)), GitHub Action wrapper ([#120](https://github.com/JoshDoesIT/Lemma/issues/120)), OPA/Rego policy-as-code ([#121](https://github.com/JoshDoesIT/Lemma/issues/121)), and `--min-confidence` flag ([#122](https://github.com/JoshDoesIT/Lemma/issues/122)). Drift detection and compliance-debt metrics stay inside the parent [#28](https://github.com/JoshDoesIT/Lemma/issues/28) task list.
+
+---
+
 ## `lemma ai`
 
 AI transparency and governance commands.
