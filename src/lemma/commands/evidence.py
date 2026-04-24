@@ -237,9 +237,7 @@ def collect_command(
     connector_name: str = typer.Argument(
         help="First-party connector name (e.g. 'github', 'okta', 'aws')",
     ),
-    repo: str = typer.Option(
-        "", "--repo", help="Repository in owner/name form (github connector)"
-    ),
+    repo: str = typer.Option("", "--repo", help="Repository in owner/name form (github connector)"),
     domain: str = typer.Option(
         "", "--domain", help="Okta domain, e.g. your-org.okta.com (okta connector)"
     ),
