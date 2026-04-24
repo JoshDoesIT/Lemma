@@ -60,6 +60,9 @@ packages = ["src/lemma"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--strict-markers -v"
+markers = [
+    "eval: RAG evaluation tests requiring Ollama; skipped by default, run with --run-eval",
+]
 
 [tool.coverage.run]
 source = ["lemma"]

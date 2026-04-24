@@ -1,0 +1,91 @@
+# Ground-truth corpus for RAG retrieval evaluation.
+# Each pair maps a realistic policy excerpt to the NIST CSF 2.0 control
+# id(s) that should appear in the top-k retrieval. Multiple expected
+# controls are acceptable when the policy could reasonably be mapped
+# to any of a small handful of harmonized or adjacent controls.
+#
+# Keep this file small (≤ 20 pairs). The point is regression tracking,
+# not exhaustive coverage — precision@k and MRR are meaningful only
+# when every pair has been human-validated.
+#
+# When the embedding model or prompt changes, re-run with --run-eval,
+# check whether scores drop, and investigate any pair that flipped.
+
+framework: nist-csf-2.0
+pairs:
+  - policy_text: >-
+      All employee access to production systems must be reviewed
+      and recertified quarterly. Managers approve or revoke access
+      based on current job responsibilities.
+    expected_controls:
+      - pr.aa-01
+      - pr.aa-05
+
+  - policy_text: >-
+      Multi-factor authentication is required for all administrative
+      access to the production environment and any system containing
+      customer data.
+    expected_controls:
+      - pr.aa-02
+      - pr.aa-03
+
+  - policy_text: >-
+      Security incidents must be reported to the security team
+      within one hour of discovery. The on-call engineer triages
+      severity and initiates the response playbook.
+    expected_controls:
+      - rs.co-02
+      - rs.ma-01
+
+  - policy_text: >-
+      All code changes must be reviewed by at least one engineer
+      other than the author before merging. CODEOWNERS enforces
+      the review requirement at the repository level.
+    expected_controls:
+      - pr.ps-01
+      - pr.aa-05
+
+  - policy_text: >-
+      Backups of all production databases are taken daily and
+      tested for restore integrity at least monthly. Backups are
+      stored in a separate region from the primary.
+    expected_controls:
+      - pr.ds-11
+      - rc.rp-01
+
+  - policy_text: >-
+      The organization maintains a current inventory of software
+      and services, including open-source dependencies, versions,
+      and known vulnerabilities per component.
+    expected_controls:
+      - id.am-02
+      - id.ra-01
+
+  - policy_text: >-
+      Vulnerability scans are run against all external-facing hosts
+      weekly. Critical findings must be remediated within 15 days.
+    expected_controls:
+      - id.ra-01
+      - pr.ps-02
+
+  - policy_text: >-
+      The organization defines a cybersecurity strategy aligned
+      with its mission, and senior leadership reviews it annually.
+    expected_controls:
+      - gv.oc-01
+      - gv.sc-01
+
+  - policy_text: >-
+      Third-party suppliers with access to customer data must
+      complete a security questionnaire and sign a data-processing
+      addendum before onboarding.
+    expected_controls:
+      - gv.sc-05
+      - gv.sc-07
+
+  - policy_text: >-
+      All production audit logs are centrally aggregated, retained
+      for one year, and reviewed weekly for anomalous activity.
+    expected_controls:
+      - de.cm-01
+      - de.cm-09
