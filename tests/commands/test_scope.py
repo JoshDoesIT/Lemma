@@ -432,3 +432,107 @@ class TestScopeImpactPlan:
         plan = _plan_file(tmp_path, [])
         result = runner.invoke(app, ["scope", "impact", "--plan", str(plan)])
         assert result.exit_code == 1
+
+
+def _graph_with_scope_framework_and_evidence(tmp_path: Path):
+    """Seed .lemma/graph.json with a scope, its framework, controls, and mixed coverage."""
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    g = ComplianceGraph()
+    g.add_framework("nist-800-53")
+    g.add_control(framework="nist-800-53", control_id="ac-2", title="AC-2", family="AC")
+    g.add_control(framework="nist-800-53", control_id="ac-3", title="AC-3", family="AC")
+    g.add_control(framework="nist-800-53", control_id="au-2", title="AU-2", family="AU")
+
+    g.add_policy("access.md", title="Access Policy")
+    g.add_mapping(policy="access.md", framework="nist-800-53", control_id="ac-2", confidence=0.9)
+    g.add_mapping(policy="access.md", framework="nist-800-53", control_id="ac-3", confidence=0.9)
+
+    g.add_evidence(
+        entry_hash="a" * 64,
+        producer="Lemma",
+        class_name="Compliance Finding",
+        time_iso="2026-04-24T12:00:00+00:00",
+        control_refs=["nist-800-53:ac-2"],
+    )
+    g.add_evidence(
+        entry_hash="b" * 64,
+        producer="Lemma",
+        class_name="Compliance Finding",
+        time_iso="2026-04-24T12:00:00+00:00",
+        control_refs=["nist-800-53:au-2"],
+    )
+
+    g.add_scope(
+        name="prod",
+        frameworks=["nist-800-53"],
+        justification="seeded",
+        rule_count=0,
+    )
+    g.save(tmp_path / ".lemma" / "graph.json")
+
+
+class TestScopePosture:
+    def test_with_scope_name_shows_per_framework_counts(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+
+        result = runner.invoke(app, ["scope", "posture", "prod"])
+        assert result.exit_code == 0, result.stdout
+        # Framework name, total, mapped, evidenced, covered should all appear.
+        assert "nist-800-53" in result.stdout
+        assert "3" in result.stdout  # total controls
+        # mapped=2 (ac-2, ac-3), evidenced=2 (ac-2, au-2), covered=1 (ac-2).
+
+    def test_no_scope_name_summarizes_every_scope(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+        # Add a second scope to prove the summary includes both.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_scope(
+            name="dev",
+            frameworks=["nist-800-53"],
+            justification="seeded",
+            rule_count=0,
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        result = runner.invoke(app, ["scope", "posture"])
+        assert result.exit_code == 0, result.stdout
+        assert "prod" in result.stdout
+        assert "dev" in result.stdout
+
+    def test_unknown_scope_exits_1(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+
+        result = runner.invoke(app, ["scope", "posture", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "does-not-exist" in result.stdout
+
+    def test_empty_graph_prints_hint(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        result = runner.invoke(app, ["scope", "posture"])
+        assert result.exit_code == 0, result.stdout
+        assert "no scope" in result.stdout.lower() or "lemma scope load" in result.stdout.lower()
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "posture"])
+        assert result.exit_code == 1
