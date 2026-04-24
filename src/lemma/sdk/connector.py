@@ -15,13 +15,18 @@ what was ingested and what was skipped by the dedupe guard.
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from lemma.models.connector_manifest import ConnectorManifest
 from lemma.models.ocsf import OcsfBaseEvent
+from lemma.models.signed_evidence import ProvenanceRecord
 from lemma.services.evidence_log import EvidenceLog
+from lemma.services.ocsf_normalizer import NORMALIZER_VERSION
+
+CONNECTOR_SDK_VERSION = "lemma.sdk.connector/1"
 
 
 @dataclass(frozen=True)
@@ -61,13 +66,36 @@ class Connector(ABC):
     def run(self, evidence_log: EvidenceLog) -> CollectResult:
         """Iterate ``collect()`` and append every event to ``evidence_log``.
 
+        Each event is stamped with a ``source`` provenance record naming
+        the connector (``<producer>/<version>``) as the origin of the
+        data. The hash is over the typed event — the earliest structured
+        form available at this boundary. Connectors with access to the
+        pre-typed upstream payload may override this by constructing
+        their own provenance and bypassing ``run()``.
+
         Returns a summary of what was ingested vs skipped. Signing,
         chaining, and dedupe are handled inside ``EvidenceLog.append``.
         """
         ingested = 0
         skipped = 0
+        actor = f"{self.manifest.producer}/{self.manifest.version}"
         for event in self.collect():
-            wrote = evidence_log.append(event)
+            event_hash = hashlib.sha256(event.model_dump_json().encode()).hexdigest()
+            source = ProvenanceRecord(
+                stage="source",
+                actor=actor,
+                content_hash=event_hash,
+            )
+            # Connectors construct typed events directly via the OCSF Pydantic
+            # models — validation has already happened by the time we get here.
+            # Stamp a normalization record with the typed-event hash so the
+            # chain stays three-deep for connector-produced evidence too.
+            normalization = ProvenanceRecord(
+                stage="normalization",
+                actor=NORMALIZER_VERSION,
+                content_hash=event_hash,
+            )
+            wrote = evidence_log.append(event, provenance=[source, normalization])
             if wrote:
                 ingested += 1
             else:

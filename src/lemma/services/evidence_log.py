@@ -66,19 +66,28 @@ def _producer_of(event: OcsfBaseEvent) -> str:
     return "unknown"
 
 
-def _canonical_event_bytes(event: OcsfBaseEvent) -> bytes:
-    """Canonical JSON of the event for hashing — sorted keys, no whitespace."""
-    return json.dumps(
-        json.loads(event.model_dump_json()),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
+def _canonical_signed_bytes(
+    event: OcsfBaseEvent, provenance_prefix: list[ProvenanceRecord]
+) -> bytes:
+    """Canonical JSON of the event + pre-storage provenance for hashing.
+
+    Sorted keys, no whitespace. The storage record is excluded by design —
+    it carries the entry hash as its ``content_hash`` and can only be
+    constructed after the hash is computed.
+    """
+    combined = {
+        "event": json.loads(event.model_dump_json()),
+        "provenance": [json.loads(r.model_dump_json()) for r in provenance_prefix],
+    }
+    return json.dumps(combined, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _compute_entry_hash(prev_hash: str, event: OcsfBaseEvent) -> str:
+def _compute_entry_hash(
+    prev_hash: str, event: OcsfBaseEvent, provenance_prefix: list[ProvenanceRecord]
+) -> str:
     hasher = hashlib.sha256()
     hasher.update(prev_hash.encode())
-    hasher.update(_canonical_event_bytes(event))
+    hasher.update(_canonical_signed_bytes(event, provenance_prefix))
     return hasher.hexdigest()
 
 
@@ -133,8 +142,21 @@ class EvidenceLog:
 
     # --- public API ---
 
-    def append(self, event: OcsfBaseEvent) -> bool:
+    def append(
+        self,
+        event: OcsfBaseEvent,
+        *,
+        provenance: list[ProvenanceRecord] | None = None,
+    ) -> bool:
         """Sign, chain, and append an event to the log.
+
+        Args:
+            event: The normalized OCSF event to store.
+            provenance: Optional transformation records (``source``,
+                ``normalization``) that preceded storage. They are
+                folded into the signed hash — tampering with any of
+                them breaks verification. This log always appends a
+                final ``storage`` record carrying the entry hash.
 
         Returns ``True`` when a new envelope was written, ``False`` if
         the event was skipped by the dedupe guard on today's file.
@@ -147,25 +169,25 @@ class EvidenceLog:
         crypto.generate_keypair(producer=producer, key_dir=self._key_dir)
         signer_key_id = crypto.public_key_id(producer=producer, key_dir=self._key_dir)
 
+        prefix = list(provenance) if provenance else []
         prev_hash = self._latest_entry_hash()
-        entry_hash = _compute_entry_hash(prev_hash, event)
+        entry_hash = _compute_entry_hash(prev_hash, event, prefix)
         signature = crypto.sign(
             bytes.fromhex(entry_hash), producer=producer, key_dir=self._key_dir
         ).hex()
 
+        storage_record = ProvenanceRecord(
+            stage="storage",
+            actor="lemma.services.evidence_log",
+            content_hash=entry_hash,
+        )
         envelope = SignedEvidence(
             event=event,
             prev_hash=prev_hash,
             entry_hash=entry_hash,
             signature=signature,
             signer_key_id=signer_key_id,
-            provenance=[
-                ProvenanceRecord(
-                    stage="storage",
-                    actor="lemma.services.evidence_log",
-                    content_hash=entry_hash,
-                )
-            ],
+            provenance=[*prefix, storage_record],
         )
 
         with log_file.open("a") as f:
@@ -218,8 +240,12 @@ class EvidenceLog:
                     f"Chain broken at entry {envelope.entry_hash[:12]}.",
                 )
 
-            # Content hash: the envelope.entry_hash must match SHA-256(prev || event).
-            recomputed = _compute_entry_hash(envelope.prev_hash, envelope.event)
+            # Content hash: the envelope.entry_hash must match
+            # SHA-256(prev || canonical(event + non-storage provenance)).
+            # Storage is always last and carries the hash, so it's excluded
+            # from the recomputation.
+            prefix = [r for r in envelope.provenance if r.stage != "storage"]
+            recomputed = _compute_entry_hash(envelope.prev_hash, envelope.event, prefix)
             if recomputed != envelope.entry_hash:
                 if envelope.entry_hash == entry_hash:
                     return VerificationResult(

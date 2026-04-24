@@ -11,6 +11,8 @@ evidence log when reading JSONL lines back into typed events.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Annotated
 
 from pydantic import Field, TypeAdapter
@@ -21,6 +23,9 @@ from lemma.models.ocsf import (
     DetectionFinding,
     OcsfBaseEvent,
 )
+from lemma.models.signed_evidence import ProvenanceRecord
+
+NORMALIZER_VERSION = "lemma.ocsf_normalizer/1"
 
 OcsfEvent = Annotated[
     ComplianceFinding | DetectionFinding | AuthenticationEvent,
@@ -28,6 +33,12 @@ OcsfEvent = Annotated[
 ]
 
 ocsf_adapter: TypeAdapter[OcsfEvent] = TypeAdapter(OcsfEvent)
+
+
+def _canonical_payload_hash(payload: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def normalize(payload: dict) -> OcsfBaseEvent:
@@ -53,3 +64,19 @@ def normalize(payload: dict) -> OcsfBaseEvent:
         )
         raise ValueError(msg)
     return event
+
+
+def normalize_with_provenance(payload: dict) -> tuple[OcsfBaseEvent, ProvenanceRecord]:
+    """Validate a payload and return the typed event plus a normalization record.
+
+    The record stamps ``actor=NORMALIZER_VERSION`` and a ``content_hash`` over
+    the pre-normalized payload — so that a downstream verifier can detect any
+    change between what the source emitted and what the log stored.
+    """
+    event = normalize(payload)
+    record = ProvenanceRecord(
+        stage="normalization",
+        actor=NORMALIZER_VERSION,
+        content_hash=_canonical_payload_hash(payload),
+    )
+    return event, record

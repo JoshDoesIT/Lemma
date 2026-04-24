@@ -436,3 +436,56 @@ def test_ingest_stdin_reads_jsonl(tmp_path: Path, monkeypatch):
 
     log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
     assert len(log.read_envelopes()) == 2
+
+
+# --- Provenance chain (issue #99) ---
+
+
+def test_ingest_lands_source_and_normalization_provenance(tmp_path: Path, monkeypatch):
+    """An ingested envelope ends up with source, normalization, and storage."""
+    import hashlib
+
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    payload = _compliance_payload("prov-ingest-1")
+    file = _write_jsonl(tmp_path / "batch.jsonl", [payload])
+    raw_bytes = file.read_bytes()
+
+    result = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert result.exit_code == 0, result.stdout
+
+    env = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence").read_envelopes()[0]
+    stages = [r.stage for r in env.provenance]
+    assert stages == ["source", "normalization", "storage"]
+
+    source = env.provenance[0]
+    assert "batch.jsonl" in source.actor
+    assert source.content_hash == hashlib.sha256(raw_bytes).hexdigest()
+
+    norm = env.provenance[1]
+    assert norm.actor == "lemma.ocsf_normalizer/1"
+
+
+def test_verify_prints_full_provenance_chain(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    file = _write_jsonl(tmp_path / "batch.jsonl", [_compliance_payload("verify-prov")])
+
+    ingest_result = runner.invoke(app, ["evidence", "ingest", str(file)])
+    assert ingest_result.exit_code == 0
+
+    entry_hash = (
+        EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence").read_envelopes()[0].entry_hash
+    )
+
+    result = runner.invoke(app, ["evidence", "verify", entry_hash])
+    assert result.exit_code == 0, result.stdout
+    assert "source" in result.stdout
+    assert "normalization" in result.stdout
+    assert "storage" in result.stdout
