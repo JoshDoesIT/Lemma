@@ -710,6 +710,27 @@ lemma scope impact --plan plan.json
   # exits non-zero on any scope boundary change → pipeline fails, reviewer pulled in
 ```
 
+### `lemma scope posture`
+
+Per-framework compliance posture for declared scopes. For each scope bound to one or more frameworks, this walks the graph (`Scope → APPLIES_TO → Framework → CONTAINS → Control`) and reports four counts per framework:
+
+- **Controls** — total number of controls in the framework.
+- **Mapped** — number with at least one inbound `SATISFIES` edge from a policy.
+- **Evidenced** — number with at least one inbound `EVIDENCES` edge from a signed evidence entry.
+- **Covered** — number with both. This is the number an auditor usually asks for — "how many controls are both asserted by a policy and supported by real evidence?"
+
+```bash
+lemma scope posture [<SCOPE>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SCOPE` | No | When provided, renders a per-framework drill-down for that one scope. Omit to summarize every scope in the graph. |
+
+**Prerequisite.** The scope needs to be in the graph — run `lemma scope load` first. Likewise, controls come from `lemma framework add`, SATISFIES edges come from `lemma map`, and EVIDENCES edges come from `lemma evidence load`. An empty graph prints a friendly hint pointing at those commands.
+
+**Exit codes.** `0` on success (including empty results), `1` on an unknown scope name or outside a Lemma project. `posture` is a read-only report, not a gate — pipelines that want to fail on bad posture use `lemma check`.
+
 ### Scope-as-code schema
 
 ```yaml

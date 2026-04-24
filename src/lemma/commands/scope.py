@@ -6,6 +6,7 @@ Sub-commands:
     lemma scope load                  — load declared scopes into the graph
     lemma scope matches <resource-id> — show scopes that match a declared resource
     lemma scope impact --plan <file>  — scope impact of a Terraform plan
+    lemma scope posture [<name>]      — per-framework coverage metrics per scope
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
 from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
+from lemma.services.scope_posture import compute_posture
 from lemma.services.terraform_plan import parse_terraform_plan
 
 console = Console()
@@ -282,3 +284,77 @@ def impact_command(
         f"{unaffected} change(s) without scope impact."
     )
     raise typer.Exit(code=1)
+
+
+def _scope_names_in_graph(graph: ComplianceGraph) -> list[str]:
+    export = graph.export_json()
+    return sorted(node["name"] for node in export["nodes"] if node.get("type") == "Scope")
+
+
+@scope_app.command(
+    name="posture",
+    help="Per-framework compliance posture for declared scopes.",
+)
+def posture_command(
+    scope_name: str = typer.Argument(
+        "",
+        help="Specific scope to report on. Omit to summarize every declared scope.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
+    scope_names = _scope_names_in_graph(graph)
+    if not scope_names:
+        console.print("[dim]No scopes in the graph. Run [bold]lemma scope load[/bold] first.[/dim]")
+        return
+
+    if scope_name:
+        # Detailed per-framework drill-down for a single scope.
+        try:
+            posture = compute_posture(scope_name, graph)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        console.print(f"[bold]Posture: [cyan]{posture.scope}[/cyan][/bold]")
+        table = Table(title=f"Frameworks applied to {posture.scope}")
+        table.add_column("Framework", style="bold cyan")
+        table.add_column("Controls", justify="right")
+        table.add_column("Mapped", justify="right")
+        table.add_column("Evidenced", justify="right")
+        table.add_column("Covered", justify="right")
+        for fw in posture.frameworks:
+            table.add_row(
+                fw.name,
+                str(fw.total),
+                str(fw.mapped),
+                str(fw.evidenced),
+                str(fw.covered),
+            )
+        Console(width=120).print(table)
+        return
+
+    # Summary across every scope in the graph.
+    table = Table(title=f"Scope Posture ({len(scope_names)} scopes)")
+    table.add_column("Scope", style="bold cyan")
+    table.add_column("Framework")
+    table.add_column("Controls", justify="right")
+    table.add_column("Mapped", justify="right")
+    table.add_column("Evidenced", justify="right")
+    table.add_column("Covered", justify="right")
+    for name in scope_names:
+        posture = compute_posture(name, graph)
+        if not posture.frameworks:
+            table.add_row(name, "[dim]—[/dim]", "0", "0", "0", "0")
+            continue
+        for i, fw in enumerate(posture.frameworks):
+            table.add_row(
+                name if i == 0 else "",
+                fw.name,
+                str(fw.total),
+                str(fw.mapped),
+                str(fw.evidenced),
+                str(fw.covered),
+            )
+    Console(width=120).print(table)
