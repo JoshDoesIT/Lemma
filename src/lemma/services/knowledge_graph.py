@@ -176,6 +176,69 @@ class ComplianceGraph:
                 relationship="APPLIES_TO",
             )
 
+    def add_evidence(
+        self,
+        *,
+        entry_hash: str,
+        producer: str,
+        class_name: str,
+        time_iso: str,
+        control_refs: list[str],
+    ) -> None:
+        """Add an Evidence node with EVIDENCES edges to each referenced control.
+
+        Args:
+            entry_hash: Hex-encoded SHA-256 entry hash from the signed
+                evidence log. Used as the node identity.
+            producer: The event's signing producer (e.g. ``"GitHub"``).
+            class_name: OCSF class name (e.g. ``"Compliance Finding"``).
+            time_iso: Event time as ISO-8601 string; stored verbatim so
+                graph consumers don't need a datetime parser.
+            control_refs: ``"<framework>:<control_id>"`` strings naming
+                every control this evidence supports. Every ref must
+                resolve to an existing Control node in the graph.
+
+        Raises:
+            ValueError: If any entry in ``control_refs`` names a control
+                that is not indexed. Error lists all unresolved refs so
+                the operator can fix them in one pass. Nothing is added
+                when validation fails.
+        """
+        unresolved = [ref for ref in control_refs if f"control:{ref}" not in self._graph]
+        if unresolved:
+            msg = (
+                f"Evidence {entry_hash[:12]}… references control(s) not indexed "
+                f"in the graph: {', '.join(unresolved)}. Run "
+                f"'lemma framework add <name>' for the parent framework(s) first."
+            )
+            raise ValueError(msg)
+
+        node_id = f"evidence:{entry_hash}"
+        self._graph.add_node(
+            node_id,
+            type="Evidence",
+            entry_hash=entry_hash,
+            entry_hash_short=entry_hash[:12],
+            producer=producer,
+            class_name=class_name,
+            time_iso=time_iso,
+        )
+
+        # Idempotent: drop stale EVIDENCES edges before rebuilding so a
+        # re-add with a narrower control_refs list cleanly removes bindings.
+        for _source, target, key, attrs in list(
+            self._graph.out_edges(node_id, keys=True, data=True)
+        ):
+            if attrs.get("relationship") == "EVIDENCES":
+                self._graph.remove_edge(node_id, target, key=key)
+
+        for ref in control_refs:
+            self._graph.add_edge(
+                node_id,
+                f"control:{ref}",
+                relationship="EVIDENCES",
+            )
+
     def add_harmonization(
         self,
         *,
