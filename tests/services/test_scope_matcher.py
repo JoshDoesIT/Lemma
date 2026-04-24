@@ -128,3 +128,71 @@ class TestScopesContaining:
             match_rules=[],
         )
         assert scopes_containing({"anything": "goes"}, [catch_all]) == ["everything"]
+
+
+class TestScopeImpactForChange:
+    """Delta computation for one Terraform plan change."""
+
+    def _scopes(self):
+        from lemma.models.scope import ScopeDefinition
+
+        return [
+            ScopeDefinition(
+                name="prod",
+                frameworks=["nist-800-53"],
+                match_rules=[{"source": "env", "operator": "equals", "value": "prod"}],
+            ),
+            ScopeDefinition(
+                name="dev",
+                frameworks=["nist-800-53"],
+                match_rules=[{"source": "env", "operator": "equals", "value": "dev"}],
+            ),
+        ]
+
+    def test_scope_entered_on_env_change(self):
+        from lemma.services.scope_matcher import scope_impact_for_change
+
+        impact = scope_impact_for_change(
+            before={"env": "dev"},
+            after={"env": "prod"},
+            scopes=self._scopes(),
+        )
+        assert impact.entered == ["prod"]
+        assert impact.exited == ["dev"]
+        assert impact.unchanged == []
+
+    def test_unchanged_when_scope_membership_stable(self):
+        from lemma.services.scope_matcher import scope_impact_for_change
+
+        impact = scope_impact_for_change(
+            before={"env": "prod", "region": "us-east-1"},
+            after={"env": "prod", "region": "us-east-2"},
+            scopes=self._scopes(),
+        )
+        assert impact.entered == []
+        assert impact.exited == []
+        assert impact.unchanged == ["prod"]
+
+    def test_create_enters_scopes(self):
+        """A create (before=None) can only enter scopes, never exit."""
+        from lemma.services.scope_matcher import scope_impact_for_change
+
+        impact = scope_impact_for_change(
+            before=None,
+            after={"env": "prod"},
+            scopes=self._scopes(),
+        )
+        assert impact.entered == ["prod"]
+        assert impact.exited == []
+
+    def test_delete_exits_scopes(self):
+        """A delete (after=None) can only exit scopes."""
+        from lemma.services.scope_matcher import scope_impact_for_change
+
+        impact = scope_impact_for_change(
+            before={"env": "prod"},
+            after=None,
+            scopes=self._scopes(),
+        )
+        assert impact.entered == []
+        assert impact.exited == ["prod"]

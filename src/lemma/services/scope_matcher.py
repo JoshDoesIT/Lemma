@@ -19,9 +19,26 @@ in heterogeneous resource attributes.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from lemma.models.scope import MatchOperator, MatchRule, ScopeDefinition
+
+
+@dataclass(frozen=True)
+class ScopeImpact:
+    """Delta between pre-change and post-change scope membership.
+
+    - ``entered``: scopes the resource will belong to *after* the change
+      but did not belong to *before*.
+    - ``exited``: scopes the resource belonged to *before* but will not
+      *after*. Populated for deletes too.
+    - ``unchanged``: scopes whose membership is stable across the change.
+    """
+
+    entered: list[str] = field(default_factory=list)
+    exited: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
 
 
 def _resolve(attributes: dict, source: str) -> Any:
@@ -75,3 +92,25 @@ def scopes_containing(attributes: dict, scopes: list[ScopeDefinition]) -> list[s
         if all(matches(rule, attributes) for rule in scope.match_rules):
             result.append(scope.name)
     return result
+
+
+def scope_impact_for_change(
+    *,
+    before: dict | None,
+    after: dict | None,
+    scopes: list[ScopeDefinition],
+) -> ScopeImpact:
+    """Compare pre- and post-change scope membership for a single resource.
+
+    Creates pass ``before=None``; deletes pass ``after=None``. Either
+    side being ``None`` is treated as "zero matching scopes on that
+    side" — so a create can only enter scopes, a delete can only exit.
+    """
+    before_scopes = set(scopes_containing(before, scopes)) if before is not None else set()
+    after_scopes = set(scopes_containing(after, scopes)) if after is not None else set()
+
+    return ScopeImpact(
+        entered=sorted(after_scopes - before_scopes),
+        exited=sorted(before_scopes - after_scopes),
+        unchanged=sorted(after_scopes & before_scopes),
+    )

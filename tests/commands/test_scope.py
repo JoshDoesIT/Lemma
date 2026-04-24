@@ -326,3 +326,109 @@ class TestScopeMatches:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["scope", "matches", "anything"])
         assert result.exit_code == 1
+
+
+def _plan_file(tmp_path: Path, changes: list[dict]) -> Path:
+    import json as _json
+
+    path = tmp_path / "plan.json"
+    path.write_text(
+        _json.dumps(
+            {
+                "format_version": "1.2",
+                "terraform_version": "1.7.0",
+                "resource_changes": changes,
+            }
+        )
+    )
+    return path
+
+
+def _change(address: str, type_: str, actions: list[str], *, before=None, after=None):
+    return {
+        "address": address,
+        "type": type_,
+        "change": {"actions": actions, "before": before, "after": after},
+    }
+
+
+class TestScopeImpactPlan:
+    def _setup_scopes(self, tmp_path: Path):
+        (tmp_path / ".lemma").mkdir()
+        (tmp_path / "scopes").mkdir()
+        (tmp_path / "scopes" / "prod.yaml").write_text(
+            _scope_yaml(
+                "prod",
+                [{"source": "env", "operator": "equals", "value": "prod"}],
+            )
+        )
+
+    def test_change_entering_scope_exits_nonzero(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup_scopes(tmp_path)
+        plan = _plan_file(
+            tmp_path,
+            [_change("aws_s3_bucket.new", "aws_s3_bucket", ["create"], after={"env": "prod"})],
+        )
+
+        result = runner.invoke(app, ["scope", "impact", "--plan", str(plan)])
+        assert result.exit_code == 1
+        assert "prod" in result.stdout
+        assert "aws_s3_bucket.new" in result.stdout
+
+    def test_change_without_scope_impact_exits_zero(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup_scopes(tmp_path)
+        plan = _plan_file(
+            tmp_path,
+            [
+                _change(
+                    "aws_s3_bucket.staging",
+                    "aws_s3_bucket",
+                    ["create"],
+                    after={"env": "staging"},
+                )
+            ],
+        )
+
+        result = runner.invoke(app, ["scope", "impact", "--plan", str(plan)])
+        assert result.exit_code == 0, result.stdout
+        assert "no scope" in result.stdout.lower() or "0 scope" in result.stdout.lower()
+
+    def test_exit_action_shows_exited_scope(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup_scopes(tmp_path)
+        plan = _plan_file(
+            tmp_path,
+            [_change("aws_s3_bucket.b", "aws_s3_bucket", ["delete"], before={"env": "prod"})],
+        )
+
+        result = runner.invoke(app, ["scope", "impact", "--plan", str(plan)])
+        assert result.exit_code == 1
+        assert "exited" in result.stdout.lower() or "exit" in result.stdout.lower()
+
+    def test_malformed_plan_errors_loudly(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup_scopes(tmp_path)
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not valid")
+
+        result = runner.invoke(app, ["scope", "impact", "--plan", str(bad)])
+        assert result.exit_code == 1
+        assert "json" in result.stdout.lower() or "parse" in result.stdout.lower()
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        plan = _plan_file(tmp_path, [])
+        result = runner.invoke(app, ["scope", "impact", "--plan", str(plan)])
+        assert result.exit_code == 1

@@ -5,6 +5,7 @@ Sub-commands:
     lemma scope status                — parse and report declared scopes
     lemma scope load                  — load declared scopes into the graph
     lemma scope matches <resource-id> — show scopes that match a declared resource
+    lemma scope impact --plan <file>  — scope impact of a Terraform plan
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from rich.table import Table
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
-from lemma.services.scope_matcher import scopes_containing
+from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
+from lemma.services.terraform_plan import parse_terraform_plan
 
 console = Console()
 
@@ -214,3 +216,69 @@ def matches_command(
         declared_scope = next(s for s in scopes if s.name == scope_name)
         frameworks = ", ".join(declared_scope.frameworks)
         console.print(f"  [cyan]{scope_name}[/cyan]  →  {frameworks}")
+
+
+@scope_app.command(
+    name="impact",
+    help="Compute scope impact of a Terraform plan (exits non-zero on any scope change).",
+)
+def impact_command(
+    plan: str = typer.Option(
+        ...,
+        "--plan",
+        help="Path to a Terraform plan JSON file ('terraform show -json plan.tfplan').",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    try:
+        scopes = load_all_scopes(project_dir / "scopes")
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        changes = parse_terraform_plan(Path(plan))
+    except (ValueError, FileNotFoundError) as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    affected_rows: list[tuple[str, str, list[str], list[str]]] = []
+    unaffected = 0
+    for change in changes:
+        impact = scope_impact_for_change(before=change.before, after=change.after, scopes=scopes)
+        if impact.entered or impact.exited:
+            affected_rows.append(
+                (change.address, ",".join(change.actions), impact.entered, impact.exited)
+            )
+        else:
+            unaffected += 1
+
+    if not affected_rows:
+        console.print(
+            f"[green]No scope impact.[/green] "
+            f"{len(changes)} plan change(s) inspected; 0 scope memberships change."
+        )
+        return
+
+    table = Table(title=f"Scope Impact ({len(affected_rows)} of {len(changes)} changes)")
+    table.add_column("Resource", style="bold cyan")
+    table.add_column("Action")
+    table.add_column("Entered")
+    table.add_column("Exited")
+
+    for address, action, entered, exited in affected_rows:
+        table.add_row(
+            address,
+            action,
+            ", ".join(entered) or "—",
+            ", ".join(exited) or "—",
+        )
+
+    Console(width=120).print(table)
+    console.print(
+        f"[red]{len(affected_rows)} change(s) move scope membership.[/red] "
+        f"{unaffected} change(s) without scope impact."
+    )
+    raise typer.Exit(code=1)
