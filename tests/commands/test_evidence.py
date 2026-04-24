@@ -489,3 +489,125 @@ def test_verify_prints_full_provenance_chain(tmp_path: Path, monkeypatch):
     assert "source" in result.stdout
     assert "normalization" in result.stdout
     assert "storage" in result.stdout
+
+
+# --- Evidence nodes in the compliance graph (Refs #76, #88) ---
+
+
+def _compliance_payload_with_refs(uid: str, control_refs: list[str]) -> dict:
+    p = _compliance_payload(uid)
+    p["metadata"]["control_refs"] = control_refs
+    return p
+
+
+def _seed_graph_with_controls(project_dir: Path) -> None:
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    g = ComplianceGraph()
+    g.add_framework("nist-csf-2.0")
+    g.add_control(
+        framework="nist-csf-2.0",
+        control_id="gv.oc-1",
+        title="Org Context 1",
+        family="GV.OC",
+    )
+    g.add_control(
+        framework="nist-csf-2.0",
+        control_id="pr.aa-1",
+        title="Identities and credentials",
+        family="PR.AA",
+    )
+    g.save(project_dir / ".lemma" / "graph.json")
+
+
+class TestEvidenceLoad:
+    def test_happy_path_creates_nodes_and_edges(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+        log.append(normalize(_compliance_payload_with_refs("e-2", ["nist-csf-2.0:pr.aa-1"])))
+
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        envs = log.read_envelopes()
+        for env in envs:
+            assert g.get_node(f"evidence:{env.entry_hash}") is not None
+
+        # EVIDENCES edge from first envelope to gv.oc-1.
+        edges = g.get_edges(f"evidence:{envs[0].entry_hash}", "control:nist-csf-2.0:gv.oc-1")
+        assert any(e.get("relationship") == "EVIDENCES" for e in edges)
+
+    def test_unresolved_refs_abort_the_batch(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+        # Typo'd framework — must abort.
+        log.append(normalize(_compliance_payload_with_refs("e-2", ["nist-csf-2.0:typo-xx"])))
+
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 1
+        assert "typo-xx" in result.stdout
+
+        # Graph stays clean — no evidence nodes added at all on failure.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        for env in log.read_envelopes():
+            assert g.get_node(f"evidence:{env.entry_hash}") is None
+
+    def test_empty_log_prints_hint(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 0, result.stdout
+        assert "no evidence" in result.stdout.lower()
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 1
+
+    def test_in_graph_column_reflects_load_state(self, tmp_path: Path, monkeypatch):
+        """`lemma evidence log` shows ✓ after load, ✗ beforehand."""
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+
+        before = runner.invoke(app, ["evidence", "log"])
+        assert before.exit_code == 0
+        assert "Graph" in before.stdout  # column header
+        assert "✗" in before.stdout
+
+        assert runner.invoke(app, ["evidence", "load"]).exit_code == 0
+
+        after = runner.invoke(app, ["evidence", "log"])
+        assert after.exit_code == 0
+        assert "✓" in after.stdout

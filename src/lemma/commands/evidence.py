@@ -22,6 +22,7 @@ from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecor
 from lemma.sdk.connector import Connector
 from lemma.services import crypto
 from lemma.services.evidence_log import EvidenceLog
+from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.ocsf_normalizer import normalize_with_provenance
 
 console = Console()
@@ -105,24 +106,31 @@ def log_command() -> None:
         console.print("[dim]No evidence entries. 0 entries.[/dim]")
         return
 
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
     table = Table(title=f"Evidence Log ({len(envelopes)} entries)")
     table.add_column("Time", style="dim", width=19)
     table.add_column("Class", min_width=14)
     table.add_column("Producer", style="cyan")
     table.add_column("Entry", style="dim", no_wrap=True)
-    table.add_column("State")
+    table.add_column("Graph", justify="center")
+    table.add_column("State", no_wrap=True)
 
     for env in envelopes:
         result = log.verify_entry(env.entry_hash)
+        in_graph = graph.get_node(f"evidence:{env.entry_hash}") is not None
         table.add_row(
             env.event.time.strftime("%Y-%m-%d %H:%M:%S"),
             env.event.class_name,
             _producer_of(env.event.metadata),
             env.entry_hash[:12] + "…",
+            "[green]✓[/green]" if in_graph else "[dim]✗[/dim]",
             _state_style(result.state),
         )
 
-    console.print(table)
+    # Use a wider effective width so adding the "Graph" column doesn't
+    # squeeze the State column into "PROV" on narrow terminals.
+    Console(width=120).print(table)
 
 
 def _key_status_style(status_value: str) -> str:
@@ -366,3 +374,53 @@ def ingest_command(
         else:
             skipped += 1
     console.print(f"{ingested} ingested, {skipped} skipped (duplicate).")
+
+
+def _extract_control_refs(metadata: dict) -> list[str]:
+    """Pull ``control_refs`` off a free-form metadata dict, safely."""
+    refs = metadata.get("control_refs") if isinstance(metadata, dict) else None
+    if not isinstance(refs, list):
+        return []
+    return [ref for ref in refs if isinstance(ref, str) and ref]
+
+
+@evidence_app.command(
+    name="load",
+    help="Load every envelope in the evidence log into the compliance graph.",
+)
+def load_command() -> None:
+    project_dir = _require_lemma_project()
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    envelopes = log.read_envelopes()
+
+    if not envelopes:
+        console.print(
+            "[dim]No evidence to load. Run a connector or "
+            "[bold]lemma evidence ingest[/bold] first.[/dim]"
+        )
+        return
+
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    try:
+        for env in envelopes:
+            graph.add_evidence(
+                entry_hash=env.entry_hash,
+                producer=_producer_of(env.event.metadata),
+                class_name=env.event.class_name,
+                time_iso=env.event.time.isoformat(),
+                control_refs=_extract_control_refs(env.event.metadata),
+            )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    graph.save(graph_path)
+
+    linked = sum(1 for env in envelopes if _extract_control_refs(env.event.metadata))
+    console.print(
+        f"[green]Loaded[/green] {len(envelopes)} evidence entr"
+        f"{'y' if len(envelopes) == 1 else 'ies'}; "
+        f"{linked} linked to at least one control."
+    )

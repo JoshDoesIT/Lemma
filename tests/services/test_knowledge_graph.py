@@ -243,3 +243,118 @@ class TestAddScope:
         assert node["rule_count"] == 5
         edges = graph.get_edges("scope:prod", "framework:nist-800-53")
         assert len(edges) == 1
+
+
+class TestAddEvidence:
+    """Evidence nodes + EVIDENCES edges (Refs #76, #88)."""
+
+    def _seed_graph(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(
+            framework="nist-800-53",
+            control_id="ac-2",
+            title="Account Management",
+            family="AC",
+        )
+        g.add_framework("nist-csf-2.0")
+        g.add_control(
+            framework="nist-csf-2.0",
+            control_id="pr.aa-1",
+            title="Identities and credentials",
+            family="PR.AA",
+        )
+        return g
+
+    def test_creates_evidence_node_with_required_attrs(self):
+        graph = self._seed_graph()
+        graph.add_evidence(
+            entry_hash="abc123def456" * 5 + "0000",  # 64 hex chars
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=[],
+        )
+
+        node_id = "evidence:" + "abc123def456" * 5 + "0000"
+        node = graph.get_node(node_id)
+        assert node is not None
+        assert node["type"] == "Evidence"
+        assert node["producer"] == "Lemma"
+        assert node["class_name"] == "Compliance Finding"
+        assert node["time_iso"] == "2026-04-23T12:00:00+00:00"
+        assert node["entry_hash_short"] == "abc123def456"
+
+    def test_empty_control_refs_creates_node_with_zero_edges(self):
+        graph = self._seed_graph()
+        entry = "a" * 64
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=[],
+        )
+
+        export = graph.export_json()
+        evidence_edges = [e for e in export["edges"] if e.get("relationship") == "EVIDENCES"]
+        assert evidence_edges == []
+
+    def test_resolvable_refs_create_evidences_edges(self):
+        graph = self._seed_graph()
+        entry = "b" * 64
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=["nist-800-53:ac-2", "nist-csf-2.0:pr.aa-1"],
+        )
+
+        node_id = f"evidence:{entry}"
+        for target in ("control:nist-800-53:ac-2", "control:nist-csf-2.0:pr.aa-1"):
+            edges = graph.get_edges(node_id, target)
+            assert any(e.get("relationship") == "EVIDENCES" for e in edges)
+
+    def test_unresolved_refs_raise_and_leave_graph_untouched(self):
+        import pytest
+
+        graph = self._seed_graph()
+        entry = "c" * 64
+
+        with pytest.raises(ValueError, match=r"(?i)nist-800-53:acc-2|typo-fw"):
+            graph.add_evidence(
+                entry_hash=entry,
+                producer="Lemma",
+                class_name="Compliance Finding",
+                time_iso="2026-04-23T12:00:00+00:00",
+                control_refs=["nist-800-53:acc-2", "typo-fw:foo"],
+            )
+        # No Evidence node should have been added.
+        assert graph.get_node(f"evidence:{entry}") is None
+
+    def test_idempotent_rebuilds_edges(self):
+        graph = self._seed_graph()
+        entry = "d" * 64
+
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=["nist-800-53:ac-2", "nist-csf-2.0:pr.aa-1"],
+        )
+        # Re-add with a narrower ref list — the stale edge should drop.
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=["nist-800-53:ac-2"],
+        )
+
+        node_id = f"evidence:{entry}"
+        first_edges = graph.get_edges(node_id, "control:nist-800-53:ac-2")
+        second_edges = graph.get_edges(node_id, "control:nist-csf-2.0:pr.aa-1")
+        assert len(first_edges) == 1
+        assert second_edges == []

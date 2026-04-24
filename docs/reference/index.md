@@ -427,7 +427,38 @@ Show every entry in the evidence log with its per-entry integrity state.
 lemma evidence log
 ```
 
-Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, and the integrity verdict.
+Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, a **Graph** indicator (`✓` / `✗` — whether the entry has been loaded into the compliance graph via `lemma evidence load`), and the integrity verdict.
+
+### `lemma evidence load`
+
+Walk every envelope in the signed log and upsert a corresponding `Evidence` node into the compliance graph, with `EVIDENCES` edges pointing at each control named in the event's `metadata.control_refs` list.
+
+```bash
+lemma evidence load
+```
+
+This is the operator-triggered equivalent of `lemma scope load` — reads are side-effect-free, graph mutations happen only when you run this command. Re-running is safe: `add_evidence` is idempotent and stale edges are rebuilt when `control_refs` narrows.
+
+**Fails loud on unresolved control refs.** An envelope whose `control_refs` names a control that isn't indexed in the graph (framework not yet `lemma framework add`-ed, or typo'd control id) aborts the whole batch with an error naming the unresolved refs. No silent partial loads — fix the metadata or index the framework, then re-run.
+
+**The `metadata.control_refs` convention.** Operators and connectors signal control linkage by setting this list on OCSF metadata:
+
+```json
+{
+  "class_uid": 2003,
+  "class_name": "Compliance Finding",
+  "metadata": {
+    "version": "1.3.0",
+    "product": {"name": "Manual"},
+    "uid": "smoke-1",
+    "control_refs": ["nist-csf-2.0:gv.oc-1", "nist-800-53:ac-2"]
+  }
+}
+```
+
+Each entry has the shape `<framework-short-name>:<control-id>`. The field is optional — an evidence entry without `control_refs` still lands as an `Evidence` node, it just has no `EVIDENCES` edges (the audit story "we have this evidence" still holds even when the "which control does it support" link isn't recorded yet).
+
+Once loaded, evidence is reachable from every existing graph surface: `lemma graph impact control:nist-800-53:ac-2` surfaces every piece of linked evidence, and `lemma query` traversals see `Evidence` nodes alongside frameworks and controls.
 
 ### `lemma evidence rotate-key`
 
