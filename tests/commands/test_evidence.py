@@ -240,6 +240,59 @@ def test_collect_rejects_unknown_connector_name(tmp_path: Path, monkeypatch):
     )
 
 
+def test_collect_runs_okta_connector_and_appends_signed_evidence(tmp_path: Path, monkeypatch):
+    """`lemma evidence collect okta --domain <x>.okta.com` drives the connector end-to-end."""
+    import httpx
+
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    monkeypatch.setenv("LEMMA_OKTA_TOKEN", "test-token")
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/api/v1/policies" in url:
+            return httpx.Response(200, json=[{"id": "p1", "name": "MFA", "status": "ACTIVE"}])
+        if "/api/v1/apps" in url:
+            return httpx.Response(200, json=[{"id": "a1", "status": "ACTIVE"}])
+        return httpx.Response(404)
+
+    mock_client = httpx.Client(
+        base_url="https://example.okta.com", transport=httpx.MockTransport(_handler)
+    )
+
+    # Patch the connector's default client so the CLI picks up the mock.
+    from lemma.sdk.connectors import okta as okta_module
+
+    original_init = okta_module.OktaConnector.__init__
+
+    def _patched_init(self, *, domain, client=None, token=None):
+        original_init(self, domain=domain, client=client or mock_client, token=token)
+
+    monkeypatch.setattr(okta_module.OktaConnector, "__init__", _patched_init)
+
+    result = runner.invoke(app, ["evidence", "collect", "okta", "--domain", "example.okta.com"])
+    assert result.exit_code == 0, result.stdout
+    assert "ingested" in result.stdout.lower()
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 2  # MFA policy + SSO apps
+
+
+def test_collect_okta_without_domain_exits_nonzero(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    monkeypatch.setenv("LEMMA_OKTA_TOKEN", "test-token")
+
+    result = runner.invoke(app, ["evidence", "collect", "okta"])
+    assert result.exit_code == 1
+    assert "domain" in result.stdout.lower()
+
+
 def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch):
     from lemma.cli import app
     from lemma.services.crypto import rotate_key

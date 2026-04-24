@@ -537,17 +537,19 @@ lemma evidence collect <CONNECTOR> [OPTIONS]
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `CONNECTOR` | Yes | First-party connector name. Currently: `github`. |
+| `CONNECTOR` | Yes | First-party connector name. Currently: `github`, `okta`. |
 
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--repo` | For `github` | Repository in `owner/name` form |
+| `--domain` | For `okta` | Okta domain, e.g. `your-org.okta.com` |
 
 **First-party connectors**
 
 - `github` — collects branch protection on `main`, CODEOWNERS presence, and open Dependabot alert counts bucketed by severity. Auth via the `LEMMA_GITHUB_TOKEN` environment variable (optional for public repos within GitHub's 60-req/hr unauthenticated cap; required for private repos and to lift the rate limit to 5000/hr). Rate-limited responses raise a clean error naming the endpoint.
+- `okta` — collects MFA enrollment policy state and the SSO application inventory (active vs. total counts). Auth via the `LEMMA_OKTA_TOKEN` environment variable (required — Okta has no unauthenticated API). The token is passed as an `SSWS <token>` authorization header. Rate-limited responses (HTTP 429) raise a clean error naming the endpoint. Stable `metadata.uid` per `(event_type, domain, UTC date)` so same-day re-runs dedupe against themselves.
 
-Output reports how many events were ingested and how many were skipped as duplicates (same `metadata.uid` already in the log — stable per `event_type`, `repo`, and UTC date).
+Output reports how many events were ingested and how many were skipped as duplicates (same `metadata.uid` already in the log — stable per `event_type`, producer-specific target, and UTC date).
 
 ---
 
