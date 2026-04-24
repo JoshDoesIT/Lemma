@@ -679,6 +679,54 @@ Unknown top-level fields are rejected — a typo such as `match_rule` (singular)
 
 ---
 
+## `lemma resource`
+
+Manage declared infrastructure resources. A **Resource** is one infrastructure asset (an RDS instance, an S3 bucket, a Kubernetes deployment) that belongs to a declared compliance Scope. Declaring resources gives the compliance graph a population to reason about: once loaded, `lemma graph impact resource:<id>` surfaces the scope → framework → control chain that a single resource answers to.
+
+This is v0: **manual declaration only**. Operators author `resources/*.yaml` files and load them with `lemma resource load`. Auto-discovery from AWS Config, Azure Resource Graph, Terraform state, etc., stays tracked inside [#24](https://github.com/JoshDoesIT/Lemma/issues/24).
+
+### `lemma resource load`
+
+Parse every `resources/*.yaml` and `resources/*.yml` file, validate each against the schema, and upsert a `Resource` node into the compliance graph with a `SCOPED_TO` edge to the named scope.
+
+```bash
+lemma resource load
+```
+
+Re-running is safe: `add_resource` is idempotent — same `id` updates `attributes` in place, and the single `SCOPED_TO` edge is rebuilt, so a resource that moves to a different scope drops the old edge cleanly.
+
+**Fails loud on unresolved scopes.** If a resource's `scope:` field names a scope that isn't in the graph (`lemma scope load` has never run for it, or the scope YAML was deleted), `load` exits `1` with an error naming the missing scope. No silent partial loads.
+
+### `lemma resource list`
+
+Parse every resource YAML and render a Rich table with the id, type, declared scope, a ✓/✗ indicating whether the scope is actually in the graph, and the attribute count.
+
+```bash
+lemma resource list
+```
+
+### Resource-as-code schema
+
+```yaml
+id: prod-us-east-rds           # required; unique within the project
+type: aws.rds.instance         # required; free-form string naming the resource kind
+scope: prod-us-east            # required; must match the name of a declared Scope
+attributes:                    # optional; arbitrary key/value pairs copied to the node
+  region: us-east-1
+  engine: postgres
+  multi_az: true
+```
+
+**Field rules.**
+
+- `id` is caller-supplied and is the dedup key on re-runs.
+- `type` is free-form. Conventions like `aws.rds.instance`, `aws.s3.bucket`, `k8s.deployment` are suggested but not enforced.
+- `scope` must be the name of a scope that's been loaded into the graph via `lemma scope load`.
+- `attributes` is loose (`dict[str, Any]`) — resource types vary enormously, and a rigid per-type schema would block operators from declaring anything we haven't anticipated.
+- Unknown top-level fields fail loud with a line-numbered error. Typoing `resource_type:` for `type:` doesn't silently drop.
+
+---
+
 ## `lemma ai`
 
 AI transparency and governance commands.
