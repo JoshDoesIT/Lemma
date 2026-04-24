@@ -291,6 +291,66 @@ class ComplianceGraph:
 
         self._graph.add_edge(node_id, scope_node_id, relationship="SCOPED_TO")
 
+    def add_person(
+        self,
+        *,
+        person_id: str,
+        name: str,
+        email: str = "",
+        role: str = "",
+        owns: list[str] | None = None,
+    ) -> None:
+        """Add a Person node with OWNS edges to declared controls and/or resources.
+
+        Args:
+            person_id: Unique identifier within the project.
+            name: Human-readable full name (stored as ``full_name`` on the node
+                to avoid collision with the built-in ``name`` attr NetworkX
+                node dicts sometimes surface).
+            email: Optional contact address.
+            role: Optional role / title string.
+            owns: Refs to controls and/or resources the person is accountable
+                for. Each entry is either ``"control:<framework>:<id>"`` or
+                ``"resource:<id>"`` — the same prefixed id used elsewhere in
+                the graph. Every ref must resolve to an existing node.
+
+        Raises:
+            ValueError: If any ``owns`` entry names a node that isn't in the
+                graph. Every unresolved ref is listed so the operator can fix
+                them in one edit cycle. Nothing is added when validation fails.
+        """
+        owns_list = list(owns or [])
+
+        unresolved = [ref for ref in owns_list if ref not in self._graph]
+        if unresolved:
+            msg = (
+                f"Person '{person_id}' owns target(s) not indexed in the graph: "
+                f"{', '.join(unresolved)}. Run 'lemma framework add <name>' for "
+                "missing controls, or 'lemma resource load' for missing resources."
+            )
+            raise ValueError(msg)
+
+        node_id = f"person:{person_id}"
+        self._graph.add_node(
+            node_id,
+            type="Person",
+            person_id=person_id,
+            full_name=name,
+            email=email,
+            role=role,
+        )
+
+        # Idempotent: drop stale OWNS edges before rebuilding so dropping an
+        # owner relationship removes the edge cleanly.
+        for _source, target, key, attrs in list(
+            self._graph.out_edges(node_id, keys=True, data=True)
+        ):
+            if attrs.get("relationship") == "OWNS":
+                self._graph.remove_edge(node_id, target, key=key)
+
+        for ref in owns_list:
+            self._graph.add_edge(node_id, ref, relationship="OWNS")
+
     def add_harmonization(
         self,
         *,

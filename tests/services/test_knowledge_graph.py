@@ -435,3 +435,98 @@ class TestAddResource:
         prod_edges = graph.get_edges("resource:movable", "scope:prod")
         assert dev_edges == []
         assert len(prod_edges) == 1
+
+
+class TestAddPerson:
+    """Person nodes + OWNS edges (Refs #76)."""
+
+    def _graph_with_control_and_resource(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(
+            framework="nist-800-53", control_id="ac-2", title="Account Management", family="AC"
+        )
+        g.add_scope(name="prod", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.add_resource(
+            resource_id="prod-rds",
+            type_="aws.rds.instance",
+            scope="prod",
+            attributes={},
+        )
+        return g
+
+    def test_owns_control_creates_person_and_edge(self):
+        graph = self._graph_with_control_and_resource()
+        graph.add_person(
+            person_id="alice",
+            name="Alice Chen",
+            email="alice@example.com",
+            role="Security Lead",
+            owns=["control:nist-800-53:ac-2"],
+        )
+
+        node = graph.get_node("person:alice")
+        assert node is not None
+        assert node["type"] == "Person"
+        assert node["full_name"] == "Alice Chen"
+        assert node["email"] == "alice@example.com"
+        assert node["role"] == "Security Lead"
+
+        edges = graph.get_edges("person:alice", "control:nist-800-53:ac-2")
+        assert any(e.get("relationship") == "OWNS" for e in edges)
+
+    def test_owns_mixed_control_and_resource(self):
+        graph = self._graph_with_control_and_resource()
+        graph.add_person(
+            person_id="bob",
+            name="Bob",
+            email="",
+            role="",
+            owns=["control:nist-800-53:ac-2", "resource:prod-rds"],
+        )
+
+        for target in ("control:nist-800-53:ac-2", "resource:prod-rds"):
+            edges = graph.get_edges("person:bob", target)
+            assert any(e.get("relationship") == "OWNS" for e in edges)
+
+    def test_unresolved_target_raises_and_leaves_graph_untouched(self):
+        import pytest
+
+        graph = self._graph_with_control_and_resource()
+
+        with pytest.raises(ValueError, match=r"(?i)missing-ctrl|ghost-resource"):
+            graph.add_person(
+                person_id="carol",
+                name="Carol",
+                email="",
+                role="",
+                owns=[
+                    "control:nist-800-53:missing-ctrl",
+                    "resource:ghost-resource",
+                ],
+            )
+        assert graph.get_node("person:carol") is None
+
+    def test_idempotent_rebuilds_edges(self):
+        graph = self._graph_with_control_and_resource()
+
+        graph.add_person(
+            person_id="dave",
+            name="Dave",
+            email="",
+            role="",
+            owns=["control:nist-800-53:ac-2", "resource:prod-rds"],
+        )
+        # Re-add with narrower owns — the stale edge should drop.
+        graph.add_person(
+            person_id="dave",
+            name="Dave",
+            email="",
+            role="",
+            owns=["control:nist-800-53:ac-2"],
+        )
+
+        control_edges = graph.get_edges("person:dave", "control:nist-800-53:ac-2")
+        resource_edges = graph.get_edges("person:dave", "resource:prod-rds")
+        assert len(control_edges) == 1
+        assert resource_edges == []

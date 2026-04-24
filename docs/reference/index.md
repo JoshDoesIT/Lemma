@@ -826,6 +826,54 @@ attributes:                    # optional; arbitrary key/value pairs copied to t
 
 ---
 
+## `lemma person`
+
+Manage declared people (or shared aliases) who are accountable for controls and/or resources. A **Person** is the audit answer to "who owns this control?" — the universal ownership question. Persons are loaded as `Person` nodes in the compliance graph with `OWNS` edges pointing at controls and/or resources they're responsible for.
+
+Like resource-as-code, this is manual declaration only. Operators author `people/*.yaml` files and load them with `lemma person load`. LDAP / OIDC / HR-system auto-population is a future concern (tracked in #76).
+
+### `lemma person load`
+
+Parse every `people/*.yaml` and `people/*.yml` file, validate each against the schema, and upsert a `Person` node into the graph with one `OWNS` edge per entry in the `owns` list.
+
+```bash
+lemma person load
+```
+
+Re-running is safe: `add_person` is idempotent — same `id` updates `name`, `email`, `role`, and the full set of `OWNS` edges in place. Dropping an entry from `owns` drops the corresponding edge cleanly.
+
+**Fails loud on unresolved targets.** If any `owns` entry names a node that isn't in the graph (typo'd control id, resource that wasn't loaded), `load` exits `1` with an error listing every unresolved ref and pointing at the right fix command (`lemma framework add` for controls, `lemma resource load` for resources). No silent partial loads.
+
+### `lemma person list`
+
+Parse every person YAML and render a Rich table: id, name, role, owns-count, and a ✓/✗ column showing whether every `owns` ref currently resolves in the graph. Quick sanity check before running `load`, or for catching drift when someone deleted a resource without updating its owner's YAML.
+
+```bash
+lemma person list
+```
+
+### Person-as-code schema
+
+```yaml
+id: alice                             # required; unique within the project
+name: Alice Chen                      # required; full display name
+email: alice@example.com              # optional; contact address or team alias
+role: Security Lead                   # optional; free-form title / responsibility
+owns:                                 # optional; controls and/or resources this person owns
+  - control:nist-800-53:ac-2
+  - control:nist-csf-2.0:gv.oc-1
+  - resource:prod-us-east-rds
+```
+
+**The `owns` ref convention.** Each entry is a prefixed node id — the same id used everywhere else in the graph:
+
+- `control:<framework>:<control-id>` — e.g. `control:nist-800-53:ac-2`
+- `resource:<resource-id>` — e.g. `resource:prod-us-east-rds`
+
+A single `owns` list can mix both target types. Operators see the same ids here they'd see in `lemma graph impact` output; no separate field for controls vs. resources. Unknown top-level fields fail loud with a line-numbered error (`manager:` for example will be rejected).
+
+---
+
 ## `lemma ai`
 
 AI transparency and governance commands.
