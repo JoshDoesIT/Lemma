@@ -3,6 +3,7 @@
 Sub-commands:
     lemma scope init [--name <name>]  — scaffold a starter scopes/<name>.yaml
     lemma scope status                — parse and report declared scopes
+    lemma scope load                  — load declared scopes into the graph
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.scope import load_all_scopes
 
 console = Console()
@@ -97,18 +99,65 @@ def status_command() -> None:
         )
         return
 
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
     table = Table(title=f"Declared Scopes ({len(scopes)})")
     table.add_column("Scope", style="bold cyan")
     table.add_column("Frameworks")
     table.add_column("Rules", justify="right")
+    table.add_column("In Graph", justify="center")
     table.add_column("Justification", style="dim")
 
     for scope in scopes:
+        in_graph = graph.get_node(f"scope:{scope.name}") is not None
         table.add_row(
             scope.name,
             ", ".join(scope.frameworks),
             str(len(scope.match_rules)),
+            "[green]✓[/green]" if in_graph else "[dim]✗[/dim]",
             scope.justification or "—",
         )
 
     console.print(table)
+
+
+@scope_app.command(
+    name="load",
+    help="Load every declared scope into the compliance graph.",
+)
+def load_command() -> None:
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+
+    try:
+        scopes = load_all_scopes(scopes_dir)
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    if not scopes:
+        console.print(
+            "[dim]No scopes defined. Run [bold]lemma scope init[/bold] to create one.[/dim]"
+        )
+        return
+
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    try:
+        for scope in scopes:
+            graph.add_scope(
+                name=scope.name,
+                frameworks=scope.frameworks,
+                justification=scope.justification,
+                rule_count=len(scope.match_rules),
+            )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    graph.save(graph_path)
+    console.print(f"[green]Loaded[/green] {len(scopes)} scope(s) into the graph.")
+    for scope in scopes:
+        console.print(f"  [cyan]{scope.name}[/cyan]  →  {', '.join(scope.frameworks)}")

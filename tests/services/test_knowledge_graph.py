@@ -175,3 +175,71 @@ class TestComplianceGraph:
 
         assert graph.framework_control_count("fw") == 1
         assert len(graph.export_json()["nodes"]) == 2  # 1 framework + 1 control
+
+
+class TestAddScope:
+    """Scope nodes + APPLIES_TO edges (Refs #24, Scope-node half of #76)."""
+
+    def test_creates_scope_node_and_applies_to_edges(self):
+        graph = ComplianceGraph()
+        graph.add_framework("nist-800-53")
+        graph.add_framework("nist-csf-2.0")
+
+        graph.add_scope(
+            name="prod-us-east",
+            frameworks=["nist-800-53", "nist-csf-2.0"],
+            justification="Customer-facing prod.",
+            rule_count=3,
+        )
+
+        node = graph.get_node("scope:prod-us-east")
+        assert node is not None
+        assert node["type"] == "Scope"
+        assert node["justification"] == "Customer-facing prod."
+        assert node["rule_count"] == 3
+
+        # APPLIES_TO edges from scope to each framework
+        for framework in ("nist-800-53", "nist-csf-2.0"):
+            edges = graph.get_edges("scope:prod-us-east", f"framework:{framework}")
+            assert any(e.get("relationship") == "APPLIES_TO" for e in edges)
+
+    def test_rejects_unknown_framework(self):
+        """Scope bound to a framework not in the graph must fail loud."""
+        import pytest
+
+        graph = ComplianceGraph()
+        graph.add_framework("nist-800-53")
+
+        with pytest.raises(ValueError, match=r"(?i)iso-27001"):
+            graph.add_scope(
+                name="broken",
+                frameworks=["nist-800-53", "iso-27001"],
+                justification="",
+                rule_count=0,
+            )
+        # Nothing should have been added.
+        assert graph.get_node("scope:broken") is None
+
+    def test_idempotent(self):
+        """Adding the same scope twice updates in place; no duplicate edges."""
+        graph = ComplianceGraph()
+        graph.add_framework("nist-800-53")
+
+        graph.add_scope(
+            name="prod",
+            frameworks=["nist-800-53"],
+            justification="v1",
+            rule_count=2,
+        )
+        graph.add_scope(
+            name="prod",
+            frameworks=["nist-800-53"],
+            justification="v2",
+            rule_count=5,
+        )
+
+        node = graph.get_node("scope:prod")
+        assert node["justification"] == "v2"
+        assert node["rule_count"] == 5
+        edges = graph.get_edges("scope:prod", "framework:nist-800-53")
+        assert len(edges) == 1

@@ -598,7 +598,26 @@ Parse every `scopes/*.yaml` and `scopes/*.yml` file, validate it against the sch
 lemma scope status
 ```
 
+The table includes an **In Graph** column showing ✓ when the scope has been loaded into the compliance graph via `lemma scope load`, and ✗ when it's declared in YAML but not yet loaded. This makes it obvious at a glance which scopes an auditor can traverse through `lemma graph impact` and which are still YAML-only.
+
 Error output is line-aware: a YAML syntax mistake or a schema violation is reported as `<file>:<line>:<col>: <reason>` so the operator can jump straight to the offending record. When multiple files have errors, all errors are reported in one pass.
+
+### `lemma scope load`
+
+Load every declared scope into the compliance graph as a `Scope` node with `APPLIES_TO` edges pointing at each bound framework. Operator-run, same model as `lemma map` and `lemma harmonize` — nothing touches the graph until you invoke it.
+
+```bash
+lemma scope load
+```
+
+Re-running is safe: `add_scope` is idempotent — same scope name updates the node's `justification` and `rule_count` in place, and existing `APPLIES_TO` edges are rebuilt so a scope that drops a framework from its YAML drops the corresponding edge.
+
+**Fails loud on unknown frameworks.** If a scope references a framework that isn't indexed in the graph (`lemma framework add <name>` has never been run for it), `load` exits `1` with an error naming the missing framework(s). No silent partial loads.
+
+Once loaded, a scope is queryable through every existing graph surface:
+
+- `lemma graph impact scope:<name>` traverses from the scope outward — the frameworks it applies to, the controls those frameworks contain.
+- `lemma query "..."` over the graph sees `Scope` nodes alongside frameworks and controls.
 
 ### Scope-as-code schema
 
