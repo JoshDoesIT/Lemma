@@ -239,6 +239,58 @@ class ComplianceGraph:
                 relationship="EVIDENCES",
             )
 
+    def add_resource(
+        self,
+        *,
+        resource_id: str,
+        type_: str,
+        scope: str,
+        attributes: dict | None = None,
+    ) -> None:
+        """Add a Resource node with a SCOPED_TO edge to the named scope.
+
+        Args:
+            resource_id: Resource identifier (unique within the graph).
+            type_: Free-form type string (e.g. ``"aws.rds.instance"``).
+            scope: Name of an existing Scope node. The scope must be
+                loaded into the graph (`lemma scope load`) before
+                resources can reference it.
+            attributes: Arbitrary attributes copied onto the node for
+                display and later scope-rule evaluation.
+
+        Raises:
+            ValueError: If the named scope has no corresponding Scope
+                node in the graph. Nothing is added when validation
+                fails.
+        """
+        scope_node_id = f"scope:{scope}"
+        if scope_node_id not in self._graph:
+            msg = (
+                f"Resource '{resource_id}' references scope '{scope}' which is not "
+                "indexed in the graph. Run 'lemma scope load' first, then retry."
+            )
+            raise ValueError(msg)
+
+        node_id = f"resource:{resource_id}"
+        self._graph.add_node(
+            node_id,
+            type="Resource",
+            resource_id=resource_id,
+            resource_type=type_,
+            scope=scope,
+            attributes=dict(attributes or {}),
+        )
+
+        # Idempotent: drop stale SCOPED_TO edges before rebuilding so a
+        # resource that moves to a different scope drops the old edge.
+        for _source, target, key, attrs in list(
+            self._graph.out_edges(node_id, keys=True, data=True)
+        ):
+            if attrs.get("relationship") == "SCOPED_TO":
+                self._graph.remove_edge(node_id, target, key=key)
+
+        self._graph.add_edge(node_id, scope_node_id, relationship="SCOPED_TO")
+
     def add_harmonization(
         self,
         *,

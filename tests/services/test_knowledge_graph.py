@@ -358,3 +358,80 @@ class TestAddEvidence:
         second_edges = graph.get_edges(node_id, "control:nist-csf-2.0:pr.aa-1")
         assert len(first_edges) == 1
         assert second_edges == []
+
+
+class TestAddResource:
+    """Resource nodes + SCOPED_TO edges (Refs #76)."""
+
+    def _graph_with_scopes(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_scope(
+            name="prod",
+            frameworks=["nist-800-53"],
+            justification="Prod.",
+            rule_count=0,
+        )
+        g.add_scope(
+            name="dev",
+            frameworks=["nist-800-53"],
+            justification="Dev.",
+            rule_count=0,
+        )
+        return g
+
+    def test_creates_node_and_scoped_to_edge(self):
+        graph = self._graph_with_scopes()
+        graph.add_resource(
+            resource_id="prod-rds",
+            type_="aws.rds.instance",
+            scope="prod",
+            attributes={"region": "us-east-1"},
+        )
+
+        node = graph.get_node("resource:prod-rds")
+        assert node is not None
+        assert node["type"] == "Resource"
+        assert node["resource_type"] == "aws.rds.instance"
+        assert node["attributes"] == {"region": "us-east-1"}
+
+        edges = graph.get_edges("resource:prod-rds", "scope:prod")
+        assert any(e.get("relationship") == "SCOPED_TO" for e in edges)
+
+    def test_rejects_unknown_scope(self):
+        import pytest
+
+        graph = self._graph_with_scopes()
+        with pytest.raises(ValueError, match=r"(?i)staging"):
+            graph.add_resource(
+                resource_id="orphan",
+                type_="aws.s3.bucket",
+                scope="staging",
+                attributes={},
+            )
+        assert graph.get_node("resource:orphan") is None
+
+    def test_idempotent_update_rebuilds_edges(self):
+        graph = self._graph_with_scopes()
+
+        graph.add_resource(
+            resource_id="movable",
+            type_="aws.s3.bucket",
+            scope="dev",
+            attributes={"v": 1},
+        )
+        # Move to a different scope; the old edge should drop cleanly.
+        graph.add_resource(
+            resource_id="movable",
+            type_="aws.s3.bucket",
+            scope="prod",
+            attributes={"v": 2},
+        )
+
+        node = graph.get_node("resource:movable")
+        assert node["attributes"] == {"v": 2}
+
+        dev_edges = graph.get_edges("resource:movable", "scope:dev")
+        prod_edges = graph.get_edges("resource:movable", "scope:prod")
+        assert dev_edges == []
+        assert len(prod_edges) == 1
