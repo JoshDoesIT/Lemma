@@ -190,7 +190,13 @@ def revoke_key_command(
     )
 
 
-def _first_party_connector(name: str, *, repo: str | None, domain: str | None) -> Connector:
+def _first_party_connector(
+    name: str,
+    *,
+    repo: str | None,
+    domain: str | None,
+    region: str | None,
+) -> Connector:
     """Instantiate a first-party connector by short name.
 
     Raises ``ValueError`` with the list of known names when the given
@@ -213,7 +219,12 @@ def _first_party_connector(name: str, *, repo: str | None, domain: str | None) -
             raise ValueError(msg)
         return OktaConnector(domain=domain)
 
-    known = ["github", "okta"]
+    if name == "aws":
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        return AWSConnector(region=region or "us-east-1")
+
+    known = ["github", "okta", "aws"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -224,16 +235,24 @@ def _first_party_connector(name: str, *, repo: str | None, domain: str | None) -
 )
 def collect_command(
     connector_name: str = typer.Argument(
-        help="First-party connector name (e.g. 'github', 'okta')",
+        help="First-party connector name (e.g. 'github', 'okta', 'aws')",
     ),
     repo: str = typer.Option("", "--repo", help="Repository in owner/name form (github connector)"),
     domain: str = typer.Option(
         "", "--domain", help="Okta domain, e.g. your-org.okta.com (okta connector)"
     ),
+    region: str = typer.Option(
+        "", "--region", help="AWS region (aws connector; defaults to us-east-1)"
+    ),
 ) -> None:
     project_dir = _require_lemma_project()
     try:
-        connector = _first_party_connector(connector_name, repo=repo or None, domain=domain or None)
+        connector = _first_party_connector(
+            connector_name,
+            repo=repo or None,
+            domain=domain or None,
+            region=region or None,
+        )
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc

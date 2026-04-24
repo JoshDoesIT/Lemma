@@ -293,6 +293,48 @@ def test_collect_okta_without_domain_exits_nonzero(tmp_path: Path, monkeypatch):
     assert "domain" in result.stdout.lower()
 
 
+def test_collect_runs_aws_connector_and_appends_signed_evidence(tmp_path: Path, monkeypatch):
+    """`lemma evidence collect aws --region <r>` drives the connector end-to-end."""
+    from unittest.mock import MagicMock
+
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+
+    session = MagicMock()
+    iam = MagicMock()
+    iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 1}}
+    iam.get_account_password_policy.return_value = {"PasswordPolicy": {"MinimumPasswordLength": 14}}
+    trail = MagicMock()
+    trail.describe_trails.return_value = {"trailList": [{"Name": "t1", "IsMultiRegionTrail": True}]}
+    sts = MagicMock()
+    sts.get_caller_identity.return_value = {"Account": "123456789012"}
+    session.client.side_effect = lambda svc, **_: {
+        "iam": iam,
+        "cloudtrail": trail,
+        "sts": sts,
+    }[svc]
+
+    from lemma.sdk.connectors import aws as aws_module
+
+    original_init = aws_module.AWSConnector.__init__
+
+    def _patched_init(self, *, region="us-east-1", session=None):
+        original_init(self, region=region, session=session or session_fixture)
+
+    session_fixture = session
+    monkeypatch.setattr(aws_module.AWSConnector, "__init__", _patched_init)
+
+    result = runner.invoke(app, ["evidence", "collect", "aws", "--region", "us-east-1"])
+    assert result.exit_code == 0, result.stdout
+    assert "ingested" in result.stdout.lower()
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    assert len(log.read_envelopes()) == 3  # root MFA + password policy + CloudTrail
+
+
 def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch):
     from lemma.cli import app
     from lemma.services.crypto import rotate_key
