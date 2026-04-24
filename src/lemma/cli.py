@@ -30,6 +30,7 @@ from lemma.commands.harmonize import (
 )
 from lemma.commands.init import init_command
 from lemma.commands.map import map_command
+from lemma.commands.person import person_app
 from lemma.commands.query import query_command
 from lemma.commands.resource import resource_app
 from lemma.commands.scope import scope_app
@@ -63,6 +64,7 @@ app.add_typer(evidence_app, name="evidence", help="Inspect and verify the eviden
 app.add_typer(connector_app, name="connector", help="Build, scaffold, and test connectors")
 app.add_typer(scope_app, name="scope", help="Manage scope-as-code definitions")
 app.add_typer(resource_app, name="resource", help="Manage declared infrastructure resources")
+app.add_typer(person_app, name="person", help="Manage person-as-code definitions")
 
 
 if __name__ == "__main__":
