@@ -230,3 +230,99 @@ class TestScopeLoad:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["scope", "load"])
         assert result.exit_code == 1
+
+
+def _scope_yaml(name: str, rules: list[dict]) -> str:
+    lines = [f"name: {name}", "frameworks:", "  - nist-800-53"]
+    if rules:
+        lines.append("match_rules:")
+        for rule in rules:
+            lines.append(f"  - source: {rule['source']}")
+            lines.append(f"    operator: {rule['operator']}")
+            lines.append(f"    value: {rule['value']}")
+    else:
+        lines.append("match_rules: []")
+    return "\n".join(lines) + "\n"
+
+
+def _resource_yaml(id_: str, scope: str, attributes: dict) -> str:
+    lines = [f"id: {id_}", "type: aws.rds.instance", f"scope: {scope}", "attributes:"]
+    for k, v in attributes.items():
+        lines.append(f"  {k}: {v}")
+    return "\n".join(lines) + "\n"
+
+
+class TestScopeMatches:
+    def _setup(self, tmp_path: Path):
+        (tmp_path / ".lemma").mkdir()
+        (tmp_path / "scopes").mkdir()
+        (tmp_path / "resources").mkdir()
+        (tmp_path / "scopes" / "prod.yaml").write_text(
+            _scope_yaml(
+                "prod-us-east",
+                [
+                    {"source": "env", "operator": "equals", "value": "prod"},
+                    {"source": "region", "operator": "equals", "value": "us-east-1"},
+                ],
+            )
+        )
+        (tmp_path / "scopes" / "dev.yaml").write_text(
+            _scope_yaml(
+                "dev",
+                [{"source": "env", "operator": "equals", "value": "dev"}],
+            )
+        )
+        (tmp_path / "resources" / "rds.yaml").write_text(
+            _resource_yaml("prod-rds", "prod-us-east", {"env": "prod", "region": "us-east-1"})
+        )
+
+    def test_prints_matching_scopes(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup(tmp_path)
+
+        result = runner.invoke(app, ["scope", "matches", "prod-rds"])
+        assert result.exit_code == 0, result.stdout
+        assert "prod-us-east" in result.stdout
+        # dev scope should not appear in the matched list.
+        assert "dev" not in result.stdout.replace("prod-us-east", "")
+
+    def test_unknown_resource_id_exits_1(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._setup(tmp_path)
+
+        result = runner.invoke(app, ["scope", "matches", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "does-not-exist" in result.stdout
+
+    def test_no_scope_matches_prints_empty_hint(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        (tmp_path / "scopes").mkdir()
+        (tmp_path / "resources").mkdir()
+        # Declare a resource whose env doesn't match any scope.
+        (tmp_path / "scopes" / "prod.yaml").write_text(
+            _scope_yaml(
+                "prod",
+                [{"source": "env", "operator": "equals", "value": "prod"}],
+            )
+        )
+        (tmp_path / "resources" / "stg.yaml").write_text(
+            _resource_yaml("stg-rds", "prod", {"env": "staging"})
+        )
+
+        result = runner.invoke(app, ["scope", "matches", "stg-rds"])
+        assert result.exit_code == 0
+        assert "no matching scope" in result.stdout.lower() or "0 scope" in result.stdout.lower()
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "matches", "anything"])
+        assert result.exit_code == 1

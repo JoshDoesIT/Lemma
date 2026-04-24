@@ -4,6 +4,7 @@ Sub-commands:
     lemma scope init [--name <name>]  — scaffold a starter scopes/<name>.yaml
     lemma scope status                — parse and report declared scopes
     lemma scope load                  — load declared scopes into the graph
+    lemma scope matches <resource-id> — show scopes that match a declared resource
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.services.knowledge_graph import ComplianceGraph
+from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
+from lemma.services.scope_matcher import scopes_containing
 
 console = Console()
 
@@ -161,3 +164,53 @@ def load_command() -> None:
     console.print(f"[green]Loaded[/green] {len(scopes)} scope(s) into the graph.")
     for scope in scopes:
         console.print(f"  [cyan]{scope.name}[/cyan]  →  {', '.join(scope.frameworks)}")
+
+
+@scope_app.command(
+    name="matches",
+    help="Show which declared scopes contain a declared resource.",
+)
+def matches_command(
+    resource_id: str = typer.Argument(
+        help="Resource id (from a resources/*.yaml file) to evaluate.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    try:
+        scopes = load_all_scopes(project_dir / "scopes")
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        resources = load_all_resources(project_dir / "resources")
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    resource = next((r for r in resources if r.id == resource_id), None)
+    if resource is None:
+        console.print(
+            f"[red]Error:[/red] No declared resource with id '{resource_id}'. "
+            "Check resources/*.yaml."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        matching = scopes_containing(resource.attributes, scopes)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not matching:
+        console.print(f"[dim]No matching scope — {resource_id} satisfies 0 scopes' rules.[/dim]")
+        return
+
+    console.print(f"[green]{resource_id}[/green] matches {len(matching)} scope(s):")
+    for scope_name in matching:
+        declared_scope = next(s for s in scopes if s.name == scope_name)
+        frameworks = ", ".join(declared_scope.frameworks)
+        console.print(f"  [cyan]{scope_name}[/cyan]  →  {frameworks}")

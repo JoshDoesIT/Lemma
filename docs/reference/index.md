@@ -654,6 +654,33 @@ Once loaded, a scope is queryable through every existing graph surface:
 - `lemma graph impact scope:<name>` traverses from the scope outward — the frameworks it applies to, the controls those frameworks contain.
 - `lemma query "..."` over the graph sees `Scope` nodes alongside frameworks and controls.
 
+### `lemma scope matches`
+
+Evaluate a declared resource's attributes against every scope's `match_rules` and print which scopes would contain it. Read-only — doesn't touch the graph. Useful as a sanity check before committing scope YAML or as a local preview of what a Terraform plan would trigger.
+
+```bash
+lemma scope matches <RESOURCE-ID>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `RESOURCE-ID` | Yes | The `id` field from a declared `resources/*.yaml` file |
+
+**Match semantics.** A scope contains a resource when **every** one of its `match_rules` evaluates to true against the resource's `attributes`. A scope with zero rules is a catch-all and matches everything (operators use this deliberately for org-wide scopes). Rule `source` paths use dotted traversal — `aws.tags.Environment` walks `{aws: {tags: {Environment: ...}}}`. A missing path does not match (does not raise); heterogeneous resource attributes are expected.
+
+**Operators** (already documented in the scope-as-code schema): `equals`, `contains`, `in` (requires a list `value`), `matches` (regex).
+
+**Example**
+
+```bash
+$ lemma scope matches prod-us-east-rds
+prod-us-east-rds matches 2 scope(s):
+  prod-us-east  →  nist-800-53, nist-csf-2.0
+  pci-cardholder  →  pci-dss-4.0
+```
+
+Exit code is `0` whether any scopes match or none — "no match" is a legitimate answer. A missing resource id or a malformed scope/resource YAML exits `1`.
+
 ### Scope-as-code schema
 
 ```yaml
