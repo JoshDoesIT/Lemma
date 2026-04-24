@@ -536,3 +536,52 @@ class TestScopePosture:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["scope", "posture"])
         assert result.exit_code == 1
+
+
+class TestScopeVisualize:
+    def test_emits_dot_to_stdout(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+
+        result = runner.invoke(app, ["scope", "visualize"])
+        assert result.exit_code == 0, result.stdout
+        assert "digraph" in result.stdout
+        assert "scope:prod" in result.stdout
+
+    def test_with_scope_name_filters_to_that_scope(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+        # Add a second scope. Filter should exclude it.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_scope(name="dev", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        result = runner.invoke(app, ["scope", "visualize", "prod"])
+        assert result.exit_code == 0, result.stdout
+        assert "scope:prod" in result.stdout
+        assert "scope:dev" not in result.stdout
+
+    def test_unknown_scope_exits_1(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _graph_with_scope_framework_and_evidence(tmp_path)
+
+        result = runner.invoke(app, ["scope", "visualize", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "does-not-exist" in result.stdout
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "visualize"])
+        assert result.exit_code == 1

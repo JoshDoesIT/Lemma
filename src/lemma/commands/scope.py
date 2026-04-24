@@ -7,6 +7,7 @@ Sub-commands:
     lemma scope matches <resource-id> — show scopes that match a declared resource
     lemma scope impact --plan <file>  — scope impact of a Terraform plan
     lemma scope posture [<name>]      — per-framework coverage metrics per scope
+    lemma scope visualize [<name>]    — render scope subgraph as Graphviz DOT
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from rich.table import Table
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
+from lemma.services.scope_dot import render_scope_dot
 from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
 from lemma.services.scope_posture import compute_posture
 from lemma.services.terraform_plan import parse_terraform_plan
@@ -358,3 +360,26 @@ def posture_command(
                 str(fw.covered),
             )
     Console(width=120).print(table)
+
+
+@scope_app.command(
+    name="visualize",
+    help="Render the scope subgraph as Graphviz DOT (pipe to `dot -Tpng` to render).",
+)
+def visualize_command(
+    scope_name: str = typer.Argument(
+        "",
+        help="Scope to render. Omit to render every declared scope.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
+    try:
+        dot = render_scope_dot(graph, scope_filter=scope_name or None)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Plain stdout — Rich would add color codes that break `dot`.
+    print(dot, end="")
