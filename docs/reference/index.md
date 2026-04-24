@@ -681,6 +681,35 @@ prod-us-east-rds matches 2 scope(s):
 
 Exit code is `0` whether any scopes match or none — "no match" is a legitimate answer. A missing resource id or a malformed scope/resource YAML exits `1`.
 
+### `lemma scope impact --plan`
+
+Evaluate a Terraform plan against every declared scope and report which planned changes move a resource across scope boundaries. Designed for CI/CD: exit code is `1` whenever any change enters or exits a scope so a pipeline can fail the merge and pull a human into the review. Emits `0` when the plan is entirely scope-neutral.
+
+```bash
+terraform show -json plan.tfplan > plan.json
+lemma scope impact --plan plan.json
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--plan` | Yes | Path to a Terraform plan JSON file (from `terraform show -json`) |
+
+**What it computes.** For each `resource_changes[]` entry in the plan, `scope impact` runs the resource's `change.before` and `change.after` attributes through every declared scope's `match_rules`. The delta is split three ways:
+
+- **Entered** — scope(s) the resource will newly belong to after the plan applies. This is the signal an auditor cares about most: "you're bringing new infrastructure into prod scope."
+- **Exited** — scope(s) the resource was in but will no longer be. Also flagged — removing a resource from a compliance scope may mean you're losing evidence coverage for a control.
+- **Unchanged** — scope membership that's stable across the change. Not printed (it's the no-news case).
+
+**No-op rows are filtered.** Terraform plans include `actions: ["no-op"]` entries for unchanged resources; `scope impact` drops them since they can't move scope membership by definition.
+
+**Example CI invocation (GitHub Actions excerpt):**
+
+```yaml
+- run: terraform show -json plan.tfplan > plan.json
+- run: lemma scope impact --plan plan.json
+  # exits non-zero on any scope boundary change → pipeline fails, reviewer pulled in
+```
+
 ### Scope-as-code schema
 
 ```yaml
