@@ -731,6 +731,28 @@ lemma scope posture [<SCOPE>]
 
 **Exit codes.** `0` on success (including empty results), `1` on an unknown scope name or outside a Lemma project. `posture` is a read-only report, not a gate — pipelines that want to fail on bad posture use `lemma check`.
 
+### `lemma scope visualize`
+
+Render the scope-centered slice of the compliance graph as Graphviz DOT on stdout. Includes Scope, Framework, Control, and Resource nodes with `APPLIES_TO`, `CONTAINS`, and `SCOPED_TO` edges. Pipe the output through any Graphviz renderer (`dot`, `neato`, etc.) to turn it into an image.
+
+```bash
+lemma scope visualize [<SCOPE>] | dot -Tpng -o graph.png
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SCOPE` | No | Restrict the rendering to one scope and its reachable frameworks / controls / resources. Omit to render every declared scope. |
+
+**Why DOT, not PNG directly.** Emitting DOT keeps Lemma free of a heavy Graphviz Python binding and lets operators pick their preferred renderer (`dot` for hierarchical, `neato` for force-directed, `fdp` for cluster layouts). A typical workflow:
+
+```bash
+lemma scope visualize prod > prod.dot
+dot -Tpng prod.dot -o prod.png       # render
+dot -Tsvg prod.dot -o prod.svg       # vector for documentation sites
+```
+
+**Exit codes.** `0` on success, including an empty graph (you'll get a valid but empty digraph). `1` on an unknown scope name or when invoked outside a Lemma project.
+
 ### Scope-as-code schema
 
 ```yaml
