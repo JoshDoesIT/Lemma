@@ -33,6 +33,7 @@ from lemma.commands.map import map_command
 from lemma.commands.person import person_app
 from lemma.commands.query import query_command
 from lemma.commands.resource import resource_app
+from lemma.commands.risk import risk_app
 from lemma.commands.scope import scope_app
 from lemma.commands.status import status_command
 from lemma.commands.validate import validate_command
@@ -65,6 +66,7 @@ app.add_typer(connector_app, name="connector", help="Build, scaffold, and test c
 app.add_typer(scope_app, name="scope", help="Manage scope-as-code definitions")
 app.add_typer(resource_app, name="resource", help="Manage declared infrastructure resources")
 app.add_typer(person_app, name="person", help="Manage person-as-code definitions")
+app.add_typer(risk_app, name="risk", help="Manage risk-as-code definitions")
 
 
 if __name__ == "__main__":

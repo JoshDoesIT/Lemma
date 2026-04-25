@@ -36,3 +36,21 @@ class TestResourceDefinition:
                 resource_type="oops",  # type: ignore[call-arg]
                 scope="default",
             )
+
+    def test_accepts_optional_impacts_field(self):
+        """`impacts` carries control refs the resource directly contributes to."""
+        from lemma.models.resource import ResourceDefinition
+
+        r = ResourceDefinition(
+            id="audit-bucket",
+            type="aws.s3.bucket",
+            scope="default",
+            impacts=["control:nist-800-53:au-2", "control:nist-csf-2.0:de.cm-01"],
+        )
+        assert r.impacts == ["control:nist-800-53:au-2", "control:nist-csf-2.0:de.cm-01"]
+
+    def test_impacts_defaults_to_empty(self):
+        from lemma.models.resource import ResourceDefinition
+
+        r = ResourceDefinition(id="r1", type="aws.s3.bucket", scope="default")
+        assert r.impacts == []

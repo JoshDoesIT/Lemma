@@ -246,6 +246,7 @@ class ComplianceGraph:
         type_: str,
         scope: str,
         attributes: dict | None = None,
+        impacts: list[str] | None = None,
     ) -> None:
         """Add a Resource node with a SCOPED_TO edge to the named scope.
 
@@ -257,17 +258,34 @@ class ComplianceGraph:
                 resources can reference it.
             attributes: Arbitrary attributes copied onto the node for
                 display and later scope-rule evaluation.
+            impacts: Optional list of control refs (``control:<framework>:<id>``)
+                that this resource directly contributes to. Each ref must
+                resolve to an existing Control node in the graph.
+                Generates ``IMPACTS`` edges from the resource to each
+                control. Distinct from ``SCOPED_TO`` — IMPACTS expresses
+                direct dependency, SCOPED_TO expresses scope membership.
 
         Raises:
             ValueError: If the named scope has no corresponding Scope
-                node in the graph. Nothing is added when validation
-                fails.
+                node in the graph, or if any ``impacts`` entry doesn't
+                resolve to an indexed Control node. Nothing is added
+                when validation fails.
         """
         scope_node_id = f"scope:{scope}"
         if scope_node_id not in self._graph:
             msg = (
                 f"Resource '{resource_id}' references scope '{scope}' which is not "
                 "indexed in the graph. Run 'lemma scope load' first, then retry."
+            )
+            raise ValueError(msg)
+
+        impacts_list = list(impacts or [])
+        unresolved = [ref for ref in impacts_list if ref not in self._graph]
+        if unresolved:
+            msg = (
+                f"Resource '{resource_id}' impacts target(s) not indexed in the graph: "
+                f"{', '.join(unresolved)}. Run 'lemma framework add <name>' for the "
+                "parent framework(s) first."
             )
             raise ValueError(msg)
 
@@ -281,15 +299,89 @@ class ComplianceGraph:
             attributes=dict(attributes or {}),
         )
 
-        # Idempotent: drop stale SCOPED_TO edges before rebuilding so a
-        # resource that moves to a different scope drops the old edge.
+        # Idempotent: drop stale SCOPED_TO and IMPACTS edges before rebuilding
+        # so a resource that moves to a different scope or narrows its
+        # impacts drops the old edges cleanly.
         for _source, target, key, attrs in list(
             self._graph.out_edges(node_id, keys=True, data=True)
         ):
-            if attrs.get("relationship") == "SCOPED_TO":
+            if attrs.get("relationship") in {"SCOPED_TO", "IMPACTS"}:
                 self._graph.remove_edge(node_id, target, key=key)
 
         self._graph.add_edge(node_id, scope_node_id, relationship="SCOPED_TO")
+        for ref in impacts_list:
+            self._graph.add_edge(node_id, ref, relationship="IMPACTS")
+
+    def add_risk(
+        self,
+        *,
+        risk_id: str,
+        title: str,
+        description: str = "",
+        severity: str,
+        threatens: list[str] | None = None,
+        mitigated_by: list[str] | None = None,
+    ) -> None:
+        """Add a Risk node with THREATENS and MITIGATED_BY edges.
+
+        Args:
+            risk_id: Unique identifier within the project.
+            title: Short human-readable summary.
+            description: Optional longer narrative.
+            severity: One of ``low``, ``medium``, ``high``, ``critical``
+                (the value of a ``RiskSeverity`` enum).
+            threatens: ``resource:<id>`` refs naming Resources whose
+                compromise would realize this risk.
+            mitigated_by: ``control:<framework>:<id>`` refs naming
+                Controls that mitigate this risk.
+
+        Raises:
+            ValueError: If any ``threatens`` ref doesn't resolve to a
+                Resource node, or any ``mitigated_by`` ref doesn't
+                resolve to a Control node. Every unresolved ref is
+                listed so the operator can fix them in one pass. Nothing
+                is added when validation fails.
+        """
+        threatens_list = list(threatens or [])
+        mitigated_list = list(mitigated_by or [])
+
+        unresolved_threats = [ref for ref in threatens_list if ref not in self._graph]
+        unresolved_mitigations = [ref for ref in mitigated_list if ref not in self._graph]
+        if unresolved_threats or unresolved_mitigations:
+            parts = []
+            if unresolved_threats:
+                parts.append(f"threatens: {', '.join(unresolved_threats)}")
+            if unresolved_mitigations:
+                parts.append(f"mitigated_by: {', '.join(unresolved_mitigations)}")
+            msg = (
+                f"Risk '{risk_id}' references graph node(s) that aren't indexed "
+                f"({'; '.join(parts)}). Run 'lemma resource load' for missing "
+                "resources, or 'lemma framework add <name>' for missing controls."
+            )
+            raise ValueError(msg)
+
+        node_id = f"risk:{risk_id}"
+        self._graph.add_node(
+            node_id,
+            type="Risk",
+            risk_id=risk_id,
+            title=title,
+            description=description,
+            severity=severity,
+        )
+
+        # Idempotent: drop stale THREATENS and MITIGATED_BY edges before
+        # rebuilding so dropping a relationship cleanly removes the edge.
+        for _source, target, key, attrs in list(
+            self._graph.out_edges(node_id, keys=True, data=True)
+        ):
+            if attrs.get("relationship") in {"THREATENS", "MITIGATED_BY"}:
+                self._graph.remove_edge(node_id, target, key=key)
+
+        for ref in threatens_list:
+            self._graph.add_edge(node_id, ref, relationship="THREATENS")
+        for ref in mitigated_list:
+            self._graph.add_edge(node_id, ref, relationship="MITIGATED_BY")
 
     def add_person(
         self,
