@@ -206,6 +206,117 @@ def test_infer_empty_message_falls_back_to_class_name_in_prompt(tmp_path: Path):
     assert "Compliance Finding" in prompt_arg
 
 
+def _auth_payload(uid: str, message: str = "") -> dict:
+    """OCSF AuthenticationEvent (class_uid=3002, IAM category)."""
+    return {
+        "class_uid": 3002,
+        "class_name": "Authentication",
+        "category_uid": 3000,
+        "category_name": "IAM",
+        "type_uid": 300201,
+        "activity_id": 1,  # Logon
+        "time": datetime.now(UTC).isoformat(),
+        "metadata": {
+            "version": "1.3.0",
+            "product": {"name": "okta"},
+            "uid": uid,
+        },
+        "message": message,
+    }
+
+
+def test_infer_links_authentication_event_to_identity_control(tmp_path: Path):
+    """An ingested AuthenticationEvent gets an EVIDENCES edge to an identity control.
+
+    Closes the AuthenticationEvent → identity-controls AC on #88. The pipeline is
+    OCSF-class-agnostic: any event the LLM scores above threshold against a
+    candidate control yields an edge. This test exercises the full path with a
+    realistic mocked LLM response that proposes IA-2 (Identification and
+    Authentication) for a logon event — the canonical NIST 800-53 control family
+    for authentication evidence.
+    """
+    from lemma.services.config import AutomationConfig
+    from lemma.services.evidence_infer import infer_mappings
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.indexer import ControlIndexer
+    from lemma.services.knowledge_graph import ComplianceGraph
+    from lemma.services.ocsf_normalizer import normalize
+
+    lemma_dir = tmp_path / ".lemma"
+    lemma_dir.mkdir()
+
+    indexer = ControlIndexer(index_dir=lemma_dir / "index")
+    indexer.index_controls(
+        "nist-800-53",
+        [
+            {
+                "id": "ia-2",
+                "title": "Identification and Authentication (Organizational Users)",
+                "prose": (
+                    "The information system uniquely identifies and authenticates "
+                    "organizational users."
+                ),
+                "family": "IA",
+            },
+        ],
+    )
+
+    log = EvidenceLog(log_dir=lemma_dir / "evidence")
+    event = normalize(
+        _auth_payload(uid="auth-1", message="User alice@example.com logged in via SSO.")
+    )
+    log.append(event)
+    envelope = log.read_envelopes()[0]
+
+    graph = ComplianceGraph()
+    graph.add_framework("nist-800-53")
+    graph.add_control(
+        framework="nist-800-53",
+        control_id="ia-2",
+        title="Identification and Authentication (Organizational Users)",
+        family="IA",
+    )
+    graph.add_evidence(
+        entry_hash=envelope.entry_hash,
+        producer="okta",
+        class_name=event.class_name,
+        time_iso=event.time.isoformat(),
+        control_refs=[],
+    )
+    graph.save(lemma_dir / "graph.json")
+
+    automation = AutomationConfig(thresholds={"evidence-mapping": 0.7})
+    llm = _llm_returning(
+        {
+            "confidence": 0.88,
+            "rationale": "Authentication logon event evidences IA-2 identification/authentication.",
+        }
+    )
+
+    report = infer_mappings(
+        project_dir=tmp_path,
+        llm_client=llm,
+        top_k=1,
+        automation=automation,
+    )
+
+    assert report.edges_written == 1
+    assert report.orphans_processed == 1
+
+    # The prompt sent to the LLM should clearly identify the event as an
+    # Authentication-class OCSF event so the model has the cue it needs.
+    prompt_arg = llm.generate.call_args.args[0]
+    assert "Authentication" in prompt_arg
+    assert "class_uid=3002" in prompt_arg
+
+    # The IA-2 EVIDENCES edge with the LLM's confidence is in the graph.
+    graph2 = ComplianceGraph.load(lemma_dir / "graph.json")
+    edges = graph2.get_edges(f"evidence:{envelope.entry_hash}", "control:nist-800-53:ia-2")
+    relevant = [e for e in edges if e.get("relationship") == "EVIDENCES"]
+    assert len(relevant) == 1
+    assert relevant[0]["confidence"] == 0.88
+
+
 def test_infer_skips_evidence_with_existing_evidences_edge(tmp_path: Path):
     from lemma.services.evidence_infer import infer_mappings
     from lemma.services.knowledge_graph import ComplianceGraph
