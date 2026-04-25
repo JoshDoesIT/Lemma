@@ -360,6 +360,96 @@ class TestAddEvidence:
         assert second_edges == []
 
 
+class TestAddEvidenceMapping:
+    """Single AI-inferred EVIDENCES edge with confidence (Refs #88)."""
+
+    def _seed_graph_with_evidence(self) -> tuple[ComplianceGraph, str]:
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_control(
+            framework="nist-csf-2.0",
+            control_id="de.cm-01",
+            title="Continuous monitoring",
+            family="DE.CM",
+        )
+        entry = "a" * 64
+        g.add_evidence(
+            entry_hash=entry,
+            producer="connector:cloudtrail",
+            class_name="Compliance Finding",
+            time_iso="2026-04-25T00:00:00+00:00",
+            control_refs=[],
+        )
+        return g, entry
+
+    def test_creates_single_evidences_edge_with_confidence(self):
+        graph, entry = self._seed_graph_with_evidence()
+
+        graph.add_evidence_mapping(
+            entry_hash=entry,
+            framework="nist-csf-2.0",
+            control_id="de.cm-01",
+            confidence=0.83,
+        )
+
+        node_id = f"evidence:{entry}"
+        target = "control:nist-csf-2.0:de.cm-01"
+        edges = graph.get_edges(node_id, target)
+        relevant = [e for e in edges if e.get("relationship") == "EVIDENCES"]
+        assert len(relevant) == 1
+        assert relevant[0]["confidence"] == 0.83
+
+    def test_raises_when_evidence_node_missing(self):
+        import pytest
+
+        graph, _entry = self._seed_graph_with_evidence()
+        missing = "f" * 64
+
+        with pytest.raises(ValueError, match=r"(?i)evidence|not found|missing"):
+            graph.add_evidence_mapping(
+                entry_hash=missing,
+                framework="nist-csf-2.0",
+                control_id="de.cm-01",
+                confidence=0.9,
+            )
+
+    def test_raises_when_control_node_missing(self):
+        import pytest
+
+        graph, entry = self._seed_graph_with_evidence()
+
+        with pytest.raises(ValueError, match=r"(?i)control|not found|missing"):
+            graph.add_evidence_mapping(
+                entry_hash=entry,
+                framework="nist-csf-2.0",
+                control_id="does-not-exist",
+                confidence=0.9,
+            )
+        # The Evidence node still exists; only the missing-control call failed.
+        assert graph.get_node(f"evidence:{entry}") is not None
+
+    def test_idempotent_replaces_confidence_in_place(self):
+        graph, entry = self._seed_graph_with_evidence()
+
+        graph.add_evidence_mapping(
+            entry_hash=entry,
+            framework="nist-csf-2.0",
+            control_id="de.cm-01",
+            confidence=0.6,
+        )
+        graph.add_evidence_mapping(
+            entry_hash=entry,
+            framework="nist-csf-2.0",
+            control_id="de.cm-01",
+            confidence=0.9,
+        )
+
+        edges = graph.get_edges(f"evidence:{entry}", "control:nist-csf-2.0:de.cm-01")
+        evidences = [e for e in edges if e.get("relationship") == "EVIDENCES"]
+        assert len(evidences) == 1
+        assert evidences[0]["confidence"] == 0.9
+
+
 class TestAddResource:
     """Resource nodes + SCOPED_TO edges (Refs #76)."""
 

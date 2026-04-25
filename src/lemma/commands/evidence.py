@@ -4,6 +4,7 @@ Sub-commands:
     lemma evidence verify <entry_hash>   — integrity check for a single entry
     lemma evidence log                   — timeline with integrity state per row
     lemma evidence ingest <FILE>         — load OCSF JSON/JSONL into the log
+    lemma evidence infer                 — AI-propose EVIDENCES edges for orphans
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import sys
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -21,8 +23,11 @@ from lemma.models.ocsf import OcsfBaseEvent
 from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecord
 from lemma.sdk.connector import Connector
 from lemma.services import crypto
+from lemma.services.config import load_automation_config
+from lemma.services.evidence_infer import infer_mappings
 from lemma.services.evidence_log import EvidenceLog
 from lemma.services.knowledge_graph import ComplianceGraph
+from lemma.services.llm import get_llm_client
 from lemma.services.ocsf_normalizer import normalize_with_provenance
 
 console = Console()
@@ -454,4 +459,63 @@ def load_command() -> None:
         f"[green]Loaded[/green] {len(envelopes)} evidence entr"
         f"{'y' if len(envelopes) == 1 else 'ies'}; "
         f"{linked} linked to at least one control."
+    )
+
+
+@evidence_app.command(
+    name="infer",
+    help=(
+        "AI-propose EVIDENCES edges for Evidence nodes with no control refs. "
+        "Costs ~9 LLM calls per orphaned event by default."
+    ),
+)
+def infer_command(
+    top_k: int = typer.Option(3, "--top-k", help="Candidate controls per framework per evidence."),
+    accept_all: bool = typer.Option(
+        False,
+        "--accept-all",
+        help="Accept every parseable proposal as an edge, bypassing thresholds.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    config_file = project_dir / "lemma.config.yaml"
+    ai_config: dict = {}
+    if config_file.exists():
+        full_config = yaml.safe_load(config_file.read_text()) or {}
+        ai_config = full_config.get("ai", {})
+
+    try:
+        llm_client = get_llm_client(ai_config)
+    except ImportError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        automation = load_automation_config(config_file)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    report = infer_mappings(
+        project_dir=project_dir,
+        llm_client=llm_client,
+        top_k=top_k,
+        accept_all=accept_all,
+        automation=automation,
+    )
+
+    if report.orphans_processed == 0:
+        console.print(
+            "[dim]0 orphaned evidences. "
+            "Run [bold]lemma evidence load[/bold] first if you expected some.[/dim]"
+        )
+        return
+
+    console.print(
+        f"[green]{report.edges_written}[/green] newly linked via AI "
+        f"({report.edges_written} auto-accepted, "
+        f"{report.traces_proposed} proposed for review). "
+        f"{report.orphans_processed} orphan(s) processed; "
+        f"{report.skipped_missing_envelope} skipped (envelope missing)."
     )
