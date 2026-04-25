@@ -956,6 +956,54 @@ gcloud services enable cloudasset.googleapis.com
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--project` is missing, when credentials can't be resolved, when the project is unreachable, when an unknown asset type is requested, or when `--asset-type` is empty.
 
+### `lemma scope discover azure`
+
+Auto-discover Azure resources via **Resource Graph** (`Microsoft.ResourceGraph`) — Azure's canonical "what resources exist" API, equivalent to GCP's Cloud Asset Inventory. One client + one KQL query covers Compute, Storage, IAM, and dozens of other resource types.
+
+```bash
+lemma scope discover azure --subscription <id> [--resource-type <types,...>] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--subscription` | (required) | Azure subscription id (typically a GUID like `12345678-1234-1234-1234-123456789abc`). Required for the `azure` provider. Whitespace-only values are rejected. |
+| `--resource-type` | `microsoft.compute/virtualmachines,microsoft.storage/storageaccounts,microsoft.managedidentity/userassignedidentities` | Comma-separated Azure resource types to enumerate. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth.** `DefaultAzureCredential` chain. Set the `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET` env vars for non-interactive runs, or run `az login` once for a developer machine. Missing credentials raise a clean `ValueError` at construction time.
+
+**Register the Resource Graph provider first.** This is the most common first-run failure. Run:
+
+```bash
+az provider register --namespace Microsoft.ResourceGraph
+```
+
+**Reachability check.** The CLI probes the subscription up front by querying the first user-supplied resource type at `take 1`. If the provider isn't registered or credentials lack `Microsoft.ResourceGraph/resources/read`, the probe surfaces a clean error rather than a confusing per-type `HttpResponseError` mid-discover. Resource-type allow-list validation runs **before** the probe, so a typo'd `--resource-type` surfaces as a clean validation error too.
+
+**What gets discovered (v0).**
+
+| Azure resource type | Lemma id | Lemma type | Notable attributes |
+|---|---|---|---|
+| `microsoft.compute/virtualmachines` | `azure-<subscription>-vm-<name>` | `azure.compute.vm` | `azure.tags.<key>`, `azure.vm_size`, `azure.location`, `azure.resource_group` |
+| `microsoft.storage/storageaccounts` | `azure-<subscription>-storage-<name>` | `azure.storage.account` | `azure.tags.<key>`, `azure.sku`, `azure.storage_kind`, `azure.location` |
+| `microsoft.managedidentity/userassignedidentities` | `azure-<subscription>-mi-<name>` | `azure.identity.user_assigned` | `azure.principal_id`, `azure.location` |
+
+**Identity choice — Managed Identities, not Azure AD principals.** Azure AD (Microsoft Entra) users / groups / service principals live in the separate Microsoft Graph API (separate SDK, separate auth domain — Graph token vs ARM token). Managed Identities live in Resource Graph and are the *workload identities* — what compute resources authenticate as. Maps cleanly to AWS-IAM-user / GCP-service-account in audit framing. AAD-principal enumeration is tracked as a follow-up.
+
+**Subscription in the ID.** Azure subscriptions are typically GUIDs and don't carry friendly identity. Subscription is baked into every Resource ID so multi-subscription tenants don't collide on the second discover run. GUIDs in IDs are ugly but stable — same call as k8s `--context` for opaque user-supplied identifiers.
+
+**Per-type field projection.** Resource Graph returns wildly different shapes per type — `location` is a top-level column, `vm_size` is nested under `properties.hardwareProfile`, `sku` is a top-level column on Storage Accounts (not under properties). The service projects per-type explicitly to avoid bloating `graph.json` with the hundreds of `properties.*` fields Resource Graph returns by default.
+
+**`tags=None` handling.** Resource Graph returns `tags=None` for resources with no tags set; the service normalizes to `{}` so `azure.tags.environment` rules don't crash on untagged resources.
+
+**Pagination.** Transparent. Resource Graph caps responses at 1000 rows; the service walks `skip_token` until exhaustion.
+
+**Per-resource-type error tolerance.** A `403` on Compute (e.g. provider not registered) doesn't block Storage + Managed Identity enumeration; the failed type is logged and the others still produce results.
+
+**Out of scope for v0.** No `--management-group` scope (broader IAM required); no Azure AD principal enumeration (separate SDK); only the three "audit pillar" resource types. The full Resource Graph catalog is one append away on `--resource-type`.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--subscription` is missing or whitespace-only, when credentials can't be resolved, when the subscription is unreachable, when an unknown resource type is requested, or when `--resource-type` is empty.
+
 ### Scope-as-code schema
 
 ```yaml

@@ -22,6 +22,9 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.services.aws_discovery import discover_resources as aws_discover_resources
+from lemma.services.azure_discovery import (
+    discover_resources_from_azure as azure_discover_resources,
+)
 from lemma.services.gcp_discovery import (
     discover_resources_from_gcp as gcp_discover_resources,
 )
@@ -489,16 +492,69 @@ def _build_gcp_client(project: str, asset_types: list[str]) -> Any:
     return client
 
 
+def _build_azure_clients(subscription: str, resource_types: list[str]) -> Any:
+    """Build a Resource Graph client and validate subscription reachability.
+
+    Validates ``resource_types`` against the allow-list **before** running
+    the reachability probe so a typo'd ``--resource-type`` surfaces as a
+    clean validation error rather than a confusing API failure.
+    """
+    from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from azure.mgmt.resourcegraph.models import QueryRequest
+
+    from lemma.services.azure_discovery import _KNOWN_RESOURCE_TYPES
+
+    unknown = [t for t in resource_types if t not in _KNOWN_RESOURCE_TYPES]
+    if unknown:
+        msg = (
+            f"Unknown Azure resource type(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(_KNOWN_RESOURCE_TYPES)}."
+        )
+        raise ValueError(msg)
+
+    try:
+        credential = DefaultAzureCredential()
+        client = ResourceGraphClient(credential)
+    except ClientAuthenticationError as exc:
+        msg = (
+            "lemma scope discover azure could not resolve Azure credentials. "
+            "Set AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET env vars "
+            "or run 'az login' and try again."
+        )
+        raise ValueError(msg) from exc
+
+    probe_type = resource_types[0]
+    try:
+        client.resources(
+            QueryRequest(
+                subscriptions=[subscription],
+                query=f"Resources | where type =~ '{probe_type}' | take 1",
+            )
+        )
+    except (ClientAuthenticationError, HttpResponseError) as exc:
+        msg = (
+            f"Azure subscription '{subscription}' is unreachable or the "
+            f"Microsoft.ResourceGraph provider isn't registered. Run "
+            f"'az provider register --namespace Microsoft.ResourceGraph' "
+            f"and verify subscription access. Underlying error: {exc}"
+        )
+        raise ValueError(msg) from exc
+
+    return client
+
+
 @scope_app.command(
     name="discover",
     help=(
         "Auto-discover cloud resources into the graph. "
-        "Provider must be one of: aws, terraform, k8s, gcp."
+        "Provider must be one of: aws, terraform, k8s, gcp, azure."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Cloud provider to discover (one of: aws, terraform, k8s, gcp).",
+        help="Cloud provider to discover (one of: aws, terraform, k8s, gcp, azure).",
     ),
     region: str = typer.Option(
         "us-east-1",
@@ -540,16 +596,26 @@ def discover_command(
         "--asset-type",
         help="Comma-separated CAI asset types. gcp only.",
     ),
+    subscription: str = typer.Option(
+        "",
+        "--subscription",
+        help="Azure subscription id. azure only; required when provider is 'azure'.",
+    ),
+    resource_type: str = typer.Option(
+        "microsoft.compute/virtualmachines,microsoft.storage/storageaccounts,microsoft.managedidentity/userassignedidentities",
+        "--resource-type",
+        help="Comma-separated Azure resource types. azure only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform", "k8s", "gcp"):
+    if provider not in ("aws", "terraform", "k8s", "gcp", "azure"):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp."
+            "Currently supported: aws, terraform, k8s, gcp, azure."
         )
         raise typer.Exit(code=1)
 
@@ -612,7 +678,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Kubernetes"
-    else:  # provider == "gcp"
+    elif provider == "gcp":
         if not project:
             console.print("[red]Error:[/red] --project is required when provider is 'gcp'.")
             raise typer.Exit(code=1)
@@ -632,6 +698,27 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "GCP"
+    else:  # provider == "azure"
+        sub = subscription.strip()
+        if not sub:
+            console.print("[red]Error:[/red] --subscription is required when provider is 'azure'.")
+            raise typer.Exit(code=1)
+        resource_types = [t.strip() for t in resource_type.split(",") if t.strip()]
+        try:
+            rg_client = _build_azure_clients(sub, resource_types)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = azure_discover_resources(
+                rg_client=rg_client,
+                subscription=sub,
+                resource_types=resource_types,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "Azure"
 
     matched = []
     skipped_no_match = 0
