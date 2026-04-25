@@ -817,3 +817,61 @@ class TestScopeDiscover:
         assert result.exit_code == 1
         assert "aws" in result.stdout
         assert "terraform" in result.stdout
+        assert "k8s" in result.stdout
+
+    def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.k8s_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_k8s_clients", lambda context: object())
+
+        result = runner.invoke(app, ["scope", "discover", "k8s"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_k8s_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.k8s_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_k8s_clients", lambda context: object())
+
+        result = runner.invoke(app, ["scope", "discover", "k8s", "--dry-run"])
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_k8s_empty_scopes_directory_exits_with_pointer(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        # No scopes/ — should exit with the lemma scope init pointer.
+
+        result = runner.invoke(app, ["scope", "discover", "k8s"])
+        assert result.exit_code == 1
+        assert "lemma scope init" in result.stdout

@@ -22,6 +22,9 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.services.aws_discovery import discover_resources as aws_discover_resources
+from lemma.services.k8s_discovery import (
+    discover_resources_from_cluster as k8s_discover_resources,
+)
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
@@ -415,28 +418,73 @@ def _build_aws_session(region: str) -> Any:
     return session
 
 
+def _build_k8s_clients(context: str | None) -> Any:
+    """Build a Kubernetes API client bundle from kubeconfig.
+
+    Wrapped so tests can monkeypatch this seam without touching real
+    kubeconfig. Returns an object exposing ``version_api``, ``core_v1``,
+    and ``apps_v1`` sub-clients (the surface k8s_discovery expects).
+    """
+    from kubernetes import client as k8s_client
+    from kubernetes import config as k8s_config
+    from kubernetes.config.config_exception import ConfigException
+
+    try:
+        k8s_config.load_kube_config(context=context)
+    except (ConfigException, FileNotFoundError) as exc:
+        msg = (
+            "lemma scope discover k8s could not load kubeconfig. "
+            "Set KUBECONFIG or place a config at ~/.kube/config and try again."
+        )
+        raise ValueError(msg) from exc
+
+    bundle = type("K8sClients", (), {})()
+    bundle.version_api = k8s_client.VersionApi()
+    bundle.core_v1 = k8s_client.CoreV1Api()
+    bundle.apps_v1 = k8s_client.AppsV1Api()
+    return bundle
+
+
 @scope_app.command(
     name="discover",
-    help=("Auto-discover cloud resources into the graph. Provider must be one of: aws, terraform."),
+    help=(
+        "Auto-discover cloud resources into the graph. "
+        "Provider must be one of: aws, terraform, k8s."
+    ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Cloud provider to discover (one of: aws, terraform).",
+        help="Cloud provider to discover (one of: aws, terraform, k8s).",
     ),
     region: str = typer.Option(
         "us-east-1",
         "--region",
-        help="AWS region for region-scoped APIs (EC2). Ignored for terraform.",
+        help="AWS region for region-scoped APIs (EC2). aws only.",
     ),
     service: str = typer.Option(
         "ec2,s3,iam",
         "--service",
-        help="Comma-separated list of AWS services to enumerate. Ignored for terraform.",
+        help="Comma-separated AWS services to enumerate. aws only.",
     ),
     path: str = typer.Option(
         "",
         "--path",
-        help="Path to terraform.tfstate (required when provider is 'terraform').",
+        help="Path to terraform.tfstate. terraform only.",
+    ),
+    context: str = typer.Option(
+        "",
+        "--context",
+        help="kubeconfig context to use. k8s only; default = current context.",
+    ),
+    namespace: str = typer.Option(
+        "",
+        "--namespace",
+        help="Comma-separated k8s namespace(s) to restrict to. k8s only; default = all.",
+    ),
+    kind: str = typer.Option(
+        "namespace,deployment,service",
+        "--kind",
+        help="Comma-separated k8s kinds to enumerate. k8s only.",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -444,9 +492,10 @@ def discover_command(
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform"):
+    if provider not in ("aws", "terraform", "k8s"):
         console.print(
-            f"[red]Error:[/red] Unknown provider '{provider}'. Currently supported: aws, terraform."
+            f"[red]Error:[/red] Unknown provider '{provider}'. "
+            "Currently supported: aws, terraform, k8s."
         )
         raise typer.Exit(code=1)
 
@@ -480,7 +529,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "AWS"
-    else:  # provider == "terraform"
+    elif provider == "terraform":
         if not path:
             console.print("[red]Error:[/red] --path is required when provider is 'terraform'.")
             raise typer.Exit(code=1)
@@ -490,6 +539,25 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Terraform-state"
+    else:  # provider == "k8s"
+        kinds = [k.strip() for k in kind.split(",") if k.strip()]
+        namespaces = [n.strip() for n in namespace.split(",") if n.strip()] or None
+        try:
+            api_client = _build_k8s_clients(context or None)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = k8s_discover_resources(
+                api_client=api_client,
+                context=context or None,
+                namespaces=namespaces,
+                kinds=kinds,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "Kubernetes"
 
     matched = []
     skipped_no_match = 0
