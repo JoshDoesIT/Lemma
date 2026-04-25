@@ -499,3 +499,31 @@ def test_verify_detects_tampered_source_provenance(tmp_path: Path):
 
     result = log.verify_entry(target_hash)
     assert result.state == EvidenceIntegrityState.VIOLATED
+
+
+def test_get_envelope_returns_matching_envelope(tmp_path: Path):
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload(uid="a")))
+    log.append(normalize(_compliance_payload(uid="b")))
+
+    envelopes = log.read_envelopes()
+    assert len(envelopes) == 2
+    target = envelopes[1]
+
+    result = log.get_envelope(target.entry_hash)
+    assert result is not None
+    assert result.entry_hash == target.entry_hash
+    assert result.event.metadata["uid"] == "b"
+
+
+def test_get_envelope_returns_none_for_unknown_hash(tmp_path: Path):
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload(uid="only")))
+
+    assert log.get_envelope("0" * 64) is None

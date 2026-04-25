@@ -706,3 +706,126 @@ class TestEvidenceLoad:
         after = runner.invoke(app, ["evidence", "log"])
         assert after.exit_code == 0
         assert "✓" in after.stdout
+
+
+def _seed_indexed_framework(project_dir: Path) -> None:
+    from lemma.services.indexer import ControlIndexer
+
+    indexer = ControlIndexer(index_dir=project_dir / ".lemma" / "index")
+    indexer.index_controls(
+        "nist-csf-2.0",
+        [
+            {
+                "id": "gv.oc-1",
+                "title": "Organizational context 1",
+                "prose": "Establish organizational context for cybersecurity decisions.",
+                "family": "GV.OC",
+            },
+        ],
+    )
+
+
+class TestEvidenceInfer:
+    """`lemma evidence infer` end-to-end (Refs #88)."""
+
+    def test_happy_path_writes_edge_and_prints_summary(self, tmp_path: Path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+        _seed_indexed_framework(tmp_path)
+
+        # Configure auto-accept threshold via lemma.config.yaml.
+        (tmp_path / "lemma.config.yaml").write_text(
+            "ai:\n  automation:\n    thresholds:\n      evidence-mapping: 0.7\n"
+        )
+
+        # Load an event with NO control_refs so the Evidence node is orphaned.
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload("e-1")))
+        runner.invoke(app, ["evidence", "load"])
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {"confidence": 0.92, "rationale": "Direct match."}
+        )
+
+        with patch("lemma.commands.evidence.get_llm_client", return_value=mock_llm):
+            result = runner.invoke(app, ["evidence", "infer"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "newly linked" in result.stdout.lower()
+
+        graph = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        envs = log.read_envelopes()
+        edges = graph.get_edges(f"evidence:{envs[0].entry_hash}", "control:nist-csf-2.0:gv.oc-1")
+        relevant = [e for e in edges if e.get("relationship") == "EVIDENCES"]
+        assert len(relevant) == 1
+        assert relevant[0]["confidence"] == 0.92
+
+    def test_accept_all_overrides_missing_threshold(self, tmp_path: Path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+        _seed_indexed_framework(tmp_path)
+        # No lemma.config.yaml — no thresholds configured.
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload("e-1")))
+        runner.invoke(app, ["evidence", "load"])
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps({"confidence": 0.3, "rationale": "Weak."})
+
+        with patch("lemma.commands.evidence.get_llm_client", return_value=mock_llm):
+            result = runner.invoke(app, ["evidence", "infer", "--accept-all"])
+
+        assert result.exit_code == 0, result.stdout
+
+        graph = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        envs = log.read_envelopes()
+        edges = graph.get_edges(f"evidence:{envs[0].entry_hash}", "control:nist-csf-2.0:gv.oc-1")
+        relevant = [e for e in edges if e.get("relationship") == "EVIDENCES"]
+        assert len(relevant) == 1
+        assert relevant[0]["confidence"] == 0.3
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["evidence", "infer"])
+        assert result.exit_code == 1
+
+    def test_no_orphans_prints_zero_summary(self, tmp_path: Path, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+        _seed_indexed_framework(tmp_path)
+
+        mock_llm = MagicMock()
+
+        with patch("lemma.commands.evidence.get_llm_client", return_value=mock_llm):
+            result = runner.invoke(app, ["evidence", "infer"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "0" in result.stdout  # "0 orphaned" or similar
+        mock_llm.generate.assert_not_called()

@@ -480,6 +480,36 @@ Each entry has the shape `<framework-short-name>:<control-id>`. The field is opt
 
 Once loaded, evidence is reachable from every existing graph surface: `lemma graph impact control:nist-800-53:ac-2` surfaces every piece of linked evidence, and `lemma query` traversals see `Evidence` nodes alongside frameworks and controls.
 
+### `lemma evidence infer`
+
+AI-propose `EVIDENCES` edges for orphaned `Evidence` nodes — those that have no outgoing `EVIDENCES` edges because their underlying OCSF event arrived without a `metadata.control_refs` list.
+
+```bash
+lemma evidence infer [--top-k 3] [--accept-all]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--top-k` | `3` | Candidate controls retrieved per indexed framework per evidence (cost: ~`top-k × frameworks` LLM calls per orphan). |
+| `--accept-all` | `false` | Write every parseable proposal as an edge and auto-accept the trace at threshold `0.0`, bypassing configured gating. Useful for first-time backfills when you trust the model. |
+
+For each orphaned `Evidence` node, `infer` looks up the original OCSF event in the signed log, retrieves top-k candidate controls from each indexed framework via the same vector index `lemma map` uses, and prompts the LLM to score each `(evidence, candidate)` pair on a 0.0–1.0 confidence scale. Every prompt produces one entry in the AI trace log under `operation="evidence-mapping"` — auditable via `lemma ai audit --operation evidence-mapping`.
+
+**Confidence-gated edge writes.** Configure an auto-accept threshold in `lemma.config.yaml`:
+
+```yaml
+ai:
+  automation:
+    thresholds:
+      evidence-mapping: 0.80
+```
+
+A proposal at or above the threshold writes an `EVIDENCES` edge with the `confidence` recorded as an edge attribute and promotes the trace to `ACCEPTED`. A proposal below the threshold leaves the trace as `PROPOSED` for human review — no edge is written. With no threshold configured (or `automation` block missing), `infer` never auto-accepts; every proposal stays `PROPOSED`.
+
+**Skip rules.** `infer` skips any Evidence node that already has at least one outgoing `EVIDENCES` edge — whether from `lemma evidence load` (operator-asserted via `metadata.control_refs`) or from a previous `infer` run that auto-accepted. This makes re-runs safe: only genuinely orphaned evidences trigger LLM calls.
+
+**Re-running and PROPOSED traces.** An evidence node with only `PROPOSED` traces (no edges) re-triggers inference on the next run. With non-deterministic models (Ollama temperature > 0) this can produce slightly different proposals each time, growing the trace log. Reviewers can filter on the latest pass via `lemma ai audit`. The behavior is intentional: re-running is the operator asking the model again.
+
 ### `lemma evidence rotate-key`
 
 Retire the producer's active signing key and generate a new one. Pre-rotation entries keep verifying PROVEN under the retired key; new entries are signed with the successor.

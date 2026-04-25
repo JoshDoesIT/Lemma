@@ -205,6 +205,13 @@ class EvidenceLog:
         """Return all enveloped events in chronological order (envelopes unwrapped)."""
         return [env.event for env in self.read_envelopes()]
 
+    def get_envelope(self, entry_hash: str) -> SignedEvidence | None:
+        """Return the envelope whose entry_hash matches, or None if not found."""
+        for env in self.read_envelopes():
+            if env.entry_hash == entry_hash:
+                return env
+        return None
+
     def filter_by_class(self, class_uid: int) -> list[OcsfBaseEvent]:
         return [e for e in self.read_all() if e.class_uid == class_uid]
 

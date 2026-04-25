@@ -239,6 +239,59 @@ class ComplianceGraph:
                 relationship="EVIDENCES",
             )
 
+    def add_evidence_mapping(
+        self,
+        *,
+        entry_hash: str,
+        framework: str,
+        control_id: str,
+        confidence: float,
+    ) -> None:
+        """Add a single AI-inferred EVIDENCES edge with a confidence attribute.
+
+        Distinct from ``add_evidence``: this method adds one edge between an
+        existing Evidence node and an existing Control node without touching
+        the Evidence node itself or any other EVIDENCES edges. Re-calling for
+        the same (evidence, control) pair replaces the existing edge's
+        ``confidence`` rather than duplicating.
+
+        Args:
+            entry_hash: SHA-256 hex of an Evidence node already in the graph.
+            framework: Framework short name (e.g. ``"nist-csf-2.0"``).
+            control_id: Control identifier within the framework.
+            confidence: Mapping confidence score (0.0-1.0) recorded on the edge.
+
+        Raises:
+            ValueError: If the Evidence node or the Control node is not in
+                the graph. The graph is left untouched on failure.
+        """
+        evidence_id = f"evidence:{entry_hash}"
+        control_node = f"control:{framework}:{control_id}"
+
+        missing: list[str] = []
+        if evidence_id not in self._graph:
+            missing.append(f"evidence node {evidence_id} not found")
+        if control_node not in self._graph:
+            missing.append(f"control node {control_node} not found")
+        if missing:
+            msg = "; ".join(missing) + "."
+            raise ValueError(msg)
+
+        # Idempotent: drop any prior EVIDENCES edge between this exact pair
+        # so re-calling replaces confidence in place rather than duplicating.
+        for _source, _target, key, attrs in list(
+            self._graph.out_edges(evidence_id, keys=True, data=True)
+        ):
+            if _target == control_node and attrs.get("relationship") == "EVIDENCES":
+                self._graph.remove_edge(evidence_id, control_node, key=key)
+
+        self._graph.add_edge(
+            evidence_id,
+            control_node,
+            relationship="EVIDENCES",
+            confidence=confidence,
+        )
+
     def add_resource(
         self,
         *,
