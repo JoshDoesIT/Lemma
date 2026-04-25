@@ -530,3 +530,159 @@ class TestAddPerson:
         resource_edges = graph.get_edges("person:dave", "resource:prod-rds")
         assert len(control_edges) == 1
         assert resource_edges == []
+
+
+class TestAddRisk:
+    """Risk nodes + THREATENS / MITIGATED_BY edges (closes #76 graph expansion)."""
+
+    def _graph(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(
+            framework="nist-800-53", control_id="au-2", title="Event Logging", family="AU"
+        )
+        g.add_control(
+            framework="nist-800-53", control_id="ac-2", title="Account Management", family="AC"
+        )
+        g.add_scope(name="prod", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.add_resource(
+            resource_id="audit-bucket",
+            type_="aws.s3.bucket",
+            scope="prod",
+            attributes={},
+        )
+        return g
+
+    def test_creates_risk_node_and_edges(self):
+        graph = self._graph()
+        graph.add_risk(
+            risk_id="audit-log-loss",
+            title="Loss of audit logs",
+            description="Bucket compromised.",
+            severity="high",
+            threatens=["resource:audit-bucket"],
+            mitigated_by=["control:nist-800-53:au-2"],
+        )
+
+        node = graph.get_node("risk:audit-log-loss")
+        assert node is not None
+        assert node["type"] == "Risk"
+        assert node["title"] == "Loss of audit logs"
+        assert node["severity"] == "high"
+
+        threatens = graph.get_edges("risk:audit-log-loss", "resource:audit-bucket")
+        mitigated = graph.get_edges("risk:audit-log-loss", "control:nist-800-53:au-2")
+        assert any(e.get("relationship") == "THREATENS" for e in threatens)
+        assert any(e.get("relationship") == "MITIGATED_BY" for e in mitigated)
+
+    def test_unresolved_target_raises_and_leaves_graph_untouched(self):
+        import pytest
+
+        graph = self._graph()
+
+        with pytest.raises(ValueError, match=r"(?i)ghost-resource|missing-control"):
+            graph.add_risk(
+                risk_id="orphan",
+                title="t",
+                description="",
+                severity="medium",
+                threatens=["resource:ghost-resource"],
+                mitigated_by=["control:nist-800-53:missing-control"],
+            )
+        assert graph.get_node("risk:orphan") is None
+
+    def test_idempotent_rebuilds_edges(self):
+        graph = self._graph()
+
+        graph.add_risk(
+            risk_id="r1",
+            title="t",
+            description="",
+            severity="low",
+            threatens=["resource:audit-bucket"],
+            mitigated_by=["control:nist-800-53:au-2", "control:nist-800-53:ac-2"],
+        )
+        # Re-add narrower
+        graph.add_risk(
+            risk_id="r1",
+            title="t",
+            description="",
+            severity="critical",
+            threatens=[],
+            mitigated_by=["control:nist-800-53:au-2"],
+        )
+
+        node = graph.get_node("risk:r1")
+        assert node["severity"] == "critical"
+
+        threatens = graph.get_edges("risk:r1", "resource:audit-bucket")
+        au2_edges = graph.get_edges("risk:r1", "control:nist-800-53:au-2")
+        ac2_edges = graph.get_edges("risk:r1", "control:nist-800-53:ac-2")
+        assert threatens == []
+        assert len(au2_edges) == 1
+        assert ac2_edges == []
+
+
+class TestResourceImpacts:
+    """Resource → Control IMPACTS edges via add_resource(impacts=...) (closes #76)."""
+
+    def _graph(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(
+            framework="nist-800-53", control_id="au-2", title="Event Logging", family="AU"
+        )
+        g.add_scope(name="prod", frameworks=["nist-800-53"], justification="", rule_count=0)
+        return g
+
+    def test_resource_with_impacts_creates_edges(self):
+        graph = self._graph()
+        graph.add_resource(
+            resource_id="audit-bucket",
+            type_="aws.s3.bucket",
+            scope="prod",
+            attributes={},
+            impacts=["control:nist-800-53:au-2"],
+        )
+
+        edges = graph.get_edges("resource:audit-bucket", "control:nist-800-53:au-2")
+        assert any(e.get("relationship") == "IMPACTS" for e in edges)
+
+    def test_unresolved_impacts_target_raises(self):
+        import pytest
+
+        graph = self._graph()
+        with pytest.raises(ValueError, match=r"(?i)missing-ctrl"):
+            graph.add_resource(
+                resource_id="r",
+                type_="aws.s3.bucket",
+                scope="prod",
+                attributes={},
+                impacts=["control:nist-800-53:missing-ctrl"],
+            )
+        assert graph.get_node("resource:r") is None
+
+    def test_idempotent_rebuilds_impacts_edges(self):
+        graph = self._graph()
+        graph.add_control(framework="nist-800-53", control_id="ac-2", title="AC-2", family="AC")
+
+        graph.add_resource(
+            resource_id="r",
+            type_="aws.s3.bucket",
+            scope="prod",
+            attributes={},
+            impacts=["control:nist-800-53:au-2", "control:nist-800-53:ac-2"],
+        )
+        # Re-add with narrower impacts
+        graph.add_resource(
+            resource_id="r",
+            type_="aws.s3.bucket",
+            scope="prod",
+            attributes={},
+            impacts=["control:nist-800-53:au-2"],
+        )
+
+        au_edges = graph.get_edges("resource:r", "control:nist-800-53:au-2")
+        ac_edges = graph.get_edges("resource:r", "control:nist-800-53:ac-2")
+        assert len(au_edges) == 1
+        assert ac_edges == []

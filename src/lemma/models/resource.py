@@ -18,5 +18,6 @@ class ResourceDefinition(BaseModel):
     type: str
     scope: str
     attributes: dict[str, Any] = Field(default_factory=dict)
+    impacts: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")

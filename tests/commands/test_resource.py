@@ -111,3 +111,37 @@ class TestResourceList:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["resource", "list"])
         assert result.exit_code == 1
+
+
+class TestResourceLoadWithImpacts:
+    def test_impacts_field_creates_edges_in_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        # Seed graph with a framework, control, and scope.
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(framework="nist-800-53", control_id="au-2", title="AU-2", family="AU")
+        g.add_scope(name="default", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        resources_dir = tmp_path / "resources"
+        resources_dir.mkdir()
+        (resources_dir / "audit.yaml").write_text(
+            "id: audit-bucket\n"
+            "type: aws.s3.bucket\n"
+            "scope: default\n"
+            "attributes:\n"
+            "  region: us-east-1\n"
+            "impacts:\n"
+            "  - control:nist-800-53:au-2\n"
+        )
+
+        result = runner.invoke(app, ["resource", "load"])
+        assert result.exit_code == 0, result.stdout
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        edges = loaded.get_edges("resource:audit-bucket", "control:nist-800-53:au-2")
+        assert any(e.get("relationship") == "IMPACTS" for e in edges)

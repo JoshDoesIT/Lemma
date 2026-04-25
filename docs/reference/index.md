@@ -814,6 +814,9 @@ attributes:                    # optional; arbitrary key/value pairs copied to t
   region: us-east-1
   engine: postgres
   multi_az: true
+impacts:                       # optional; control refs the resource directly contributes to
+  - control:nist-800-53:au-2
+  - control:nist-csf-2.0:de.cm-01
 ```
 
 **Field rules.**
@@ -822,6 +825,7 @@ attributes:                    # optional; arbitrary key/value pairs copied to t
 - `type` is free-form. Conventions like `aws.rds.instance`, `aws.s3.bucket`, `k8s.deployment` are suggested but not enforced.
 - `scope` must be the name of a scope that's been loaded into the graph via `lemma scope load`.
 - `attributes` is loose (`dict[str, Any]`) — resource types vary enormously, and a rigid per-type schema would block operators from declaring anything we haven't anticipated.
+- `impacts` is optional. Each entry is a `control:<framework>:<control-id>` ref naming a control this resource directly contributes to (e.g., the audit-log bucket impacts `control:nist-800-53:au-2`). Generates `IMPACTS` edges in the graph. Distinct from `SCOPED_TO` — `SCOPED_TO` is scope membership; `IMPACTS` is direct contribution. Unresolved control refs abort `lemma resource load` with the missing refs named.
 - Unknown top-level fields fail loud with a line-numbered error. Typoing `resource_type:` for `type:` doesn't silently drop.
 
 ---
@@ -871,6 +875,56 @@ owns:                                 # optional; controls and/or resources this
 - `resource:<resource-id>` — e.g. `resource:prod-us-east-rds`
 
 A single `owns` list can mix both target types. Operators see the same ids here they'd see in `lemma graph impact` output; no separate field for controls vs. resources. Unknown top-level fields fail loud with a line-numbered error (`manager:` for example will be rejected).
+
+---
+
+## `lemma risk`
+
+Manage declared risks — bad outcomes the organization wants to avoid. A **Risk** is the audit answer to "what happens if this control fails?" or "what threatens this resource?" Risks land as `Risk` nodes in the compliance graph with `THREATENS` edges to Resources and `MITIGATED_BY` edges to Controls.
+
+### `lemma risk load`
+
+Parse every `risks/*.yaml` file, validate against the schema, and upsert a `Risk` node with `THREATENS` and `MITIGATED_BY` edges.
+
+```bash
+lemma risk load
+```
+
+Re-running is safe: `add_risk` is idempotent — same `id` updates `title`, `description`, `severity`, and the full set of `THREATENS`/`MITIGATED_BY` edges in place. Dropping an entry from `threatens` or `mitigated_by` drops the corresponding edge cleanly.
+
+**Fails loud on unresolved targets.** A `threatens` entry must resolve to a `resource:<id>` in the graph; a `mitigated_by` entry must resolve to a `control:<framework>:<id>`. Unresolved refs abort the whole batch with every missing ref named — no silent partial loads.
+
+### `lemma risk list`
+
+Render a Rich table of declared risks ordered by severity (CRITICAL first, LOW last). Each row shows id, title, severity (color-coded), `threatens` count, and `mitigated_by` count.
+
+```bash
+lemma risk list
+```
+
+### Risk-as-code schema
+
+```yaml
+id: audit-log-loss                    # required; unique within the project
+title: Loss of audit logs             # required; short summary
+description: >-                       # optional; longer narrative
+  Audit log bucket compromised or accidentally deleted, leaving
+  no forensic record of activity in the production environment.
+severity: high                        # required; one of low | medium | high | critical
+threatens:                            # optional; resource:<id> refs
+  - resource:audit-logs-bucket
+mitigated_by:                         # optional; control:<framework>:<id> refs
+  - control:nist-800-53:au-2
+  - control:nist-csf-2.0:de.cm-01
+```
+
+**Field rules.**
+
+- `severity` is a closed enum (`low`, `medium`, `high`, `critical`). Free-form severity strings would make scoring impossible; the four-level ladder matches NIST/ISO conventions.
+- `threatens` and `mitigated_by` are separate fields rather than a single mixed list because the relationships are semantically different — "threatens this resource" vs. "is mitigated by this control" — and operators benefit from unambiguous intent.
+- Unknown top-level fields fail loud with a line-numbered error.
+
+`Risk` nodes are queryable via every existing graph surface — `lemma graph impact risk:<id>` walks both edge types, and `lemma scope visualize` will include risks when a future visualizer slice surfaces them.
 
 ---
 

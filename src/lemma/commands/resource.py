@@ -66,6 +66,7 @@ def load_command() -> None:
                 type_=r.type,
                 scope=r.scope,
                 attributes=r.attributes,
+                impacts=r.impacts,
             )
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
