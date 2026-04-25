@@ -127,3 +127,137 @@ def test_execute_neighbors_direction_out_excludes_inbound():
     neighbor_ids = {r["id"] for r in results}
     # No SATISFIES-in edges; only the outgoing HARMONIZED_WITH (symmetric so one side shows).
     assert "policy:access-control.md" not in neighbor_ids
+
+
+def _build_full_edge_graph():
+    """Graph with one edge of every relationship type #76 introduced."""
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    graph = ComplianceGraph()
+    graph.add_framework("nist-csf-2.0")
+    graph.add_control(
+        framework="nist-csf-2.0", control_id="de.cm-01", title="Monitoring", family="DE"
+    )
+    graph.add_control(
+        framework="nist-csf-2.0", control_id="pr.aa-1", title="Identities", family="PR"
+    )
+    graph.add_scope(name="prod", frameworks=["nist-csf-2.0"])
+    graph.add_resource(
+        resource_id="audit-bucket",
+        type_="aws.s3.bucket",
+        scope="prod",
+        attributes={},
+        impacts=["control:nist-csf-2.0:de.cm-01"],
+    )
+    graph.add_evidence(
+        entry_hash="a" * 64,
+        producer="connector:test",
+        class_name="ComplianceFinding",
+        time_iso="2026-04-01T00:00:00Z",
+        control_refs=["nist-csf-2.0:de.cm-01"],
+    )
+    graph.add_person(
+        person_id="alice",
+        name="Alice",
+        email="alice@example.com",
+        owns=["control:nist-csf-2.0:pr.aa-1"],
+    )
+    graph.add_risk(
+        risk_id="data-loss",
+        title="Audit log loss",
+        description="",
+        severity="high",
+        threatens=["resource:audit-bucket"],
+        mitigated_by=["control:nist-csf-2.0:de.cm-01"],
+    )
+    graph.add_policy("access-control.md", title="Access Control")
+    graph.add_mapping(
+        policy="access-control.md",
+        framework="nist-csf-2.0",
+        control_id="pr.aa-1",
+        confidence=0.9,
+    )
+    return graph
+
+
+def test_execute_neighbors_walks_evidences_edges():
+    """NEIGHBORS with edge_filter=['EVIDENCES'] from a Control returns the Evidence."""
+    from lemma.models.query_plan import QueryPlan, QueryTraversal
+    from lemma.services.query_executor import execute
+
+    graph = _build_full_edge_graph()
+    plan = QueryPlan(
+        entry_node="control:nist-csf-2.0:de.cm-01",
+        traversal=QueryTraversal.NEIGHBORS,
+        edge_filter=["EVIDENCES"],
+        direction="in",
+    )
+
+    results = execute(plan, graph)
+    ids = {r["id"] for r in results}
+    assert ids == {f"evidence:{'a' * 64}"}
+
+
+def test_execute_neighbors_walks_owns_edges_direction_in():
+    """OWNS points Person -> Control; direction='in' from the Control returns the Person."""
+    from lemma.models.query_plan import QueryPlan, QueryTraversal
+    from lemma.services.query_executor import execute
+
+    graph = _build_full_edge_graph()
+    plan = QueryPlan(
+        entry_node="control:nist-csf-2.0:pr.aa-1",
+        traversal=QueryTraversal.NEIGHBORS,
+        edge_filter=["OWNS"],
+        direction="in",
+    )
+
+    results = execute(plan, graph)
+    ids = {r["id"] for r in results}
+    assert ids == {"person:alice"}
+
+
+def test_execute_neighbors_distinguishes_mitigated_by_from_impacts():
+    """Both edges touch the same Control; filtering each returns disjoint sets."""
+    from lemma.models.query_plan import QueryPlan, QueryTraversal
+    from lemma.services.query_executor import execute
+
+    graph = _build_full_edge_graph()
+    entry = "control:nist-csf-2.0:de.cm-01"
+
+    mit_plan = QueryPlan(
+        entry_node=entry,
+        traversal=QueryTraversal.NEIGHBORS,
+        edge_filter=["MITIGATED_BY"],
+        direction="in",
+    )
+    imp_plan = QueryPlan(
+        entry_node=entry,
+        traversal=QueryTraversal.NEIGHBORS,
+        edge_filter=["IMPACTS"],
+        direction="in",
+    )
+
+    mit_ids = {r["id"] for r in execute(mit_plan, graph)}
+    imp_ids = {r["id"] for r in execute(imp_plan, graph)}
+
+    assert mit_ids == {"risk:data-loss"}
+    assert imp_ids == {"resource:audit-bucket"}
+    assert mit_ids.isdisjoint(imp_ids)
+
+
+def test_execute_neighbors_mixed_type_results_are_all_returned():
+    """A Control's full neighborhood returns Policy, Evidence, Risk, Person — no crash."""
+    from lemma.models.query_plan import QueryPlan, QueryTraversal
+    from lemma.services.query_executor import execute
+
+    graph = _build_full_edge_graph()
+    plan = QueryPlan(
+        entry_node="control:nist-csf-2.0:de.cm-01",
+        traversal=QueryTraversal.NEIGHBORS,
+    )
+
+    results = execute(plan, graph)
+    types = {r.get("type", "") for r in results}
+    # At minimum: Framework (CONTAINS), Evidence (EVIDENCES), Risk (MITIGATED_BY),
+    # Resource (IMPACTS). Policy is only attached to pr.aa-1, not de.cm-01.
+    assert {"Framework", "Evidence", "Risk", "Resource"}.issubset(types)

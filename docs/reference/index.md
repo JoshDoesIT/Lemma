@@ -211,12 +211,32 @@ lemma query "<QUESTION>" [OPTIONS]
 lemma query "Which controls does NIST AC-2 harmonize with?"
 lemma query --verbose "Which policies satisfy ac-2?"
 lemma query --format json "How many controls does nist-csf-2.0 have?"
+lemma query "What evidence supports de.cm-01?"
+lemma query "Who owns ac-2?"
+lemma query "What risks threaten the audit-log bucket?"
+lemma query "Which resources impact au-2?"
 ```
+
+**Queryable edge types:**
+
+| Edge | From → To | Typical question |
+|------|-----------|------------------|
+| `SATISFIES` | Policy → Control | "Which policies satisfy AC-2?" |
+| `HARMONIZED_WITH` | Control ↔ Control | "What controls are harmonized with AC-2?" |
+| `CONTAINS` | Framework → Control | "List controls in NIST 800-53" |
+| `EVIDENCES` | Evidence → Control | "What evidence supports CC6.1?" |
+| `SCOPED_TO` | Resource → Scope | "What resources are in the prod scope?" |
+| `OWNS` | Person → Control / Resource | "Who owns AC-2?" |
+| `IMPACTS` | Resource → Control | "Which resources impact AU-2?" |
+| `THREATENS` | Risk → Resource | "What risks threaten the audit bucket?" |
+| `MITIGATED_BY` | Risk → Control | "What risks does CP-9 mitigate?" |
+| `APPLIES_TO` | Scope → Framework | "What scopes apply to NIST CSF?" |
 
 **What it can and can't do:**
 
 - Supports single-hop traversals (NEIGHBORS / IMPACT / framework control counts) with edge-type and direction filters. Multi-hop questions ("framework → its controls → harmonized controls") land in a future release — see [#105](https://github.com/JoshDoesIT/Lemma/issues/105).
-- Evidence-node queries ("what evidence supports SOC 2 CC6.1?") require evidence nodes in the graph, which ship with connector work — tracked in [#97](https://github.com/JoshDoesIT/Lemma/issues/97).
+- Results render a per-row **Attributes** column: Evidence shows `producer · time_iso`, Risk shows `title [SEVERITY]`, Person shows email, Resource shows its type.
+- Richer evidence filters (time range, severity, connector source) and a dedicated `evidence_query` trace discriminator remain open — see [#97](https://github.com/JoshDoesIT/Lemma/issues/97).
 - Short entry-node names (`"ac-2"`) are resolved against the real graph. Ambiguous short names (same control ID in multiple frameworks) fail with a message listing all candidates so you can rephrase with a framework qualifier.
 
 ---

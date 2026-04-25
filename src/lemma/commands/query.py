@@ -61,6 +61,37 @@ def _model_id_from(llm_client: LLMClient) -> str:
     return model
 
 
+def _summarize_attrs(node: dict) -> str:
+    """Compact one-line summary of a node's most audit-relevant attributes.
+
+    The same table is reused across node types; blank cells are acceptable.
+    Evidence shows its provenance, Risk its severity, Person their email,
+    Control/Policy their title.
+    """
+    node_type = str(node.get("type", ""))
+    if node_type == "Evidence":
+        producer = str(node.get("producer", ""))
+        time_iso = str(node.get("time_iso", ""))
+        if producer and time_iso:
+            return f"{producer} · {time_iso}"
+        return producer or time_iso
+    if node_type == "Risk":
+        title = str(node.get("title", ""))
+        severity = str(node.get("severity", "")).upper()
+        if title and severity:
+            return f"{title} [{severity}]"
+        return title or severity
+    if node_type == "Person":
+        return str(node.get("email") or node.get("full_name") or "")
+    if node_type == "Resource":
+        return str(node.get("resource_type") or node.get("type_") or "")
+    if node_type == "Scope":
+        return str(node.get("name", ""))
+    if node_type in ("Control", "Policy", "Framework"):
+        return str(node.get("title") or node.get("name") or "")
+    return ""
+
+
 def _format_list(results: list[dict]) -> None:
     if not results:
         console.print("[dim]No matching nodes. 0 results.[/dim]")
@@ -69,15 +100,17 @@ def _format_list(results: list[dict]) -> None:
     table = Table(title=f"Query Results ({len(results)})")
     table.add_column("Node", style="cyan", no_wrap=True)
     table.add_column("Type")
+    table.add_column("Attributes")
     table.add_column("Edge", style="dim")
 
     for row in results:
         table.add_row(
             str(row.get("id", "")),
             str(row.get("type", "")),
+            _summarize_attrs(row),
             str(row.get("_edge", "")),
         )
-    console.print(table)
+    Console(width=140).print(table)
 
 
 def query_command(
