@@ -34,13 +34,29 @@ Respond ONLY with a JSON object matching this schema:
   {{
     "entry_node": "<fully qualified node id, e.g. 'control:nist-800-53:ac-2'>",
     "traversal": "NEIGHBORS" | "IMPACT" | "FRAMEWORK_CONTROL_COUNT",
-    "edge_filter": ["SATISFIES" | "HARMONIZED_WITH" | "CONTAINS"] (optional),
+    "edge_filter": ["<relationship>", ...] (optional; pick from the relationship
+        types in the schema summary below),
     "direction": "in" | "out" | "both" (optional, default "both"),
     "output_shape": "list" | "count" (optional, default "list")
   }}
 
 Graph schema (what actually exists today):
 {schema_summary}
+
+Edge type cheatsheet — pick the right filter and direction:
+  - SATISFIES (Policy -> Control): "Which policies satisfy AC-2?" direction=in
+  - HARMONIZED_WITH (Control <-> Control): "What controls harmonize with AC-2?"
+  - CONTAINS (Framework -> Control): "List controls in NIST 800-53"
+  - EVIDENCES (Evidence -> Control): "What evidence supports CC6.1?" direction=in
+  - SCOPED_TO (Resource -> Scope): "What resources are in prod scope?" direction=in
+  - OWNS (Person -> Control|Resource): "Who owns AC-2?" direction=in from the target
+  - IMPACTS (Resource -> Control): "Which resources impact AU-2?" direction=in
+  - THREATENS (Risk -> Resource): "What risks threaten the audit bucket?" direction=in
+  - MITIGATED_BY (Risk -> Control): "What risks does CP-9 mitigate?" direction=in
+  - APPLIES_TO (Scope -> Framework): "What scopes apply to NIST CSF?" direction=in
+Disambiguation: IMPACTS connects Resource to Control; MITIGATED_BY connects Risk
+to Control. A question about which Resource depends on a Control uses IMPACTS;
+a question about which Risk a Control mitigates uses MITIGATED_BY.
 
 Example entry nodes in this graph:
 {example_nodes}

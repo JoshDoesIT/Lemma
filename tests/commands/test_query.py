@@ -115,6 +115,88 @@ def test_query_verbose_shows_resolved_plan(tmp_path: Path, monkeypatch):
     assert "NEIGHBORS" in result.stdout
 
 
+def _seed_graph_with_evidence_and_risk(project: Path):
+    """Graph where a Control has Evidence + Risk neighbors with provenance."""
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    graph = ComplianceGraph()
+    graph.add_framework("nist-csf-2.0")
+    graph.add_control(
+        framework="nist-csf-2.0",
+        control_id="de.cm-01",
+        title="Monitoring",
+        family="DE",
+    )
+    graph.add_evidence(
+        entry_hash="a" * 64,
+        producer="connector:cloudtrail",
+        class_name="ComplianceFinding",
+        time_iso="2026-04-01T00:00:00Z",
+        control_refs=["nist-csf-2.0:de.cm-01"],
+    )
+    graph.add_risk(
+        risk_id="data-loss",
+        title="Audit log loss",
+        description="",
+        severity="high",
+        threatens=[],
+        mitigated_by=["control:nist-csf-2.0:de.cm-01"],
+    )
+    graph.save(project / ".lemma" / "graph.json")
+
+
+def test_query_output_shows_provenance_for_evidence_result(tmp_path: Path, monkeypatch):
+    """Evidence results render the producer and time_iso so operators see where it came from."""
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_graph_with_evidence_and_risk(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "de.cm-01",
+            "traversal": "NEIGHBORS",
+            "edge_filter": ["EVIDENCES"],
+            "direction": "in",
+        }
+    )
+
+    with patch("lemma.commands.query.get_llm_client", return_value=mock_llm):
+        result = runner.invoke(app, ["query", "What evidence supports de.cm-01?"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "connector:cloudtrail" in result.stdout
+    assert "2026-04-01" in result.stdout
+
+
+def test_query_output_shows_severity_tag_for_risk_result(tmp_path: Path, monkeypatch):
+    """Risk results render the severity so the worst risks are visually prominent."""
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_graph_with_evidence_and_risk(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "de.cm-01",
+            "traversal": "NEIGHBORS",
+            "edge_filter": ["MITIGATED_BY"],
+            "direction": "in",
+        }
+    )
+
+    with patch("lemma.commands.query.get_llm_client", return_value=mock_llm):
+        result = runner.invoke(app, ["query", "What risks does de.cm-01 mitigate?"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Audit log loss" in result.stdout
+    assert "high" in result.stdout.lower()
+
+
 def test_query_exits_non_zero_when_entry_node_not_found(tmp_path: Path, monkeypatch):
     from lemma.cli import app
 
