@@ -910,6 +910,52 @@ lemma scope discover k8s [--context <ctx>] [--namespace <ns,...>] [--kind <kinds
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when kubeconfig can't be loaded, when a requested kind is unknown, or when the cluster is unreachable.
 
+### `lemma scope discover gcp`
+
+Auto-discover GCP resources via **Cloud Asset Inventory** (`cloudasset.googleapis.com`) — Google's canonical "what resources exist" API. One client + one `list_assets()` call covers Compute, Storage, IAM, and dozens of other services.
+
+```bash
+lemma scope discover gcp --project <id> [--asset-type <types,...>] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--project` | (required) | GCP project id. Required for the `gcp` provider. |
+| `--asset-type` | `compute.googleapis.com/Instance,storage.googleapis.com/Bucket,iam.googleapis.com/ServiceAccount` | Comma-separated CAI asset types to enumerate. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth.** Application Default Credentials. Set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json` for non-interactive runs, or run `gcloud auth application-default login` once for a developer machine. Missing credentials raise a clean `ValueError` at construction time.
+
+**Enable the Cloud Asset API first.** This is the most common first-run failure. Run:
+
+```bash
+gcloud services enable cloudasset.googleapis.com
+```
+
+**Reachability check.** The CLI probes the project up front by listing one asset of the first requested type. If the API is disabled or the credentials lack `cloudasset.assets.listAssets` IAM permission, the probe surfaces a clean error rather than a confusing per-type GoogleAPIError mid-discover.
+
+**What gets discovered (v0).**
+
+| CAI asset type | Lemma id | Lemma type | Notable attributes |
+|---|---|---|---|
+| `compute.googleapis.com/Instance` | `gcp-<project>-instance-<name>` | `gcp.compute.instance` | `gcp.labels.<key>`, `gcp.machine_type`, `gcp.status`, `gcp.location` |
+| `storage.googleapis.com/Bucket` | `gcp-<project>-bucket-<name>` | `gcp.storage.bucket` | `gcp.labels.<key>`, `gcp.storage_class`, `gcp.location` |
+| `iam.googleapis.com/ServiceAccount` | `gcp-<project>-sa-<basename-before-@>` | `gcp.iam.service_account` | `gcp.email`, `gcp.display_name` |
+
+**Project in the ID.** GCP names alone don't carry project identity — running discover against `prod-project` and then `staging-project` would otherwise corrupt each other's Resource nodes if any names overlap. Project is baked into every ID, just like cluster context for k8s.
+
+**Service Account ID uses `--project`, not the email's project.** Google-managed SAs (`service-12345@compute-system.iam.gserviceaccount.com`) embed a Google service project in their email — using that for the Lemma id would collide across discoveries. The id always uses `--project`; the full email is preserved under `attributes.gcp.email` so scope rules can target either.
+
+**Snake_case field names.** GCP's protobuf Struct converts to a dict via `MessageToDict(..., preserving_proto_field_name=True)` so attribute keys are `machine_type`, `storage_class`, `display_name`, etc. Matches AWS's `instance_type` / k8s's `service_type` convention so dotted-path scope rules read uniformly.
+
+**Per-asset-type error tolerance.** A `PermissionDenied` on Compute doesn't block Storage + IAM enumeration; the failed type is logged and the others still produce results.
+
+**`labels` as the natural scope-rule target.** GCP labels are the analog of AWS tags / k8s labels. A scope rule `source: gcp.labels.environment, operator: equals, value: prod` works through the existing dotted-path matcher unchanged.
+
+**Out of scope for v0.** No `--folder` / `--organization` (broader IAM required); no IAM policy / org policy enumeration via CAI's `IAM_POLICY` content type; only the three "audit pillar" asset types. The full CAI catalog is one append away on the `--asset-type` flag.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--project` is missing, when credentials can't be resolved, when the project is unreachable, when an unknown asset type is requested, or when `--asset-type` is empty.
+
 ### Scope-as-code schema
 
 ```yaml

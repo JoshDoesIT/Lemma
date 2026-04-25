@@ -813,11 +813,12 @@ class TestScopeDiscover:
         monkeypatch.chdir(tmp_path)
         _seed_project_for_discover(tmp_path)
 
-        result = runner.invoke(app, ["scope", "discover", "gcp"])
+        result = runner.invoke(app, ["scope", "discover", "azure"])
         assert result.exit_code == 1
         assert "aws" in result.stdout
         assert "terraform" in result.stdout
         assert "k8s" in result.stdout
+        assert "gcp" in result.stdout
 
     def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
@@ -875,3 +876,75 @@ class TestScopeDiscover:
         result = runner.invoke(app, ["scope", "discover", "k8s"])
         assert result.exit_code == 1
         assert "lemma scope init" in result.stdout
+
+    def test_gcp_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.gcp_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_gcp_client",
+            lambda project, asset_types: object(),
+        )
+
+        result = runner.invoke(app, ["scope", "discover", "gcp", "--project", "my-proj"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_gcp_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.gcp_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_gcp_client",
+            lambda project, asset_types: object(),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "gcp",
+                "--project",
+                "my-proj",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_gcp_missing_project_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "gcp"])
+        assert result.exit_code == 1
+        assert "--project" in result.stdout
