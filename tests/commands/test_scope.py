@@ -585,3 +585,152 @@ class TestScopeVisualize:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["scope", "visualize"])
         assert result.exit_code == 1
+
+
+def _seed_project_for_discover(tmp_path: Path) -> None:
+    """Build a project with one declared scope matching aws.tags.Environment=prod."""
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    (tmp_path / ".lemma").mkdir()
+    scopes_dir = tmp_path / "scopes"
+    scopes_dir.mkdir()
+    (scopes_dir / "prod.yaml").write_text(
+        "name: prod\n"
+        "frameworks:\n"
+        "  - nist-csf-2.0\n"
+        "justification: Production AWS account.\n"
+        "match_rules:\n"
+        "  - source: aws.tags.Environment\n"
+        "    operator: equals\n"
+        "    value: prod\n"
+    )
+
+    g = ComplianceGraph()
+    g.add_framework("nist-csf-2.0")
+    g.add_scope(name="prod", frameworks=["nist-csf-2.0"], justification="Production.")
+    g.save(tmp_path / ".lemma" / "graph.json")
+
+
+def _candidate_resources():
+    """Three discovered ResourceDefinitions: 2 with Environment=prod, 1 without."""
+    from lemma.models.resource import ResourceDefinition
+
+    return [
+        ResourceDefinition(
+            id="aws-ec2-i-prod1",
+            type="aws.ec2.instance",
+            scope="",
+            attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
+        ),
+        ResourceDefinition(
+            id="aws-s3-prod-data",
+            type="aws.s3.bucket",
+            scope="",
+            attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
+        ),
+        ResourceDefinition(
+            id="aws-ec2-i-dev1",
+            type="aws.ec2.instance",
+            scope="",
+            attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "dev"}}},
+        ),
+    ]
+
+
+class TestScopeDiscover:
+    def test_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        # Stub session-build so no real AWS auth is attempted.
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "discover", "aws"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        # The two prod-tagged resources got Resource nodes.
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        # The dev-tagged one didn't (no scope match).
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+        # SCOPED_TO edges land.
+        for rid in ("aws-ec2-i-prod1", "aws-s3-prod-data"):
+            edges = g.get_edges(f"resource:{rid}", "scope:prod")
+            assert any(e.get("relationship") == "SCOPED_TO" for e in edges)
+
+    def test_dry_run_emits_yaml_and_does_not_write_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "discover", "aws", "--dry-run"])
+        assert result.exit_code == 0, result.stdout
+
+        # The YAML preview block (after the header) contains the matched ids
+        # but not the unmatched one. The unmatched id may appear above the
+        # block in a "no scope match" warning — that's expected.
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-s3-prod-data" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        # Graph stayed clean — no Resource nodes added.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_summary_line_counts_match_outcome(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "discover", "aws"])
+        assert result.exit_code == 0, result.stdout
+        # 3 candidates total, 2 scoped, 1 skipped (no match).
+        assert "3" in result.stdout
+        assert "2" in result.stdout
+        assert "1" in result.stdout
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "discover", "aws"])
+        assert result.exit_code == 1
+
+    def test_empty_scopes_directory_exits_with_pointer(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        # No scopes/ directory and no declared scopes.
+
+        result = runner.invoke(app, ["scope", "discover", "aws"])
+        assert result.exit_code == 1
+        assert "lemma scope init" in result.stdout

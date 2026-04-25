@@ -803,6 +803,40 @@ dot -Tsvg prod.dot -o prod.svg       # vector for documentation sites
 
 **Exit codes.** `0` on success, including an empty graph (you'll get a valid but empty digraph). `1` on an unknown scope name or when invoked outside a Lemma project.
 
+### `lemma scope discover aws`
+
+Auto-discover cloud resources directly from an AWS account. For every discovered asset, run its attributes through the declared scope `match_rules` and write a `Resource` node + `SCOPED_TO` edge for each match. Eliminates hand-curating `resources/*.yaml` for production cloud accounts.
+
+```bash
+lemma scope discover aws [--region <r>] [--service ec2,s3,iam] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--region` | `us-east-1` | AWS region for region-scoped APIs (EC2). S3 and IAM are global; the flag is ignored for them. |
+| `--service` | `ec2,s3,iam` | Comma-separated list of services to enumerate. |
+| `--dry-run` | `false` | Print the matched resources as YAML to stdout; do not touch the graph. Useful as a preview before the first real run. |
+
+**Auth.** boto3's default credential chain (env vars / AWS profile / IMDS). No Lemma-specific env var. Missing credentials raise a clean `ValueError` at construction time via STS `GetCallerIdentity` so operators aren't surprised mid-discover.
+
+**What gets discovered (v0).**
+
+| Service | API | Resource id | Resource type | Notable attributes |
+|---------|-----|-------------|---------------|--------------------|
+| EC2 instances | `ec2:DescribeInstances` (paginated) | `aws-ec2-<instance-id>` | `aws.ec2.instance` | `aws.region`, `aws.state`, `aws.instance_type`, `aws.availability_zone`, `aws.tags.<Key>` |
+| S3 buckets | `s3:ListBuckets` + `s3:GetBucketLocation` | `aws-s3-<bucket-name>` | `aws.s3.bucket` | `aws.region`, `aws.name` |
+| IAM users | `iam:ListUsers` (paginated) | `aws-iam-user-<user-name>` | `aws.iam.user` | `aws.user_name`, `aws.path`, `aws.create_date` |
+
+EC2 tags are normalized from boto3's `[{Key, Value}, ...]` to `{Key: Value, ...}` so existing scope rules using dotted paths like `aws.tags.Environment` work unchanged.
+
+**Multi-scope match handling.** When a discovered resource matches more than one declared scope, the command takes the alphabetically-first match and prints a yellow warning naming all matches. The current `Resource → Scope` edge is single-valued; true multi-scope membership is the Scope Ring Model on [#24](https://github.com/JoshDoesIT/Lemma/issues/24).
+
+**Per-service error tolerance.** If one AWS service raises (AccessDenied, throttling, etc.) the discover continues with the others. The summary line counts resources from successful services; failed services are logged.
+
+**No pruning.** If an asset is deleted in AWS, its corresponding Resource node persists in the graph until manually removed or until [#144](https://github.com/JoshDoesIT/Lemma/issues/144) ships a prune surface. Re-running discover refreshes attributes on still-existing assets via `add_resource`'s idempotent rebuild.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is anything other than `aws`, or when AWS credentials cannot be resolved.
+
 ### Scope-as-code schema
 
 ```yaml

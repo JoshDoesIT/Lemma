@@ -8,16 +8,20 @@ Sub-commands:
     lemma scope impact --plan <file>  — scope impact of a Terraform plan
     lemma scope posture [<name>]      — per-framework coverage metrics per scope
     lemma scope visualize [<name>]    — render scope subgraph as Graphviz DOT
+    lemma scope discover aws          — auto-discover AWS resources into the graph
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
+from lemma.services.aws_discovery import discover_resources as aws_discover_resources
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
@@ -383,3 +387,124 @@ def visualize_command(
 
     # Plain stdout — Rich would add color codes that break `dot`.
     print(dot, end="")
+
+
+def _build_aws_session(region: str) -> Any:
+    """Build a boto3.Session for the given region.
+
+    Wrapped in a function so tests can monkeypatch this seam without
+    touching the real boto3 default credential chain.
+    """
+    import boto3
+    from botocore.exceptions import NoCredentialsError
+
+    session = boto3.Session(region_name=region)
+    sts = session.client("sts")
+    try:
+        sts.get_caller_identity()
+    except NoCredentialsError as exc:
+        msg = (
+            "lemma scope discover aws could not resolve AWS credentials. "
+            "Configure the AWS credential chain (env vars, profile, or IMDS) "
+            "and try again."
+        )
+        raise ValueError(msg) from exc
+    return session
+
+
+@scope_app.command(
+    name="discover",
+    help=("Auto-discover cloud resources into the graph. Provider must be one of: aws."),
+)
+def discover_command(
+    provider: str = typer.Argument(
+        help="Cloud provider to discover (currently: aws).",
+    ),
+    region: str = typer.Option(
+        "us-east-1", "--region", help="AWS region for region-scoped APIs (EC2)."
+    ),
+    service: str = typer.Option(
+        "ec2,s3,iam",
+        "--service",
+        help="Comma-separated list of services to enumerate (default: ec2,s3,iam).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print matched resources as YAML to stdout; do not write to the graph.",
+    ),
+) -> None:
+    if provider != "aws":
+        console.print(f"[red]Error:[/red] Unknown provider '{provider}'. Currently supported: aws.")
+        raise typer.Exit(code=1)
+
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+
+    try:
+        scopes = load_all_scopes(scopes_dir)
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    if not scopes:
+        console.print(
+            "[red]Error:[/red] No scopes declared. "
+            "Run [bold]lemma scope init[/bold] to create one, then re-run discover."
+        )
+        raise typer.Exit(code=1)
+
+    services = [s.strip() for s in service.split(",") if s.strip()]
+
+    try:
+        session = _build_aws_session(region)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        candidates = aws_discover_resources(session=session, region=region, services=services)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    matched = []
+    skipped_no_match = 0
+    for resource in candidates:
+        match_names = sorted(scopes_containing(resource.attributes, scopes))
+        if not match_names:
+            console.print(f"[dim]No scope match for {resource.id}; skipping.[/dim]")
+            skipped_no_match += 1
+            continue
+        if len(match_names) > 1:
+            console.print(
+                f"[yellow]Warning:[/yellow] {resource.id} matches multiple scopes "
+                f"({', '.join(match_names)}); using first."
+            )
+        # Pydantic models are immutable-ish; rebuild with scope set.
+        matched.append(resource.model_copy(update={"scope": match_names[0]}))
+
+    if dry_run:
+        # Emit YAML preview — one document per matched resource.
+        previews = [r.model_dump() for r in matched]
+        console.print("[bold]Dry run — matched resources:[/bold]")
+        print(yaml.safe_dump_all(previews, sort_keys=False), end="")
+        return
+
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    for resource in matched:
+        graph.add_resource(
+            resource_id=resource.id,
+            type_=resource.type,
+            scope=resource.scope,
+            attributes=resource.attributes,
+            impacts=resource.impacts,
+        )
+    graph.save(graph_path)
+
+    console.print(
+        f"[green]Discovered[/green] {len(candidates)} AWS resource(s); "
+        f"{len(matched)} scoped, {skipped_no_match} skipped (no scope match)."
+    )
