@@ -29,6 +29,9 @@ from lemma.services.scope_dot import render_scope_dot
 from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
 from lemma.services.scope_posture import compute_posture
 from lemma.services.terraform_plan import parse_terraform_plan
+from lemma.services.terraform_state import (
+    discover_resources_from_state as tf_state_discover_resources,
+)
 
 console = Console()
 
@@ -414,19 +417,26 @@ def _build_aws_session(region: str) -> Any:
 
 @scope_app.command(
     name="discover",
-    help=("Auto-discover cloud resources into the graph. Provider must be one of: aws."),
+    help=("Auto-discover cloud resources into the graph. Provider must be one of: aws, terraform."),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Cloud provider to discover (currently: aws).",
+        help="Cloud provider to discover (one of: aws, terraform).",
     ),
     region: str = typer.Option(
-        "us-east-1", "--region", help="AWS region for region-scoped APIs (EC2)."
+        "us-east-1",
+        "--region",
+        help="AWS region for region-scoped APIs (EC2). Ignored for terraform.",
     ),
     service: str = typer.Option(
         "ec2,s3,iam",
         "--service",
-        help="Comma-separated list of services to enumerate (default: ec2,s3,iam).",
+        help="Comma-separated list of AWS services to enumerate. Ignored for terraform.",
+    ),
+    path: str = typer.Option(
+        "",
+        "--path",
+        help="Path to terraform.tfstate (required when provider is 'terraform').",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -434,8 +444,10 @@ def discover_command(
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider != "aws":
-        console.print(f"[red]Error:[/red] Unknown provider '{provider}'. Currently supported: aws.")
+    if provider not in ("aws", "terraform"):
+        console.print(
+            f"[red]Error:[/red] Unknown provider '{provider}'. Currently supported: aws, terraform."
+        )
         raise typer.Exit(code=1)
 
     project_dir = _require_lemma_project()
@@ -455,19 +467,29 @@ def discover_command(
         )
         raise typer.Exit(code=1)
 
-    services = [s.strip() for s in service.split(",") if s.strip()]
-
-    try:
-        session = _build_aws_session(region)
-    except ValueError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
-
-    try:
-        candidates = aws_discover_resources(session=session, region=region, services=services)
-    except ValueError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+    if provider == "aws":
+        services = [s.strip() for s in service.split(",") if s.strip()]
+        try:
+            session = _build_aws_session(region)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = aws_discover_resources(session=session, region=region, services=services)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "AWS"
+    else:  # provider == "terraform"
+        if not path:
+            console.print("[red]Error:[/red] --path is required when provider is 'terraform'.")
+            raise typer.Exit(code=1)
+        try:
+            candidates = tf_state_discover_resources(Path(path))
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "Terraform-state"
 
     matched = []
     skipped_no_match = 0
@@ -505,6 +527,6 @@ def discover_command(
     graph.save(graph_path)
 
     console.print(
-        f"[green]Discovered[/green] {len(candidates)} AWS resource(s); "
+        f"[green]Discovered[/green] {len(candidates)} {source_label} resource(s); "
         f"{len(matched)} scoped, {skipped_no_match} skipped (no scope match)."
     )

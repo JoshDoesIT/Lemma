@@ -734,3 +734,86 @@ class TestScopeDiscover:
         result = runner.invoke(app, ["scope", "discover", "aws"])
         assert result.exit_code == 1
         assert "lemma scope init" in result.stdout
+
+    def test_terraform_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.tf_state_discover_resources",
+            lambda path: candidates,
+        )
+
+        # Any path will do — discover service is mocked.
+        state_file = tmp_path / "terraform.tfstate"
+        state_file.write_text("{}")
+
+        result = runner.invoke(app, ["scope", "discover", "terraform", "--path", str(state_file)])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_terraform_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.tf_state_discover_resources",
+            lambda path: candidates,
+        )
+
+        state_file = tmp_path / "terraform.tfstate"
+        state_file.write_text("{}")
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "terraform",
+                "--path",
+                str(state_file),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-s3-prod-data" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_terraform_missing_path_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "terraform"])
+        assert result.exit_code == 1
+        assert "--path" in result.stdout
+
+    def test_unknown_provider_lists_known_providers(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "gcp"])
+        assert result.exit_code == 1
+        assert "aws" in result.stdout
+        assert "terraform" in result.stdout

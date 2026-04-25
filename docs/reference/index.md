@@ -835,7 +835,41 @@ EC2 tags are normalized from boto3's `[{Key, Value}, ...]` to `{Key: Value, ...}
 
 **No pruning.** If an asset is deleted in AWS, its corresponding Resource node persists in the graph until manually removed or until [#144](https://github.com/JoshDoesIT/Lemma/issues/144) ships a prune surface. Re-running discover refreshes attributes on still-existing assets via `add_resource`'s idempotent rebuild.
 
-**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is anything other than `aws`, or when AWS credentials cannot be resolved.
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is anything other than `aws` / `terraform`, or when AWS credentials cannot be resolved.
+
+### `lemma scope discover terraform`
+
+Discover resources from a Terraform state file (`terraform.tfstate`) instead of a live cloud API. Useful when Lemma's host has read access to the state file but not directly to the AWS / GCP / Azure account, when the operator wants to discover resources from multiple cloud providers in a single pass, or when the state file is the team's source of truth for what's deployed.
+
+```bash
+lemma scope discover terraform --path <path-to-tfstate> [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | (required) | Path to a `terraform.tfstate` JSON file. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+The `--region` and `--service` flags are accepted but ignored for the `terraform` provider.
+
+**This is different from `lemma scope impact --plan`.** That command parses Terraform *plan* output (`terraform show -json plan.tfplan`) to gate CI on scope-boundary crossings. `lemma scope discover terraform` parses the *state* file to populate `Resource` nodes for the live, deployed infrastructure. State and plan share JSON shapes but encode different things; passing a plan file to `discover` exits with an error pointing at `--plan`.
+
+**Resource shape.**
+
+- `id`: `tf-<tf-type>.<name>` for un-indexed resources, with a `[<index>]` suffix for `count`-indexed (int) or `for_each`-indexed (string) resources. Example: `tf-aws_instance.web[0]`, `tf-aws_instance.web[us-east-1a]`.
+- `type`: three TF types are normalized to match AWS-API discovery so existing scope rules port across sources — `aws_instance` → `aws.ec2.instance`, `aws_s3_bucket` → `aws.s3.bucket`, `aws_iam_user` → `aws.iam.user`. Every other Terraform type is kept verbatim (`google_compute_instance`, `azurerm_virtual_machine`, `datadog_monitor`, etc.).
+- `attributes`: for the three mapped types, attributes nest under `aws.*` to match AWS-API discovery's shape (so `aws.tags.Environment` rules port). For everything else, attributes nest under `tf.*` so operators write source-specific rules deliberately rather than relying on silent coercion.
+
+**Sensitive-attribute redaction.** Lemma's graph commits to disk at `.lemma/graph.json`, so leaking secrets there is a real risk. Both Terraform sensitivity encodings are walked:
+
+- `instances[].sensitive_attributes` — top-level string keys and `[{type: get_attr, value: …}, ...]` step paths get the value at that path replaced with the literal string `<redacted>`.
+- `instances[].sensitive_values` — a parallel structure with `true` markers; matching nodes in `attributes` are replaced with `<redacted>`.
+
+Targeted, not whole-block: an RDS instance with a sensitive `password` keeps `engine`, `instance_class`, `tags`, etc., so scope rules on `aws.tags.Environment` still match. Sensitive paths that don't resolve (stale state vs current schema) are silently skipped.
+
+**Mode filter.** `mode: "data"` resources (Terraform data sources) are skipped — they're read-only references, not deployed assets.
+
+**Exit codes.** `0` on success. `1` if `--path` is missing, if the file doesn't look like a Terraform state file (the error names `--plan` if the file is a plan), if the file is missing, or if no scopes are declared.
 
 ### Scope-as-code schema
 
