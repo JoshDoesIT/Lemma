@@ -871,6 +871,45 @@ Targeted, not whole-block: an RDS instance with a sensitive `password` keeps `en
 
 **Exit codes.** `0` on success. `1` if `--path` is missing, if the file doesn't look like a Terraform state file (the error names `--plan` if the file is a plan), if the file is missing, or if no scopes are declared.
 
+### `lemma scope discover k8s`
+
+Discover Kubernetes resources from the configured cluster context. Walks the kube-apiserver, runs each discovered resource's attributes through the declared scope `match_rules`, and writes a `Resource` node + `SCOPED_TO` edge for each match. Useful for containerized environments where workloads are the audit unit rather than cloud assets.
+
+```bash
+lemma scope discover k8s [--context <ctx>] [--namespace <ns,...>] [--kind <kinds>] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--context` | (current kubeconfig context) | kubeconfig context to use. Pass when you maintain multiple clusters in one kubeconfig. |
+| `--namespace` | (all namespaces) | Comma-separated list of namespaces to restrict to. |
+| `--kind` | `namespace,deployment,service` | Comma-separated kinds to enumerate. |
+| `--dry-run` | `false` | Print matched resources as YAML to stdout; do not touch the graph. |
+
+**Auth.** kubeconfig only (env `KUBECONFIG` or `~/.kube/config`). No in-cluster ServiceAccount fallback in v0 — running discovery from inside a pod will be added behind an explicit flag if/when an operator needs it. Missing kubeconfig raises a clean `ValueError` at construction time.
+
+**Cluster reachability.** Validated via `version_api.get_code()` before any listing — cheaper than listing namespaces and requires no RBAC. A `ConnectionRefused` / unreachable cluster surfaces as a clean error rather than a confusing per-kind ApiException.
+
+**What gets discovered (v0).**
+
+| K8s kind | API call | Resource id | Resource type | Notable attributes |
+|---|---|---|---|---|
+| Namespace | `core_v1.list_namespace` | `k8s-<context>-namespace-<name>` | `k8s.namespace` | `k8s.labels.<key>`, `k8s.annotations.<key>` |
+| Deployment | `apps_v1.list_deployment_for_all_namespaces` | `k8s-<context>-deployment-<ns>-<name>` | `k8s.deployment` | `k8s.labels.<key>`, `k8s.replicas`, `k8s.image` |
+| Service | `core_v1.list_service_for_all_namespaces` | `k8s-<context>-service-<ns>-<name>` | `k8s.service` | `k8s.service_type`, `k8s.labels.<key>` |
+
+**Pods deliberately excluded.** Pods are ephemeral (HPA churn, OOMKills, rollouts) — discovering them produces a graph that lies within minutes. Deployments are the declarative truth. Add `--kind pod` if you need it; it's not in the v0 set.
+
+**Cluster context in the ID.** Multi-cluster shops running prod and staging with the same namespace + deployment names would corrupt each other on the second `discover` run if IDs didn't carry cluster identity. AWS gets free disambiguation via account+region in ARNs; K8s names don't, so the context is baked in. When `--context` is unset, the literal string `current` is used.
+
+**Annotation strip.** `kubectl.kubernetes.io/*` annotations are dropped before storing — `kubectl.kubernetes.io/last-applied-configuration` alone can be multi-KB and re-embeds spec data already on the resource. User-set annotations (`team.example.com/owner`, etc.) are preserved.
+
+**Per-kind error tolerance.** If listing one kind raises (e.g. RBAC denial on `Deployments`) the others still produce results; the failed kind is logged.
+
+**Secret references not enumerated.** Deployment Secret references (`volumes[].secret`, `envFrom[].secretRef`) are not captured to avoid scope creep — names aren't sensitive but enumeration multiplies the surface (projected volumes, CSI, image pull secrets). Ship `replicas` + `image` only.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when kubeconfig can't be loaded, when a requested kind is unknown, or when the cluster is unreachable.
+
 ### Scope-as-code schema
 
 ```yaml
