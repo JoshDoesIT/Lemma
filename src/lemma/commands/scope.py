@@ -22,6 +22,9 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.services.aws_discovery import discover_resources as aws_discover_resources
+from lemma.services.gcp_discovery import (
+    discover_resources_from_gcp as gcp_discover_resources,
+)
 from lemma.services.k8s_discovery import (
     discover_resources_from_cluster as k8s_discover_resources,
 )
@@ -445,16 +448,57 @@ def _build_k8s_clients(context: str | None) -> Any:
     return bundle
 
 
+def _build_gcp_client(project: str, asset_types: list[str]) -> Any:
+    """Build a Cloud Asset Inventory client and validate project reachability.
+
+    Wrapped so tests can monkeypatch this seam without touching real
+    Google credentials. Probes with the first user-supplied asset type
+    so an operator passing only `--asset-type storage.googleapis.com/Bucket`
+    doesn't get a spurious failure when Compute API is disabled.
+    """
+    from google.api_core.exceptions import GoogleAPIError
+    from google.auth.exceptions import DefaultCredentialsError, RefreshError
+    from google.cloud import asset_v1
+
+    try:
+        client = asset_v1.AssetServiceClient()
+    except (DefaultCredentialsError, RefreshError) as exc:
+        msg = (
+            "lemma scope discover gcp could not resolve Google credentials. "
+            "Set GOOGLE_APPLICATION_CREDENTIALS or run "
+            "'gcloud auth application-default login' and try again."
+        )
+        raise ValueError(msg) from exc
+
+    probe_type = asset_types[0] if asset_types else "compute.googleapis.com/Instance"
+    try:
+        request = asset_v1.ListAssetsRequest(
+            parent=f"projects/{project}",
+            asset_types=[probe_type],
+            page_size=1,
+        )
+        next(iter(client.list_assets(request=request)), None)
+    except GoogleAPIError as exc:
+        msg = (
+            f"GCP project '{project}' is unreachable or the Cloud Asset API is "
+            f"not enabled. Run 'gcloud services enable cloudasset.googleapis.com' "
+            f"and verify project access. Underlying error: {exc}"
+        )
+        raise ValueError(msg) from exc
+
+    return client
+
+
 @scope_app.command(
     name="discover",
     help=(
         "Auto-discover cloud resources into the graph. "
-        "Provider must be one of: aws, terraform, k8s."
+        "Provider must be one of: aws, terraform, k8s, gcp."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Cloud provider to discover (one of: aws, terraform, k8s).",
+        help="Cloud provider to discover (one of: aws, terraform, k8s, gcp).",
     ),
     region: str = typer.Option(
         "us-east-1",
@@ -486,16 +530,26 @@ def discover_command(
         "--kind",
         help="Comma-separated k8s kinds to enumerate. k8s only.",
     ),
+    project: str = typer.Option(
+        "",
+        "--project",
+        help="GCP project id. gcp only; required when provider is 'gcp'.",
+    ),
+    asset_type: str = typer.Option(
+        "compute.googleapis.com/Instance,storage.googleapis.com/Bucket,iam.googleapis.com/ServiceAccount",
+        "--asset-type",
+        help="Comma-separated CAI asset types. gcp only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform", "k8s"):
+    if provider not in ("aws", "terraform", "k8s", "gcp"):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s."
+            "Currently supported: aws, terraform, k8s, gcp."
         )
         raise typer.Exit(code=1)
 
@@ -539,7 +593,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Terraform-state"
-    else:  # provider == "k8s"
+    elif provider == "k8s":
         kinds = [k.strip() for k in kind.split(",") if k.strip()]
         namespaces = [n.strip() for n in namespace.split(",") if n.strip()] or None
         try:
@@ -558,6 +612,26 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Kubernetes"
+    else:  # provider == "gcp"
+        if not project:
+            console.print("[red]Error:[/red] --project is required when provider is 'gcp'.")
+            raise typer.Exit(code=1)
+        asset_types = [t.strip() for t in asset_type.split(",") if t.strip()]
+        try:
+            asset_client = _build_gcp_client(project, asset_types)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = gcp_discover_resources(
+                asset_client=asset_client,
+                project=project,
+                asset_types=asset_types,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "GCP"
 
     matched = []
     skipped_no_match = 0
