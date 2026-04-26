@@ -1004,6 +1004,70 @@ az provider register --namespace Microsoft.ResourceGraph
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--subscription` is missing or whitespace-only, when credentials can't be resolved, when the subscription is unreachable, when an unknown resource type is requested, or when `--resource-type` is empty.
 
+### `lemma scope discover file`
+
+Bulk import resources from a CSV, JSON, or JSON Lines file. The on-prem analog of the cloud discovery sources, useful in air-gapped environments without outbound internet, when the source of truth is a CMDB / spreadsheet / Ansible inventory export, or as a universal escape hatch for any system that can produce a list of resources.
+
+```bash
+lemma scope discover file --path <path> [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | (required) | Path to a `.csv` / `.json` / `.jsonl` file. Reuses the `--path` option already used by `terraform`. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Format detection by extension.** `.csv` → CSV with header row; `.json` → top-level JSON array; `.jsonl` → one JSON record per line. Anything else exits `1` with the unrecognized extension named.
+
+**JSON / JSONL schema.** Each record is an object with:
+
+```json
+{
+  "id": "vm-prod-1",
+  "type": "vmware.vm",
+  "attributes": {
+    "vsphere": {
+      "host": "esxi-1",
+      "tags": {"environment": "prod"}
+    }
+  },
+  "impacts": []
+}
+```
+
+- `id` (string, required, non-empty) — verbatim into the graph.
+- `type` (string, required, non-empty) — verbatim into the graph.
+- `attributes` (object, optional, defaults to `{}`) — verbatim into the Resource node, no auto-wrapping.
+- `impacts` (list of strings, optional) — control refs of the form `control:<framework>:<id>`.
+
+**CSV schema.** Header row required. Two reserved columns:
+
+- `id` (required)
+- `type` (required)
+
+Every other column becomes an attribute via **dotted-path expansion**: a column named `vsphere.tags.environment` becomes `attributes["vsphere"]["tags"]["environment"]`. This lets you write CSV that produces matcher-compatible nested attributes without hand-constructing JSON.
+
+```csv
+id,type,vsphere.host,vsphere.tags.environment
+vm-prod-1,vmware.vm,esxi-1,prod
+vm-prod-2,vmware.vm,esxi-1,prod
+vm-staging-1,vmware.vm,esxi-2,staging
+```
+
+CSV doesn't natively support lists, so `impacts` is **not expressible in CSV**. Use JSON for resources that need impacts.
+
+Empty cells become empty strings — explicit, not omitted.
+
+**Operator-controlled schema.** Unlike the cloud providers (which auto-wrap attributes under `aws.*` / `gcp.*` / `azure.*` / `k8s.*`), file import does **not** auto-wrap. Operators are free to use whatever attribute shape works for their CMDB. To share scope rules with cloud-discovered resources, mirror the cloud convention manually (e.g. write CSV columns like `aws.tags.Environment`).
+
+**Operator-controlled IDs.** The `id` field is used verbatim — no `aws-` / `gcp-` / `tf-` prefixing. Use whatever naming scheme already exists in the source CMDB.
+
+**Validation, fail-loud.** Records missing `id` or `type` abort with the offending record index. Duplicate ids within a file abort with every duplicate listed. Malformed JSON / JSONL aborts with the file/line number.
+
+**Empty file.** Returns 0 results, exits 0. Not an error.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--path` is missing, when the file is missing, when the extension is unrecognized, when a record is missing required fields, or when duplicate ids are present.
+
 ### Scope-as-code schema
 
 ```yaml

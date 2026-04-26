@@ -820,6 +820,7 @@ class TestScopeDiscover:
         assert "k8s" in result.stdout
         assert "gcp" in result.stdout
         assert "azure" in result.stdout
+        assert "file" in result.stdout
 
     def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
@@ -1028,3 +1029,74 @@ class TestScopeDiscover:
         result_ws = runner.invoke(app, ["scope", "discover", "azure", "--subscription", "   "])
         assert result_ws.exit_code == 1
         assert "--subscription" in result_ws.stdout
+
+    def test_file_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.file_discover_resources",
+            lambda path: candidates,
+        )
+
+        # Any path will do — discover service is mocked.
+        inventory = tmp_path / "inventory.json"
+        inventory.write_text("[]")
+
+        result = runner.invoke(app, ["scope", "discover", "file", "--path", str(inventory)])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_file_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.file_discover_resources",
+            lambda path: candidates,
+        )
+
+        inventory = tmp_path / "inventory.json"
+        inventory.write_text("[]")
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "file",
+                "--path",
+                str(inventory),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_file_missing_path_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "file"])
+        assert result.exit_code == 1
+        assert "--path" in result.stdout
