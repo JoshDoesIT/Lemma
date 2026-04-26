@@ -13,6 +13,7 @@ Sub-commands:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,9 @@ from lemma.services.k8s_discovery import (
     discover_resources_from_cluster as k8s_discover_resources,
 )
 from lemma.services.knowledge_graph import ComplianceGraph
+from lemma.services.network_discovery import (
+    discover_resources_from_network as network_discover_resources,
+)
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
 from lemma.services.scope_dot import render_scope_dot
@@ -692,18 +696,143 @@ def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
     return si.RetrieveContent()
 
 
+def _build_network_scanner(
+    *,
+    privileged: bool = False,
+    detect_versions: bool = False,
+    ipv6: bool = False,
+) -> Callable[[list[str], list[int]], dict[str, dict]]:
+    """Return a scan function that shells out to nmap and parses -oX XML.
+
+    Errors loud at construction if nmap is missing, or if ``privileged`` is
+    set without raw-socket capability. The default is unprivileged TCP-connect
+    (``-sT -Pn``); ``--privileged`` switches to ``-sS -O`` (SYN scan + OS
+    fingerprint), ``--detect-versions`` appends ``-sV``, ``--ipv6`` adds ``-6``.
+    """
+    import os
+    import shutil
+
+    if shutil.which("nmap") is None:
+        msg = (
+            "lemma scope discover network requires the nmap binary. "
+            "Install it: `brew install nmap` (macOS) or `apt install nmap` (Debian/Ubuntu)."
+        )
+        raise ValueError(msg)
+
+    if privileged and hasattr(os, "geteuid") and os.geteuid() != 0:
+        msg = (
+            "--privileged requires root (or CAP_NET_RAW on Linux) so nmap can use "
+            "raw sockets for SYN scan and OS fingerprinting. Re-run under sudo, "
+            "or drop --privileged to use unprivileged TCP-connect (-sT)."
+        )
+        raise ValueError(msg)
+
+    scan_flag = "-sS" if privileged else "-sT"
+
+    def _scan(cidrs: list[str], ports: list[int]) -> dict[str, dict]:
+        import subprocess
+
+        cmd = ["nmap", scan_flag, "-Pn", "-R", "-oX", "-"]
+        if privileged:
+            cmd.append("-O")
+        if detect_versions:
+            cmd.append("-sV")
+        if ipv6:
+            cmd.append("-6")
+        if ports:
+            cmd.extend(["-p", ",".join(str(p) for p in ports)])
+        cmd.extend(cidrs)
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            msg = f"nmap exited {result.returncode}: {detail}"
+            raise ValueError(msg)
+
+        return _parse_nmap_xml(result.stdout, ipv6=ipv6)
+
+    return _scan
+
+
+def _parse_nmap_xml(xml_text: str, *, ipv6: bool = False) -> dict[str, dict]:
+    """Parse nmap -oX output into ``{ip: {hostname, open_ports, os, mac, services}}``.
+
+    Filters down hosts and address families that don't match ``ipv6``. ``os``,
+    ``mac``, and ``services`` populate when nmap returned them (i.e. the
+    invocation included ``-O`` / a local subnet / ``-sV``); otherwise each is
+    ``None`` and the service projector omits the corresponding attribute.
+    """
+    import xml.etree.ElementTree as ET
+
+    addr_type = "ipv6" if ipv6 else "ipv4"
+    out: dict[str, dict] = {}
+    root = ET.fromstring(xml_text)
+    for host in root.findall("host"):
+        status = host.find("status")
+        if status is None or status.get("state") != "up":
+            continue
+        addr = host.find(f"address[@addrtype='{addr_type}']")
+        if addr is None:
+            continue
+        ip = addr.get("addr")
+        if ip is None:
+            continue
+        hostname_el = host.find("hostnames/hostname")
+        hostname = hostname_el.get("name") if hostname_el is not None else None
+        open_ports: list[int] = []
+        services: dict[str, dict] = {}
+        for port_el in host.findall("ports/port"):
+            state_el = port_el.find("state")
+            if state_el is None or state_el.get("state") != "open":
+                continue
+            portid = port_el.get("portid")
+            if portid is None:
+                continue
+            open_ports.append(int(portid))
+            svc_el = port_el.find("service")
+            if svc_el is not None:
+                attrs = {k: svc_el.get(k) for k in ("name", "product", "version") if svc_el.get(k)}
+                if attrs:
+                    services[portid] = attrs
+
+        os_info: dict[str, Any] | None = None
+        best = host.find("os/osmatch")
+        if best is not None:
+            osclass = best.find("osclass")
+            family = (osclass.get("osfamily") if osclass is not None else "") or ""
+            os_info = {
+                "name": best.get("name") or "",
+                "family": family.lower(),
+                "accuracy": int(best.get("accuracy") or 0),
+            }
+
+        mac_el = host.find("address[@addrtype='mac']")
+        mac = mac_el.get("addr").lower() if mac_el is not None and mac_el.get("addr") else None
+
+        out[ip] = {
+            "hostname": hostname,
+            "open_ports": sorted(open_ports),
+            "os": os_info,
+            "mac": mac,
+            "services": services or None,
+        }
+    return out
+
+
 @scope_app.command(
     name="discover",
     help=(
         "Auto-discover resources into the graph. Provider must be one of: "
-        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42, vsphere."
+        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42, "
+        "vsphere, network."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
         help=(
             "Discovery source (one of: "
-            "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42, vsphere)."
+            "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, "
+            "device42, vsphere, network)."
         ),
     ),
     region: str = typer.Option(
@@ -807,6 +936,48 @@ def discover_command(
         "--vsphere-kind",
         help="Comma-separated vSphere kinds to enumerate. vsphere only.",
     ),
+    cidr: str = typer.Option(
+        "",
+        "--cidr",
+        help="Comma-separated CIDR(s) to scan (e.g. 10.0.0.0/24,10.0.1.0/24). network only.",
+    ),
+    network_port: str = typer.Option(
+        "22,80,443,3389,445,3306,5432,8080",
+        "--network-port",
+        help=(
+            "Comma-separated TCP ports to probe per host. network only. "
+            "Empty = host-discovery only."
+        ),
+    ),
+    label: str = typer.Option(
+        "",
+        "--label",
+        help=(
+            "Optional label baked into discovered resource ids "
+            "(network-<label>-<ip>). network only."
+        ),
+    ),
+    privileged: bool = typer.Option(
+        False,
+        "--privileged",
+        help=(
+            "Enable nmap SYN scan + OS fingerprinting (-sS -O). Requires root / "
+            "CAP_NET_RAW. network only."
+        ),
+    ),
+    detect_versions: bool = typer.Option(
+        False,
+        "--detect-versions",
+        help=(
+            "Enable nmap service-version detection (-sV). Adds banners to "
+            "attributes.network.services.<port>. network only."
+        ),
+    ),
+    ipv6: bool = typer.Option(
+        False,
+        "--ipv6",
+        help="Scan IPv6 CIDR(s) instead of IPv4. network only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -824,11 +995,12 @@ def discover_command(
         "servicenow",
         "device42",
         "vsphere",
+        "network",
     ):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
             "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, "
-            "servicenow, device42, vsphere."
+            "servicenow, device42, vsphere, network."
         )
         raise typer.Exit(code=1)
 
@@ -991,7 +1163,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "device42"
-    else:  # provider == "vsphere"
+    elif provider == "vsphere":
         vc_host = vsphere_host.strip()
         if not vc_host:
             console.print("[red]Error:[/red] --host is required when provider is 'vsphere'.")
@@ -1013,6 +1185,40 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "vsphere"
+    else:  # provider == "network"
+        cidr_list = [c.strip() for c in cidr.split(",") if c.strip()]
+        if not cidr_list:
+            console.print("[red]Error:[/red] --cidr is required when provider is 'network'.")
+            raise typer.Exit(code=1)
+        try:
+            port_list = [int(p.strip()) for p in network_port.split(",") if p.strip()]
+        except ValueError as exc:
+            console.print(
+                "[red]Error:[/red] --network-port must be a comma-separated list "
+                f"of integers: {exc}"
+            )
+            raise typer.Exit(code=1) from exc
+        try:
+            scan_fn = _build_network_scanner(
+                privileged=privileged,
+                detect_versions=detect_versions,
+                ipv6=ipv6,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = network_discover_resources(
+                scan_function=scan_fn,
+                cidrs=cidr_list,
+                ports=port_list,
+                label=label or None,
+                ipv6=ipv6,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "network"
 
     matched = []
     skipped_no_match = 0
