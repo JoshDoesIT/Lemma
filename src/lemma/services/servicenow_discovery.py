@@ -108,6 +108,6 @@ def _build_resource_definition(row: dict, instance: str) -> ResourceDefinition |
     return ResourceDefinition(
         id=f"snow-{instance}-{sys_id}",
         type=lemma_type,
-        scope="",
+        scopes=[""],
         attributes={"snow": snow_attrs},
     )

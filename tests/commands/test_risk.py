@@ -47,7 +47,7 @@ def _seed_graph(tmp_path: Path) -> None:
     g.add_resource(
         resource_id="audit-bucket",
         type_="aws.s3.bucket",
-        scope="prod",
+        scopes=["prod"],
         attributes={},
     )
     g.save(tmp_path / ".lemma" / "graph.json")

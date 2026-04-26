@@ -111,7 +111,7 @@ def discover_resources_from_state(path: Path) -> list[ResourceDefinition]:
                 ResourceDefinition(
                     id=_resource_id(tf_type, name, instance.get("index_key")),
                     type=lemma_type,
-                    scope="",
+                    scopes=[""],
                     attributes=wrapped_attrs,
                 )
             )

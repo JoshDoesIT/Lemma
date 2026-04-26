@@ -137,7 +137,7 @@ def _build_resource_definition(
     return ResourceDefinition(
         id=rid,
         type=lemma_type,
-        scope="",
+        scopes=[""],
         attributes={"gcp": common},
     )
 

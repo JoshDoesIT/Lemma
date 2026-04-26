@@ -139,6 +139,6 @@ def _project_host(
     return ResourceDefinition(
         id=rid,
         type=rtype,
-        scope="",
+        scopes=[""],
         attributes={"network": network},
     )

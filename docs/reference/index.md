@@ -731,6 +731,31 @@ prod-us-east-rds matches 2 scope(s):
 
 Exit code is `0` whether any scopes match or none — "no match" is a legitimate answer. A missing resource id or a malformed scope/resource YAML exits `1`.
 
+### `lemma scope explain`
+
+Show **why** a Resource node currently in the compliance graph belongs to each of its scopes. Reads the per-edge `matched_rules` attribution that `lemma scope discover` records on every `SCOPED_TO` edge; renders it as a per-scope explanation. Distinct from `lemma scope matches` (which evaluates rules dry against a YAML-declared resource) — `explain` reads what's already in the graph from past discover runs.
+
+```bash
+lemma scope explain <RESOURCE-ID>
+```
+
+`<RESOURCE-ID>` accepts either the bare id (`payments-db`) or the prefixed node id (`resource:payments-db`); both resolve.
+
+```text
+$ lemma scope explain resource:payments-db
+Resource: payments-db (aws.rds.instance)
+In 2 scope(s):
+  prod-us-east  ← aws.tags.Environment, equals, 'prod'
+  pci-dss       ← aws.region, equals, 'us-east-1'
+                ← aws.tags.DataClassification, in, ['cardholder', 'pci']
+```
+
+When a scope's rules attribute multiple rules (all of them must have fired for the scope to match), each rule renders on its own line under the scope name.
+
+**Manual declarations** (`lemma resource load` from `resources/*.yaml`) carry no rule context; `explain` labels those edges as `(no rule attribution — manual declaration or catch-all scope)`. Catch-all scopes (zero `match_rules`) render the same way — operators can disambiguate via `lemma scope status` (catch-all scopes show `Rules = 0`).
+
+Exit code is `1` for an unknown resource id or outside a Lemma project; `0` otherwise.
+
 ### `lemma scope impact --plan`
 
 Evaluate a Terraform plan against every declared scope and report which planned changes move a resource across scope boundaries. Designed for CI/CD: exit code is `1` whenever any change enters or exits a scope so a pipeline can fail the merge and pull a human into the review. Emits `0` when the plan is entirely scope-neutral.
@@ -1381,25 +1406,25 @@ Unknown top-level fields are rejected — a typo such as `match_rule` (singular)
 
 ## `lemma resource`
 
-Manage declared infrastructure resources. A **Resource** is one infrastructure asset (an RDS instance, an S3 bucket, a Kubernetes deployment) that belongs to a declared compliance Scope. Declaring resources gives the compliance graph a population to reason about: once loaded, `lemma graph impact resource:<id>` surfaces the scope → framework → control chain that a single resource answers to.
+Manage declared infrastructure resources. A **Resource** is one infrastructure asset (an RDS instance, an S3 bucket, a Kubernetes deployment) that belongs to one or more declared compliance Scopes. Declaring resources gives the compliance graph a population to reason about: once loaded, `lemma graph impact resource:<id>` surfaces the scope → framework → control chain(s) that a single resource answers to.
 
-This is v0: **manual declaration only**. Operators author `resources/*.yaml` files and load them with `lemma resource load`. Auto-discovery from AWS Config, Azure Resource Graph, Terraform state, etc., stays tracked inside [#24](https://github.com/JoshDoesIT/Lemma/issues/24).
+The Scope Ring Model (shipped alongside `lemma scope explain`) lets one Resource sit in N overlapping scopes simultaneously — a payments database can be in both `prod-us-east` and `pci-dss` as a single graph node with two `SCOPED_TO` edges, not two duplicate Resources.
 
 ### `lemma resource load`
 
-Parse every `resources/*.yaml` and `resources/*.yml` file, validate each against the schema, and upsert a `Resource` node into the compliance graph with a `SCOPED_TO` edge to the named scope.
+Parse every `resources/*.yaml` and `resources/*.yml` file, validate each against the schema, and upsert a `Resource` node into the compliance graph with one `SCOPED_TO` edge per declared scope.
 
 ```bash
 lemma resource load
 ```
 
-Re-running is safe: `add_resource` is idempotent — same `id` updates `attributes` in place, and the single `SCOPED_TO` edge is rebuilt, so a resource that moves to a different scope drops the old edge cleanly.
+Re-running is safe: `add_resource` is idempotent — same `id` updates `attributes` in place, and the full `SCOPED_TO` edge set is rebuilt, so a resource that rotates from `scopes: [prod, dev]` to `scopes: [prod, staging]` cleanly drops the `dev` edge and adds `staging`.
 
-**Fails loud on unresolved scopes.** If a resource's `scope:` field names a scope that isn't in the graph (`lemma scope load` has never run for it, or the scope YAML was deleted), `load` exits `1` with an error naming the missing scope. No silent partial loads.
+**Fails loud on unresolved scopes.** If any name in `scopes:` doesn't resolve to a Scope node (`lemma scope load` has never run for it, or the scope YAML was deleted), `load` exits `1` listing every missing scope. No silent partial loads — the entire batch aborts.
 
 ### `lemma resource list`
 
-Parse every resource YAML and render a Rich table with the id, type, declared scope, a ✓/✗ indicating whether the scope is actually in the graph, and the attribute count.
+Parse every resource YAML and render a Rich table with the id, type, comma-joined declared scopes, a ✓/✗ indicating whether **every** declared scope is in the graph, and the attribute count.
 
 ```bash
 lemma resource list
@@ -1408,9 +1433,11 @@ lemma resource list
 ### Resource-as-code schema
 
 ```yaml
-id: prod-us-east-rds           # required; unique within the project
+id: payments-db                # required; unique within the project
 type: aws.rds.instance         # required; free-form string naming the resource kind
-scope: prod-us-east            # required; must match the name of a declared Scope
+scopes:                        # required; non-empty list of declared Scope names
+  - prod-us-east
+  - pci-dss
 attributes:                    # optional; arbitrary key/value pairs copied to the node
   region: us-east-1
   engine: postgres
@@ -1424,10 +1451,26 @@ impacts:                       # optional; control refs the resource directly co
 
 - `id` is caller-supplied and is the dedup key on re-runs.
 - `type` is free-form. Conventions like `aws.rds.instance`, `aws.s3.bucket`, `k8s.deployment` are suggested but not enforced.
-- `scope` must be the name of a scope that's been loaded into the graph via `lemma scope load`.
+- `scopes` is a **non-empty list** of scope names already loaded into the graph via `lemma scope load`. Single-scope resources still use the list shape (`scopes: [prod-us-east]`) — the singular `scope:` key was removed in the Scope Ring Model rewrite and now fails the schema check with an "extra inputs are not permitted" error.
 - `attributes` is loose (`dict[str, Any]`) — resource types vary enormously, and a rigid per-type schema would block operators from declaring anything we haven't anticipated.
 - `impacts` is optional. Each entry is a `control:<framework>:<control-id>` ref naming a control this resource directly contributes to (e.g., the audit-log bucket impacts `control:nist-800-53:au-2`). Generates `IMPACTS` edges in the graph. Distinct from `SCOPED_TO` — `SCOPED_TO` is scope membership; `IMPACTS` is direct contribution. Unresolved control refs abort `lemma resource load` with the missing refs named.
-- Unknown top-level fields fail loud with a line-numbered error. Typoing `resource_type:` for `type:` doesn't silently drop.
+- Unknown top-level fields fail loud with a line-numbered error. Typoing `resource_type:` for `type:` doesn't silently drop, and the deprecated singular `scope:` key surfaces the same error so operators get a one-line fix.
+
+**Worked example — multi-scope payments DB.**
+
+```yaml
+# resources/payments-db.yaml
+id: payments-db
+type: aws.rds.instance
+scopes:
+  - prod-us-east     # production region scope (NIST CSF)
+  - pci-dss          # PCI-DSS scope (PCI-DSS 4.0)
+attributes:
+  engine: postgres
+  multi_az: true
+```
+
+After `lemma resource load`, `lemma graph impact resource:payments-db` walks **both** SCOPED_TO edges from one starting node, surfacing the union of NIST CSF and PCI-DSS controls the resource answers to. Compare with `lemma scope explain resource:payments-db` to see which scope rule(s) (or "manual declaration" for hand-authored YAML) caused each scope membership.
 
 ---
 

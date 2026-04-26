@@ -194,7 +194,7 @@ def _build_full_edge_graph():
     graph.add_resource(
         resource_id="audit-bucket",
         type_="aws.s3.bucket",
-        scope="prod",
+        scopes=["prod"],
         attributes={},
         impacts=["control:nist-csf-2.0:de.cm-01"],
     )

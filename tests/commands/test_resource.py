@@ -9,8 +9,14 @@ from typer.testing import CliRunner
 runner = CliRunner()
 
 
-def _valid_yaml(id_: str = "prod-rds", scope: str = "default") -> str:
-    return f"id: {id_}\ntype: aws.rds.instance\nscope: {scope}\nattributes:\n  region: us-east-1\n"
+def _valid_yaml(id_: str = "prod-rds", scopes: list[str] | None = None) -> str:
+    scope_lines = "\n".join(f"  - {s}" for s in (scopes or ["default"]))
+    return (
+        f"id: {id_}\n"
+        f"type: aws.rds.instance\n"
+        f"scopes:\n{scope_lines}\n"
+        f"attributes:\n  region: us-east-1\n"
+    )
 
 
 def _graph_with_scope(tmp_path: Path, scope: str = "default") -> None:
@@ -48,6 +54,35 @@ class TestResourceLoad:
         edges = g.get_edges("resource:prod-us-east-rds", "scope:default")
         assert any(e.get("relationship") == "SCOPED_TO" for e in edges)
 
+    def test_multi_scope_yaml_creates_n_scoped_to_edges(self, tmp_path: Path, monkeypatch):
+        """Scope Ring Model: a resource declared in 2 scopes lands with 2 edges."""
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        # Seed both scopes.
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_scope(name="prod", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.add_scope(name="pci", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        resources_dir = tmp_path / "resources"
+        resources_dir.mkdir()
+        (resources_dir / "payments.yaml").write_text(
+            _valid_yaml("payments-db", scopes=["prod", "pci"])
+        )
+
+        result = runner.invoke(app, ["resource", "load"])
+        assert result.exit_code == 0, result.stdout
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        prod_edges = loaded.get_edges("resource:payments-db", "scope:prod")
+        pci_edges = loaded.get_edges("resource:payments-db", "scope:pci")
+        assert any(e.get("relationship") == "SCOPED_TO" for e in prod_edges)
+        assert any(e.get("relationship") == "SCOPED_TO" for e in pci_edges)
+
     def test_unknown_scope_aborts_and_graph_stays_clean(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
         from lemma.services.knowledge_graph import ComplianceGraph
@@ -57,7 +92,7 @@ class TestResourceLoad:
         _graph_with_scope(tmp_path)  # only "default"
         resources_dir = tmp_path / "resources"
         resources_dir.mkdir()
-        (resources_dir / "bad.yaml").write_text(_valid_yaml("orphan", scope="missing"))
+        (resources_dir / "bad.yaml").write_text(_valid_yaml("orphan", scopes=["missing"]))
 
         result = runner.invoke(app, ["resource", "load"])
         assert result.exit_code == 1
@@ -94,8 +129,8 @@ class TestResourceList:
         _graph_with_scope(tmp_path)
         resources_dir = tmp_path / "resources"
         resources_dir.mkdir()
-        (resources_dir / "rds.yaml").write_text(_valid_yaml("prod-rds", scope="default"))
-        (resources_dir / "lost.yaml").write_text(_valid_yaml("lost-bucket", scope="missing"))
+        (resources_dir / "rds.yaml").write_text(_valid_yaml("prod-rds", scopes=["default"]))
+        (resources_dir / "lost.yaml").write_text(_valid_yaml("lost-bucket", scopes=["missing"]))
 
         result = runner.invoke(app, ["resource", "list"])
         assert result.exit_code == 0, result.stdout
@@ -132,7 +167,7 @@ class TestResourceLoadWithImpacts:
         (resources_dir / "audit.yaml").write_text(
             "id: audit-bucket\n"
             "type: aws.s3.bucket\n"
-            "scope: default\n"
+            "scopes:\n  - default\n"
             "attributes:\n"
             "  region: us-east-1\n"
             "impacts:\n"

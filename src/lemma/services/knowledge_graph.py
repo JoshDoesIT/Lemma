@@ -297,38 +297,50 @@ class ComplianceGraph:
         *,
         resource_id: str,
         type_: str,
-        scope: str,
+        scopes: list[str],
         attributes: dict | None = None,
         impacts: list[str] | None = None,
+        matched_rules_by_scope: dict[str, list[dict]] | None = None,
     ) -> None:
-        """Add a Resource node with a SCOPED_TO edge to the named scope.
+        """Add a Resource node with one SCOPED_TO edge per declared scope.
 
         Args:
             resource_id: Resource identifier (unique within the graph).
             type_: Free-form type string (e.g. ``"aws.rds.instance"``).
-            scope: Name of an existing Scope node. The scope must be
-                loaded into the graph (`lemma scope load`) before
-                resources can reference it.
+            scopes: Non-empty list of scope names. Every name must
+                resolve to a Scope node already in the graph
+                (`lemma scope load` first). One ``SCOPED_TO`` edge is
+                written per scope; the Resource node itself is single
+                regardless of how many scopes it belongs to (the Scope
+                Ring Model — boundary overlap, not duplication).
             attributes: Arbitrary attributes copied onto the node for
                 display and later scope-rule evaluation.
             impacts: Optional list of control refs (``control:<framework>:<id>``)
-                that this resource directly contributes to. Each ref must
-                resolve to an existing Control node in the graph.
-                Generates ``IMPACTS`` edges from the resource to each
-                control. Distinct from ``SCOPED_TO`` — IMPACTS expresses
-                direct dependency, SCOPED_TO expresses scope membership.
+                this resource directly contributes to. ``IMPACTS`` is
+                distinct from ``SCOPED_TO``: IMPACTS = direct dependency,
+                SCOPED_TO = scope membership.
+            matched_rules_by_scope: Optional ``{scope_name: [rule_dict, ...]}``
+                attribution. Each rule dict is ``{source, operator, value}``
+                indicating which scope rule(s) fired during discover. Manual
+                declarations (`lemma resource load`) omit this argument; the
+                resulting edges carry an empty ``matched_rules`` list, which
+                ``lemma scope explain`` renders as "manual declaration."
 
         Raises:
-            ValueError: If the named scope has no corresponding Scope
-                node in the graph, or if any ``impacts`` entry doesn't
-                resolve to an indexed Control node. Nothing is added
-                when validation fails.
+            ValueError: If ``scopes`` is empty, any scope name has no
+                corresponding Scope node, or any ``impacts`` entry doesn't
+                resolve to an indexed Control node. Nothing is added when
+                validation fails.
         """
-        scope_node_id = f"scope:{scope}"
-        if scope_node_id not in self._graph:
+        if not scopes:
+            msg = f"Resource '{resource_id}' must declare at least one scope; got an empty list."
+            raise ValueError(msg)
+
+        missing_scopes = [s for s in scopes if f"scope:{s}" not in self._graph]
+        if missing_scopes:
             msg = (
-                f"Resource '{resource_id}' references scope '{scope}' which is not "
-                "indexed in the graph. Run 'lemma scope load' first, then retry."
+                f"Resource '{resource_id}' references scope(s) not indexed in the graph: "
+                f"{', '.join(missing_scopes)}. Run 'lemma scope load' first, then retry."
             )
             raise ValueError(msg)
 
@@ -342,26 +354,32 @@ class ComplianceGraph:
             )
             raise ValueError(msg)
 
+        attribution = matched_rules_by_scope or {}
         node_id = f"resource:{resource_id}"
         self._graph.add_node(
             node_id,
             type="Resource",
             resource_id=resource_id,
             resource_type=type_,
-            scope=scope,
             attributes=dict(attributes or {}),
         )
 
         # Idempotent: drop stale SCOPED_TO and IMPACTS edges before rebuilding
-        # so a resource that moves to a different scope or narrows its
-        # impacts drops the old edges cleanly.
+        # so a resource that rotates scopes or narrows its impacts drops
+        # the old edges cleanly.
         for _source, target, key, attrs in list(
             self._graph.out_edges(node_id, keys=True, data=True)
         ):
             if attrs.get("relationship") in {"SCOPED_TO", "IMPACTS"}:
                 self._graph.remove_edge(node_id, target, key=key)
 
-        self._graph.add_edge(node_id, scope_node_id, relationship="SCOPED_TO")
+        for scope_name in scopes:
+            self._graph.add_edge(
+                node_id,
+                f"scope:{scope_name}",
+                relationship="SCOPED_TO",
+                matched_rules=list(attribution.get(scope_name, [])),
+            )
         for ref in impacts_list:
             self._graph.add_edge(node_id, ref, relationship="IMPACTS")
 
@@ -570,6 +588,19 @@ class ComplianceGraph:
                 for _key, attrs in edge_data.items():
                     edges.append(dict(attrs))
         return edges
+
+    def outgoing_edges(self, node_id: str) -> list[dict[str, Any]]:
+        """Return every outgoing edge from ``node_id`` as ``{target, **attrs}`` dicts.
+
+        Used by ``lemma scope explain`` to walk a Resource's SCOPED_TO edges
+        without having to know the target scope names up front.
+        """
+        if node_id not in self._graph:
+            return []
+        out: list[dict[str, Any]] = []
+        for _src, target, attrs in self._graph.out_edges(node_id, data=True):
+            out.append({"target": target, **dict(attrs)})
+        return out
 
     def query_neighbors(self, node_id: str) -> list[dict[str, Any]]:
         """Get all nodes connected to the given node.

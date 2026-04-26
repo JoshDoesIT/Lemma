@@ -475,7 +475,7 @@ class TestAddResource:
         graph.add_resource(
             resource_id="prod-rds",
             type_="aws.rds.instance",
-            scope="prod",
+            scopes=["prod"],
             attributes={"region": "us-east-1"},
         )
 
@@ -484,9 +484,27 @@ class TestAddResource:
         assert node["type"] == "Resource"
         assert node["resource_type"] == "aws.rds.instance"
         assert node["attributes"] == {"region": "us-east-1"}
+        # Drop the redundant scope/scopes node attribute — edges are the source of truth.
+        assert "scope" not in node
+        assert "scopes" not in node
 
         edges = graph.get_edges("resource:prod-rds", "scope:prod")
         assert any(e.get("relationship") == "SCOPED_TO" for e in edges)
+
+    def test_creates_n_scoped_to_edges_for_overlapping_scopes(self):
+        """Scope Ring Model: one Resource node, N SCOPED_TO edges."""
+        graph = self._graph_with_scopes()
+        graph.add_resource(
+            resource_id="payments-db",
+            type_="aws.rds.instance",
+            scopes=["prod", "dev"],
+            attributes={"engine": "postgres"},
+        )
+
+        prod_edges = graph.get_edges("resource:payments-db", "scope:prod")
+        dev_edges = graph.get_edges("resource:payments-db", "scope:dev")
+        assert any(e.get("relationship") == "SCOPED_TO" for e in prod_edges)
+        assert any(e.get("relationship") == "SCOPED_TO" for e in dev_edges)
 
     def test_rejects_unknown_scope(self):
         import pytest
@@ -496,7 +514,34 @@ class TestAddResource:
             graph.add_resource(
                 resource_id="orphan",
                 type_="aws.s3.bucket",
-                scope="staging",
+                scopes=["staging"],
+                attributes={},
+            )
+        assert graph.get_node("resource:orphan") is None
+
+    def test_rejects_when_any_scope_missing(self):
+        """All-or-nothing: if any scope in the list is unindexed, abort the whole add."""
+        import pytest
+
+        graph = self._graph_with_scopes()
+        with pytest.raises(ValueError, match=r"(?i)staging"):
+            graph.add_resource(
+                resource_id="orphan",
+                type_="aws.s3.bucket",
+                scopes=["prod", "staging"],
+                attributes={},
+            )
+        assert graph.get_node("resource:orphan") is None
+
+    def test_rejects_empty_scopes_list(self):
+        import pytest
+
+        graph = self._graph_with_scopes()
+        with pytest.raises(ValueError, match=r"(?i)at least one|empty|scopes"):
+            graph.add_resource(
+                resource_id="orphan",
+                type_="aws.s3.bucket",
+                scopes=[],
                 attributes={},
             )
         assert graph.get_node("resource:orphan") is None
@@ -507,14 +552,14 @@ class TestAddResource:
         graph.add_resource(
             resource_id="movable",
             type_="aws.s3.bucket",
-            scope="dev",
+            scopes=["dev"],
             attributes={"v": 1},
         )
         # Move to a different scope; the old edge should drop cleanly.
         graph.add_resource(
             resource_id="movable",
             type_="aws.s3.bucket",
-            scope="prod",
+            scopes=["prod"],
             attributes={"v": 2},
         )
 
@@ -525,6 +570,64 @@ class TestAddResource:
         prod_edges = graph.get_edges("resource:movable", "scope:prod")
         assert dev_edges == []
         assert len(prod_edges) == 1
+
+    def test_idempotent_multi_scope_rotation_drops_stale_and_adds_new(self):
+        """Re-adding with scopes=[a, c] (rotating b → c) drops b cleanly."""
+        graph = self._graph_with_scopes()
+
+        graph.add_resource(
+            resource_id="rotating",
+            type_="aws.s3.bucket",
+            scopes=["prod", "dev"],
+        )
+        graph.add_resource(
+            resource_id="rotating",
+            type_="aws.s3.bucket",
+            scopes=["prod"],  # dev dropped
+        )
+
+        prod_edges = graph.get_edges("resource:rotating", "scope:prod")
+        dev_edges = graph.get_edges("resource:rotating", "scope:dev")
+        assert len(prod_edges) == 1
+        assert dev_edges == []
+
+    def test_matched_rules_attached_to_scoped_to_edges(self):
+        """Edge attribution: each SCOPED_TO edge carries which rule(s) fired."""
+        graph = self._graph_with_scopes()
+        graph.add_resource(
+            resource_id="payments-db",
+            type_="aws.rds.instance",
+            scopes=["prod", "dev"],
+            matched_rules_by_scope={
+                "prod": [{"source": "aws.tags.Environment", "operator": "equals", "value": "prod"}],
+                "dev": [
+                    {"source": "aws.region", "operator": "equals", "value": "us-east-1"},
+                    {"source": "aws.tags.Owner", "operator": "equals", "value": "platform"},
+                ],
+            },
+        )
+
+        prod_edges = graph.get_edges("resource:payments-db", "scope:prod")
+        dev_edges = graph.get_edges("resource:payments-db", "scope:dev")
+        assert prod_edges[0]["matched_rules"] == [
+            {"source": "aws.tags.Environment", "operator": "equals", "value": "prod"},
+        ]
+        assert dev_edges[0]["matched_rules"] == [
+            {"source": "aws.region", "operator": "equals", "value": "us-east-1"},
+            {"source": "aws.tags.Owner", "operator": "equals", "value": "platform"},
+        ]
+
+    def test_matched_rules_default_empty_when_omitted(self):
+        """Manual declaration: no rule context → matched_rules is an empty list."""
+        graph = self._graph_with_scopes()
+        graph.add_resource(
+            resource_id="manual-decl",
+            type_="aws.s3.bucket",
+            scopes=["prod"],
+        )
+
+        edges = graph.get_edges("resource:manual-decl", "scope:prod")
+        assert edges[0]["matched_rules"] == []
 
 
 class TestAddPerson:
@@ -540,7 +643,7 @@ class TestAddPerson:
         g.add_resource(
             resource_id="prod-rds",
             type_="aws.rds.instance",
-            scope="prod",
+            scopes=["prod"],
             attributes={},
         )
         return g
@@ -638,7 +741,7 @@ class TestAddRisk:
         g.add_resource(
             resource_id="audit-bucket",
             type_="aws.s3.bucket",
-            scope="prod",
+            scopes=["prod"],
             attributes={},
         )
         return g
@@ -730,7 +833,7 @@ class TestResourceImpacts:
         graph.add_resource(
             resource_id="audit-bucket",
             type_="aws.s3.bucket",
-            scope="prod",
+            scopes=["prod"],
             attributes={},
             impacts=["control:nist-800-53:au-2"],
         )
@@ -746,7 +849,7 @@ class TestResourceImpacts:
             graph.add_resource(
                 resource_id="r",
                 type_="aws.s3.bucket",
-                scope="prod",
+                scopes=["prod"],
                 attributes={},
                 impacts=["control:nist-800-53:missing-ctrl"],
             )
@@ -759,7 +862,7 @@ class TestResourceImpacts:
         graph.add_resource(
             resource_id="r",
             type_="aws.s3.bucket",
-            scope="prod",
+            scopes=["prod"],
             attributes={},
             impacts=["control:nist-800-53:au-2", "control:nist-800-53:ac-2"],
         )
@@ -767,7 +870,7 @@ class TestResourceImpacts:
         graph.add_resource(
             resource_id="r",
             type_="aws.s3.bucket",
-            scope="prod",
+            scopes=["prod"],
             attributes={},
             impacts=["control:nist-800-53:au-2"],
         )

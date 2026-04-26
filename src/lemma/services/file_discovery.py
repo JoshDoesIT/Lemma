@@ -146,7 +146,7 @@ def _build_definitions(records: list[dict]) -> list[ResourceDefinition]:
         ResourceDefinition(
             id=record["id"],
             type=record["type"],
-            scope="",
+            scopes=[""],
             attributes=record.get("attributes") or {},
             impacts=record.get("impacts") or [],
         )

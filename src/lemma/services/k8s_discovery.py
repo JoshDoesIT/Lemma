@@ -100,7 +100,7 @@ def _discover_namespaces(api_client: Any, context: str) -> list[ResourceDefiniti
             ResourceDefinition(
                 id=f"k8s-{context}-namespace-{meta.name}",
                 type="k8s.namespace",
-                scope="",
+                scopes=[""],
                 attributes={
                     "k8s": {
                         "kind": "Namespace",
@@ -130,7 +130,7 @@ def _discover_deployments(
             ResourceDefinition(
                 id=f"k8s-{context}-deployment-{meta.namespace}-{meta.name}",
                 type="k8s.deployment",
-                scope="",
+                scopes=[""],
                 attributes={
                     "k8s": {
                         "kind": "Deployment",
@@ -161,7 +161,7 @@ def _discover_services(
             ResourceDefinition(
                 id=f"k8s-{context}-service-{meta.namespace}-{meta.name}",
                 type="k8s.service",
-                scope="",
+                scopes=[""],
                 attributes={
                     "k8s": {
                         "kind": "Service",

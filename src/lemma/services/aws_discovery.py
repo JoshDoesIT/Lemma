@@ -102,7 +102,7 @@ def _discover_ec2(session: Any, region: str) -> list[ResourceDefinition]:
                     ResourceDefinition(
                         id=f"aws-ec2-{instance_id}",
                         type="aws.ec2.instance",
-                        scope="",  # filled in by the command after scope-matching
+                        scopes=[""],  # filled in by the command after scope-matching
                         attributes=attributes,
                     )
                 )
@@ -136,7 +136,7 @@ def _discover_s3(session: Any) -> list[ResourceDefinition]:
             ResourceDefinition(
                 id=f"aws-s3-{name}",
                 type="aws.s3.bucket",
-                scope="",
+                scopes=[""],
                 attributes=attributes,
             )
         )
@@ -166,7 +166,7 @@ def _discover_iam_users(session: Any) -> list[ResourceDefinition]:
                 ResourceDefinition(
                     id=f"aws-iam-user-{user_name}",
                     type="aws.iam.user",
-                    scope="",
+                    scopes=[""],
                     attributes=attributes,
                 )
             )

@@ -81,7 +81,7 @@ def discover_resources_from_ansible(path: Path) -> list[ResourceDefinition]:
             ResourceDefinition(
                 id=f"ansible-{hostname}",
                 type="ansible.host",
-                scope="",
+                scopes=[""],
                 attributes=attributes,
             )
         )

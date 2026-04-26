@@ -131,7 +131,7 @@ def _project_vm(vm: Any, vc_host: str, field_name_by_key: dict[int, str]) -> Res
     return ResourceDefinition(
         id=f"vsphere-{vc_host}-vm-{vm._moId}",
         type="vsphere.vm",
-        scope="",
+        scopes=[""],
         attributes={
             "vsphere": {
                 "kind": "VirtualMachine",
@@ -156,7 +156,7 @@ def _project_host(host: Any, vc_host: str, field_name_by_key: dict[int, str]) ->
     return ResourceDefinition(
         id=f"vsphere-{vc_host}-host-{host._moId}",
         type="vsphere.host",
-        scope="",
+        scopes=[""],
         attributes={
             "vsphere": {
                 "kind": "HostSystem",
@@ -182,7 +182,7 @@ def _project_datastore(
     return ResourceDefinition(
         id=f"vsphere-{vc_host}-datastore-{ds._moId}",
         type="vsphere.datastore",
-        scope="",
+        scopes=[""],
         attributes={
             "vsphere": {
                 "kind": "Datastore",

@@ -11,7 +11,7 @@ def _valid_yaml(id_: str = "prod-rds") -> str:
     return (
         f"id: {id_}\n"
         "type: aws.rds.instance\n"
-        "scope: default\n"
+        "scopes:\n  - default\n"
         "attributes:\n"
         "  region: us-east-1\n"
         "  engine: postgres\n"
@@ -29,7 +29,7 @@ class TestLoadResource:
 
         assert r.id == "prod-rds"
         assert r.type == "aws.rds.instance"
-        assert r.scope == "default"
+        assert r.scopes == ["default"]
         assert r.attributes["region"] == "us-east-1"
 
     def test_raises_on_malformed_yaml_with_line_number(self, tmp_path: Path):
@@ -52,7 +52,7 @@ class TestLoadResource:
         path.write_text(
             "id: r1\n"
             "resource_type: aws.s3.bucket\n"  # wrong field name
-            "scope: default\n"
+            "scopes:\n  - default\n"
         )
 
         with pytest.raises(ValueError) as excinfo:
@@ -60,6 +60,37 @@ class TestLoadResource:
 
         assert "typo.yaml" in str(excinfo.value)
         assert "resource_type" in str(excinfo.value)
+
+    def test_loads_multi_scope_yaml(self, tmp_path: Path):
+        """Scope Ring Model: a resource declared in multiple scopes parses cleanly."""
+        from lemma.services.resource import load_resource
+
+        path = tmp_path / "payments-db.yaml"
+        path.write_text(
+            "id: payments-db\n"
+            "type: aws.rds.instance\n"
+            "scopes:\n  - prod-us-east\n  - pci-dss\n"
+            "attributes:\n  engine: postgres\n"
+        )
+
+        r = load_resource(path)
+        assert r.scopes == ["prod-us-east", "pci-dss"]
+
+    def test_rejects_old_singular_scope_key(self, tmp_path: Path):
+        """`scope: <name>` was renamed to `scopes: [<name>]`; old shape must error."""
+        from lemma.services.resource import load_resource
+
+        path = tmp_path / "old-shape.yaml"
+        path.write_text(
+            "id: r1\ntype: aws.s3.bucket\nscope: default\n"  # singular — old shape
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            load_resource(path)
+
+        msg = str(excinfo.value)
+        assert "old-shape.yaml" in msg
+        assert "scope" in msg
 
 
 class TestLoadAllResources:

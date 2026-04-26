@@ -163,7 +163,7 @@ def _build_resource_definition(
     return ResourceDefinition(
         id=f"azure-{subscription}-{short_kind}-{basename}",
         type=lemma_type,
-        scope="",
+        scopes=[""],
         attributes={"azure": common},
     )
 

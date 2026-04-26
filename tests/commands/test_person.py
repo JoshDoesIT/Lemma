@@ -31,7 +31,7 @@ def _graph_with_control_and_resource(tmp_path: Path) -> None:
     g.add_resource(
         resource_id="prod-rds",
         type_="aws.rds.instance",
-        scope="prod",
+        scopes=["prod"],
         attributes={},
     )
     g.save(tmp_path / ".lemma" / "graph.json")

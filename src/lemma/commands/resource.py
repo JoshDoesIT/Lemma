@@ -64,7 +64,7 @@ def load_command() -> None:
             graph.add_resource(
                 resource_id=r.id,
                 type_=r.type,
-                scope=r.scope,
+                scopes=r.scopes,
                 attributes=r.attributes,
                 impacts=r.impacts,
             )
@@ -75,7 +75,8 @@ def load_command() -> None:
     graph.save(graph_path)
     console.print(f"[green]Loaded[/green] {len(resources)} resource(s) into the graph.")
     for r in resources:
-        console.print(f"  [cyan]{r.id}[/cyan]  →  scope:{r.scope}")
+        scope_refs = ", ".join(f"scope:{s}" for s in r.scopes)
+        console.print(f"  [cyan]{r.id}[/cyan]  →  {scope_refs}")
 
 
 @resource_app.command(name="list", help="List declared resources grouped by scope state.")
@@ -103,17 +104,17 @@ def list_command() -> None:
     table = Table(title=f"Declared Resources ({len(resources)})")
     table.add_column("Resource", style="bold cyan")
     table.add_column("Type")
-    table.add_column("Scope")
-    table.add_column("Scope OK", justify="center")
+    table.add_column("Scopes")
+    table.add_column("Scopes OK", justify="center")
     table.add_column("Attributes", justify="right")
 
     for r in resources:
-        scope_in_graph = graph.get_node(f"scope:{r.scope}") is not None
+        scopes_in_graph = all(graph.get_node(f"scope:{s}") is not None for s in r.scopes)
         table.add_row(
             r.id,
             r.type,
-            r.scope,
-            "[green]✓[/green]" if scope_in_graph else "[red]✗[/red]",
+            ", ".join(r.scopes),
+            "[green]✓[/green]" if scopes_in_graph else "[red]✗[/red]",
             str(len(r.attributes)),
         )
 
