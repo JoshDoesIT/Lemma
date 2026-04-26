@@ -1185,6 +1185,112 @@ match_rules:
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--instance` is missing or whitespace-only, when `LEMMA_SNOW_USER` / `LEMMA_SNOW_PASSWORD` env vars are missing, or when the instance is unreachable / returns auth errors.
 
+### `lemma scope discover device42`
+
+Discover devices from a Device42 IPAM/CMDB/DCIM deployment via the v1.0 Devices API. Pairs with `lemma scope discover servicenow` to fully cover the CMDB-integration story for #24's on-prem section.
+
+```bash
+lemma scope discover device42 --url <deployment-url> [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url` | (required) | Device42 deployment URL — must include scheme (`https://d42.example.com`). Whitespace-only values are rejected. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth via env vars.** HTTP Basic auth using:
+
+- `LEMMA_DEVICE42_USER`
+- `LEMMA_DEVICE42_PASSWORD`
+
+Mirrors the ServiceNow / GitHub / Okta pattern. API token auth (`X-Auth-Token` header in newer Device42 versions) is a follow-up if anyone needs it.
+
+**URL must include scheme.** Pass `https://d42.example.com` or `http://...` (some on-prem deployments are HTTP-only inside a private network). Bare hostnames are rejected to avoid ambiguous misconfiguration.
+
+**Reachability check.** The CLI probes the deployment up front with a 1-row Devices query before discovery starts. 401 / 404 / network errors surface as a clean `ValueError` with the URL named, rather than failing mid-pagination.
+
+**What gets discovered.** Per row in the `/api/1.0/devices/` response:
+
+| Lemma field | Value |
+|---|---|
+| `id` | `device42-<host>-<device_id>` (host extracted from the URL — no scheme, no port, no path) |
+| `type` | `device42.<type>` (e.g. `device42.physical`, `device42.virtual`, `device42.cluster`) — derived per row from the device's `type` field |
+
+Type is **derived per row**, not from a Lemma-side mapping table. Operators get fine-grained types automatically including for tenant-custom values without configuration drift — same call as ServiceNow's `sys_class_name` derivation.
+
+**Attributes preserved verbatim under `device42.*`.** Device42 device records are flat dicts (no protobuf / nested-properties bloat to filter), so every column comes through. Two normalizations:
+
+1. **`custom_fields` array → flat dict.** Device42 returns custom fields as `[{key, value}, ...]` which isn't matcher-friendly. The service expands this to `device42.custom_fields.<key>: <value>` so operators write rules like:
+   ```yaml
+   match_rules:
+     - source: device42.custom_fields.environment
+       operator: equals
+       value: prod
+   ```
+2. **`tags` preserved verbatim.** Device42 returns tags differently across versions (string in older deployments, list in newer ones). The service preserves whatever shape the API returns; operators write source-version-aware rules.
+
+**Host in the id.** Multi-deployment shops (prod-d42 + staging-d42) would otherwise collide on the second discover run. Same logic as GCP project-in-id, Azure subscription-in-id, ServiceNow instance-in-id.
+
+**Pagination is transparent.** Device42 returns `total_count` in every response; the service walks `offset` until exhaustion. The `total_count`-driven termination is cleaner than ServiceNow's "partial page = stop" inference.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--url` is missing / whitespace-only / lacks a scheme, when `LEMMA_DEVICE42_USER` / `LEMMA_DEVICE42_PASSWORD` env vars are missing, or when the deployment is unreachable / returns auth errors.
+
+### `lemma scope discover vsphere`
+
+Discover virtual machines, ESXi hosts, and datastores from a VMware vCenter via the vSphere Web Services SDK (pyVmomi). vCenter is the dominant on-prem virtualization platform; reading its inventory directly turns the matcher into something useful for any VMware shop without round-tripping through a CMDB.
+
+```bash
+lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure] \
+    [--datacenter <name>] [--vsphere-kind vm,host,datastore] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | (required) | vCenter hostname (e.g. `vcenter.example.com`). Whitespace-only values are rejected. |
+| `--port` | `443` | vCenter port. |
+| `--insecure` | `false` | Skip SSL verification. Lab/dev vCenters with self-signed certs only — production deployments should configure proper certs and leave this off. |
+| `--datacenter` | (all) | Datacenter name filter. v0 reserves the flag; the service walks every datacenter rooted at `content.rootFolder` regardless. Per-datacenter filtering at the `CreateContainerView` level is tracked in [#154](https://github.com/JoshDoesIT/Lemma/issues/154). |
+| `--vsphere-kind` | `vm,host,datastore` | Comma-separated kinds to enumerate. Unknown kind exits `1`. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth via env vars.** Username + password (the vSphere SDK's session-based auth):
+
+- `LEMMA_VSPHERE_USER` (e.g. `administrator@vsphere.local`)
+- `LEMMA_VSPHERE_PASSWORD`
+
+**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs. Process-exit cleans up the SDK session; explicit `Disconnect()` is tracked in [#155](https://github.com/JoshDoesIT/Lemma/issues/155).
+
+**What gets discovered.** Three v0 kinds, mirroring the AWS / GCP / Azure three-pillar shape:
+
+| Kind | vSphere type | Lemma id | Lemma type |
+|---|---|---|---|
+| `vm` | `vim.VirtualMachine` | `vsphere-<vc-host>-vm-<moid>` | `vsphere.vm` |
+| `host` | `vim.HostSystem` | `vsphere-<vc-host>-host-<moid>` | `vsphere.host` |
+| `datastore` | `vim.Datastore` | `vsphere-<vc-host>-datastore-<moid>` | `vsphere.datastore` |
+
+vCenter's `_moId` (managed object id, e.g. `vm-1234`) is unique within a vCenter; combining it with `--host` lets multi-vCenter shops discover into one graph without collisions. Same convention as GCP project-in-id, Azure subscription-in-id, ServiceNow instance-in-id.
+
+**Attributes nest under `vsphere.*`.** Per-kind, an explicit projection (no `**spread` — pyVmomi managed objects have hundreds of fields, many recursive) populates:
+
+- VM — `kind`, `vc_host`, `moid`, `name`, `guest_os`, `power_state`, `cpu_count`, `memory_mb`, `tags`.
+- Host — `kind`, `vc_host`, `moid`, `name`, `version`, `connection_state`, `cpu_count`, `memory_mb` (normalized from bytes), `vendor`, `model`, `tags`.
+- Datastore — `kind`, `vc_host`, `moid`, `name`, `type` (`VMFS` / `NFS` / `vsan` / etc.), `capacity_bytes`, `free_bytes`, `tags`.
+
+**Custom Attributes (legacy) → `vsphere.tags.<name>`.** vCenter's legacy Custom Attributes (`obj.customValue` keyed by integer that resolves via `content.customFieldsManager.field`) project into a flat `tags` dict so operators write rules like:
+
+```yaml
+match_rules:
+  - source: vsphere.tags.environment
+    operator: equals
+    value: prod
+```
+
+vSphere 6.0+ Tags (the vAPI / `cis.tagging` REST endpoints) are a separate auth domain and are tracked in [#156](https://github.com/JoshDoesIT/Lemma/issues/156). Any tag scheme already migrated to Custom Attributes works in v0.
+
+**Per-kind RBAC tolerance.** A `vim.fault.NoPermission` or `vim.fault.NotAuthenticated` on one kind logs a warning and continues to the next; a service-account that can read VMs but not Hosts still produces useful output.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--host` is missing / whitespace-only, when `LEMMA_VSPHERE_USER` / `LEMMA_VSPHERE_PASSWORD` env vars are missing, when vCenter rejects credentials, or when the vCenter is unreachable.
+
 ### Scope-as-code schema
 
 ```yaml
