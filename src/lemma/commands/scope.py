@@ -25,6 +25,9 @@ from lemma.services.aws_discovery import discover_resources as aws_discover_reso
 from lemma.services.azure_discovery import (
     discover_resources_from_azure as azure_discover_resources,
 )
+from lemma.services.file_discovery import (
+    discover_resources_from_file as file_discover_resources,
+)
 from lemma.services.gcp_discovery import (
     discover_resources_from_gcp as gcp_discover_resources,
 )
@@ -548,13 +551,13 @@ def _build_azure_clients(subscription: str, resource_types: list[str]) -> Any:
 @scope_app.command(
     name="discover",
     help=(
-        "Auto-discover cloud resources into the graph. "
-        "Provider must be one of: aws, terraform, k8s, gcp, azure."
+        "Auto-discover resources into the graph. "
+        "Provider must be one of: aws, terraform, k8s, gcp, azure, file."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Cloud provider to discover (one of: aws, terraform, k8s, gcp, azure).",
+        help="Discovery source (one of: aws, terraform, k8s, gcp, azure, file).",
     ),
     region: str = typer.Option(
         "us-east-1",
@@ -612,10 +615,10 @@ def discover_command(
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform", "k8s", "gcp", "azure"):
+    if provider not in ("aws", "terraform", "k8s", "gcp", "azure", "file"):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp, azure."
+            "Currently supported: aws, terraform, k8s, gcp, azure, file."
         )
         raise typer.Exit(code=1)
 
@@ -698,7 +701,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "GCP"
-    else:  # provider == "azure"
+    elif provider == "azure":
         sub = subscription.strip()
         if not sub:
             console.print("[red]Error:[/red] --subscription is required when provider is 'azure'.")
@@ -719,6 +722,16 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Azure"
+    else:  # provider == "file"
+        if not path:
+            console.print("[red]Error:[/red] --path is required when provider is 'file'.")
+            raise typer.Exit(code=1)
+        try:
+            candidates = file_discover_resources(Path(path))
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "file"
 
     matched = []
     skipped_no_match = 0
