@@ -829,3 +829,122 @@ class TestEvidenceInfer:
         assert result.exit_code == 0, result.stdout
         assert "0" in result.stdout  # "0 orphaned" or similar
         mock_llm.generate.assert_not_called()
+
+
+def _seed_graph_with_harmonized_controls(project_dir: Path) -> None:
+    """Two frameworks, two controls, one HARMONIZED_WITH edge between them."""
+    from lemma.services.knowledge_graph import ComplianceGraph
+
+    g = ComplianceGraph()
+    g.add_framework("nist-csf-2.0")
+    g.add_framework("pci-dss-4.0")
+    g.add_control(
+        framework="nist-csf-2.0", control_id="gv.oc-1", title="Org Context 1", family="GV.OC"
+    )
+    g.add_control(
+        framework="pci-dss-4.0",
+        control_id="12.1",
+        title="Information Security Policy",
+        family="12",
+    )
+    g.add_harmonization(
+        framework_a="nist-csf-2.0",
+        control_a="gv.oc-1",
+        framework_b="pci-dss-4.0",
+        control_b="12.1",
+        similarity=0.85,
+    )
+    g.save(project_dir / ".lemma" / "graph.json")
+
+
+class TestEvidenceLoadAutoRebuild:
+    """`lemma evidence load` should rebuild IMPLICITLY_EVIDENCES edges
+    after the direct EVIDENCES walk so cross-scope reuse is current
+    without a separate command (Cross-Scope Evidence Reuse).
+    """
+
+    def test_load_writes_implicit_edges_via_harmonization(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_harmonized_controls(tmp_path)
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 0, result.stdout
+        assert "implicit reuse edge" in result.stdout.lower()
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        env = log.read_envelopes()[0]
+        edges = g.get_edges(f"evidence:{env.entry_hash}", "control:pci-dss-4.0:12.1")
+        implicit = [e for e in edges if e.get("relationship") == "IMPLICITLY_EVIDENCES"]
+        assert len(implicit) == 1
+        assert implicit[0]["via_control"] == "control:nist-csf-2.0:gv.oc-1"
+        assert implicit[0]["similarity"] == 0.85
+
+
+class TestEvidenceRebuildReuse:
+    """`lemma evidence rebuild-reuse [--min-similarity N]` recomputes
+    IMPLICITLY_EVIDENCES on demand without re-running discover/load.
+    """
+
+    def test_rebuilds_implicit_with_default_threshold(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_harmonized_controls(tmp_path)
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+        # Load direct EVIDENCES; the auto-rebuild already wrote an implicit edge.
+        runner.invoke(app, ["evidence", "load"])
+
+        result = runner.invoke(app, ["evidence", "rebuild-reuse"])
+        assert result.exit_code == 0, result.stdout
+        # 1 implicit edge expected at default threshold (0.7 ≤ 0.85).
+        assert "1" in result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        env = log.read_envelopes()[0]
+        edges = g.get_edges(f"evidence:{env.entry_hash}", "control:pci-dss-4.0:12.1")
+        assert any(e.get("relationship") == "IMPLICITLY_EVIDENCES" for e in edges)
+
+    def test_min_similarity_override_drops_implicit_edges(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_harmonized_controls(tmp_path)
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(_compliance_payload_with_refs("e-1", ["nist-csf-2.0:gv.oc-1"])))
+        runner.invoke(app, ["evidence", "load"])
+
+        # Tighten the threshold above the harmonization similarity (0.85).
+        result = runner.invoke(app, ["evidence", "rebuild-reuse", "--min-similarity", "0.9"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        env = log.read_envelopes()[0]
+        edges = g.get_edges(f"evidence:{env.entry_hash}", "control:pci-dss-4.0:12.1")
+        assert all(e.get("relationship") != "IMPLICITLY_EVIDENCES" for e in edges)
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["evidence", "rebuild-reuse"])
+        assert result.exit_code == 1

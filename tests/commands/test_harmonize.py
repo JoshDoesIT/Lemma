@@ -95,6 +95,70 @@ class TestHarmonizeCommand:
         assert "cluster" in result.stdout.lower() or "harmoniz" in result.stdout.lower()
 
 
+class TestHarmonizeWritesGraphEdges:
+    """`lemma harmonize` should also persist HARMONIZED_WITH edges into the
+    compliance graph (Cross-Scope Evidence Reuse depends on those edges
+    existing in the graph, not just in the OSCAL profile).
+    """
+
+    def test_harmonize_writes_harmonized_with_edges_to_graph(self, tmp_path, monkeypatch):
+        from lemma.cli import app
+        from lemma.models.harmonization import (
+            CommonControl,
+            HarmonizationReport,
+            SourceControl,
+        )
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(app, ["init"])
+
+        # Seed the graph with two frameworks + the controls the fake report references.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_framework("fw-a")
+        g.add_framework("fw-b")
+        g.add_control(framework="fw-a", control_id="a-1", title="A", family="AC")
+        g.add_control(framework="fw-b", control_id="b-1", title="B", family="AC")
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        # Stub harmonize_frameworks so no embedding model is loaded.
+        fake_report = HarmonizationReport(
+            frameworks=["fw-a", "fw-b"],
+            clusters=[
+                CommonControl(
+                    cluster_id="cluster-1",
+                    primary_label="Access",
+                    primary_description="Control access.",
+                    controls=[
+                        SourceControl(
+                            framework="fw-a", control_id="a-1", title="A", similarity=1.0
+                        ),
+                        SourceControl(
+                            framework="fw-b", control_id="b-1", title="B", similarity=0.88
+                        ),
+                    ],
+                ),
+            ],
+            threshold=0.5,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.harmonize.harmonize_frameworks",
+            lambda **_kwargs: fake_report,
+        )
+
+        result = runner.invoke(app, ["harmonize", "--threshold", "0.5"])
+        assert result.exit_code == 0, result.stdout
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        ab = loaded.get_edges("control:fw-a:a-1", "control:fw-b:b-1")
+        ba = loaded.get_edges("control:fw-b:b-1", "control:fw-a:a-1")
+        assert any(e.get("relationship") == "HARMONIZED_WITH" for e in ab)
+        assert any(e.get("relationship") == "HARMONIZED_WITH" for e in ba)
+        # Similarity uses min(member.similarity) — conservative interpretation.
+        assert ab[0]["similarity"] == 0.88
+        assert ba[0]["similarity"] == 0.88
+
+
 class TestCoverageCommand:
     """Tests for `lemma coverage`."""
 

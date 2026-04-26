@@ -263,6 +263,8 @@ lemma harmonize --threshold 0.9
 **Side effects:**
 
 - Writes an OSCAL Profile to `.lemma/harmonization.oscal.json` describing the cross-framework clusters. The profile imports each source catalog and encodes each cluster as a back-matter resource with `lemma:harmonized-cluster` properties.
+- **Persists `HARMONIZED_WITH` edges into the compliance graph** for every pair within each cluster. The pair-wise edge similarity is `min(member.similarity)` (conservative — equivalent only as much as the weakest member is to the cluster head). These edges power Cross-Scope Evidence Reuse (`lemma scope reuse`, `lemma evidence rebuild-reuse`).
+- Recomputes `IMPLICITLY_EVIDENCES` edges across the whole graph after writing the harmonization edges. The reuse threshold defaults to `ai.automation.thresholds.evidence-reuse` (or 0.7 if unset).
 - Appends one `AITrace` per equivalence decision to `.lemma/traces/YYYY-MM-DD.jsonl` with `operation="harmonize"`. Audit these with `lemma ai audit --operation harmonize`.
 - Honors `ai.automation.thresholds.harmonize` in `lemma.config.yaml` to auto-accept equivalences at or above the configured threshold.
 
@@ -479,6 +481,22 @@ This is the operator-triggered equivalent of `lemma scope load` — reads are si
 Each entry has the shape `<framework-short-name>:<control-id>`. The field is optional — an evidence entry without `control_refs` still lands as an `Evidence` node, it just has no `EVIDENCES` edges (the audit story "we have this evidence" still holds even when the "which control does it support" link isn't recorded yet).
 
 Once loaded, evidence is reachable from every existing graph surface: `lemma graph impact control:nist-800-53:ac-2` surfaces every piece of linked evidence, and `lemma query` traversals see `Evidence` nodes alongside frameworks and controls.
+
+**Auto-rebuilds Cross-Scope Evidence Reuse.** After the direct `EVIDENCES` walk, `evidence load` recomputes `IMPLICITLY_EVIDENCES` edges across the whole graph: for each Evidence with a direct edge to Control C, every harmonized peer C' with `HARMONIZED_WITH` similarity at or above `ai.automation.thresholds.evidence-reuse` (default 0.7) gets an implicit edge from the same Evidence, carrying `via_control=C` and the harmonization `similarity` for explainability. Implicit edges are skipped when the target peer already has a direct EVIDENCES from the same Evidence (direct wins). The success message reports the implicit-edge count when nonzero.
+
+### `lemma evidence rebuild-reuse`
+
+Recompute `IMPLICITLY_EVIDENCES` edges on demand without re-running discover or load. Useful when you've changed the harmonization-similarity threshold, edited the OSCAL profile by hand, or want to see how reuse coverage shifts at a different floor.
+
+```bash
+lemma evidence rebuild-reuse [--min-similarity 0.7]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-similarity` | `ai.automation.thresholds.evidence-reuse` (or 0.7 if unset) | Per-run override for the harmonization-similarity floor. Edges below the floor are dropped on rebuild. |
+
+The command drops every existing `IMPLICITLY_EVIDENCES` edge before rewriting, so tightening the threshold cleanly invalidates stale reuse. Idempotent.
 
 ### `lemma evidence infer`
 
@@ -787,12 +805,13 @@ lemma scope impact --plan plan.json
 
 ### `lemma scope posture`
 
-Per-framework compliance posture for declared scopes. For each scope bound to one or more frameworks, this walks the graph (`Scope → APPLIES_TO → Framework → CONTAINS → Control`) and reports four counts per framework:
+Per-framework compliance posture for declared scopes. For each scope bound to one or more frameworks, this walks the graph (`Scope → APPLIES_TO → Framework → CONTAINS → Control`) and reports per framework:
 
 - **Controls** — total number of controls in the framework.
 - **Mapped** — number with at least one inbound `SATISFIES` edge from a policy.
-- **Evidenced** — number with at least one inbound `EVIDENCES` edge from a signed evidence entry.
-- **Covered** — number with both. This is the number an auditor usually asks for — "how many controls are both asserted by a policy and supported by real evidence?"
+- **Evidenced** — number with at least one inbound `EVIDENCES` *or* `IMPLICITLY_EVIDENCES` edge. Direct attestation and Cross-Scope Evidence Reuse both count toward total coverage.
+- **Reused** — number that are evidenced *only* via implicit (harmonization-driven) edges. Subset of `Evidenced`. Engineers read this column to spot which controls lean on harmonization rather than direct attestation; auditors typically ignore it and read `Evidenced` for total coverage.
+- **Covered** — number with both `Mapped` and `Evidenced`. This is the number an auditor usually asks for — "how many controls are both asserted by a policy and supported by real evidence?"
 
 ```bash
 lemma scope posture [<SCOPE>]
@@ -802,9 +821,32 @@ lemma scope posture [<SCOPE>]
 |----------|----------|-------------|
 | `SCOPE` | No | When provided, renders a per-framework drill-down for that one scope. Omit to summarize every scope in the graph. |
 
-**Prerequisite.** The scope needs to be in the graph — run `lemma scope load` first. Likewise, controls come from `lemma framework add`, SATISFIES edges come from `lemma map`, and EVIDENCES edges come from `lemma evidence load`. An empty graph prints a friendly hint pointing at those commands.
+**Prerequisite.** The scope needs to be in the graph — run `lemma scope load` first. Likewise, controls come from `lemma framework add`, SATISFIES edges come from `lemma map`, and EVIDENCES edges come from `lemma evidence load`. `IMPLICITLY_EVIDENCES` edges (the source of `Reused`) come from `lemma harmonize` + `lemma evidence load` (or a manual `lemma evidence rebuild-reuse`). An empty graph prints a friendly hint pointing at those commands.
 
 **Exit codes.** `0` on success (including empty results), `1` on an unknown scope name or outside a Lemma project. `posture` is a read-only report, not a gate — pipelines that want to fail on bad posture use `lemma check`.
+
+### `lemma scope reuse`
+
+Show which controls in a declared scope are covered by **Cross-Scope Evidence Reuse** — evidence attached to a control in a different framework that, via a `HARMONIZED_WITH` equivalence above the configured similarity threshold, also satisfies a control in *this* scope's frameworks.
+
+```bash
+lemma scope reuse <SCOPE>
+```
+
+Each line in the output traces one implicit-evidence chain: the in-scope control, the source evidence (truncated entry hash), the via-control (the harmonized peer in the other framework that owns the direct EVIDENCES), and the harmonization similarity score that gated the reuse.
+
+```text
+$ lemma scope reuse pci
+Scope: pci → pci-dss-4.0
+Implicitly evidenced controls (3):
+  pci-dss-4.0:1.2.4  ← evidence:abc123def456…  (via nist-800-53:ac-2, similarity 0.91)
+  pci-dss-4.0:8.2.1  ← evidence:def456abc123…  (via nist-800-53:ia-5, similarity 0.84)
+  pci-dss-4.0:12.1   ← evidence:cafebabe1234…  (via nist-csf-2.0:gv.oc-1, similarity 0.85)
+```
+
+**Distinct from `lemma scope explain`.** `scope explain <resource-id>` explains why a Resource lands in each of its scopes (which `match_rule` fired); `scope reuse <scope>` explains which Controls in a scope are evidenced by harmonization rather than direct attestation. Different question, different graph walk.
+
+**Exit codes.** `0` on success (including the no-reuse case, which prints a hint), `1` on an unknown scope name or outside a Lemma project.
 
 ### `lemma scope visualize`
 

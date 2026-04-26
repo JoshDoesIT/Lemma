@@ -16,7 +16,10 @@ from lemma.services.differ import diff_frameworks
 from lemma.services.harmonization_oscal import to_oscal_profile
 from lemma.services.harmonizer import harmonize_frameworks
 from lemma.services.indexer import ControlIndexer
+from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.trace_log import TraceLog
+
+_DEFAULT_EVIDENCE_REUSE_THRESHOLD = 0.7
 
 
 def _error(message: str) -> None:
@@ -78,7 +81,37 @@ def harmonize_command(
     profile_path = project_dir / ".lemma" / "harmonization.oscal.json"
     profile_path.write_text(profile.model_dump_json(by_alias=True, exclude_none=True, indent=2))
 
+    # Persist HARMONIZED_WITH edges into the compliance graph so that
+    # `lemma scope posture` and Cross-Scope Evidence Reuse can walk
+    # them without re-running harmonize. Pair-wise within each cluster
+    # using min(member.similarity) as the conservative score.
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    for cluster in report.clusters:
+        members = cluster.controls
+        for i, m1 in enumerate(members):
+            for m2 in members[i + 1 :]:
+                if m1.framework == m2.framework and m1.control_id == m2.control_id:
+                    continue
+                graph.add_harmonization(
+                    framework_a=m1.framework,
+                    control_a=m1.control_id,
+                    framework_b=m2.framework,
+                    control_b=m2.control_id,
+                    similarity=min(m1.similarity, m2.similarity),
+                )
+    reuse_threshold = (
+        automation.threshold_for("evidence-reuse") or _DEFAULT_EVIDENCE_REUSE_THRESHOLD
+    )
+    implicit_count = graph.rebuild_implicit_evidences(min_similarity=reuse_threshold)
+    graph.save(graph_path)
+
     typer.echo(report.model_dump_json(indent=2))
+    if implicit_count:
+        typer.echo(
+            f"Wrote {implicit_count} implicit-evidence reuse edge(s) "
+            f"(min similarity {reuse_threshold})."
+        )
 
 
 def coverage_command(
