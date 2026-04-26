@@ -126,3 +126,90 @@ class TestComputePosture:
         assert fw.mapped == 0
         assert fw.evidenced == 0
         assert fw.covered == 0
+        assert fw.reused == 0
+
+
+class TestComputePostureWithReuse:
+    """Cross-Scope Evidence Reuse extension: a control counts as `evidenced`
+    if it has ≥1 inbound EVIDENCES *or* IMPLICITLY_EVIDENCES edge. The
+    `reused` field counts controls that are evidenced ONLY via implicit edges
+    (no direct EVIDENCES) — useful for spotting which controls lean on
+    harmonization-driven reuse vs direct attestation.
+    """
+
+    def _graph_with_cross_scope_reuse(self):
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_framework("pci-dss-4.0")
+        g.add_control(
+            framework="nist-csf-2.0",
+            control_id="gv.oc-1",
+            title="Org Context 1",
+            family="GV.OC",
+        )
+        g.add_control(
+            framework="pci-dss-4.0",
+            control_id="12.1",
+            title="Information Security Policy",
+            family="12",
+        )
+        g.add_control(
+            framework="pci-dss-4.0",
+            control_id="12.2",
+            title="Risk Assessment",
+            family="12",
+        )
+        g.add_harmonization(
+            framework_a="nist-csf-2.0",
+            control_a="gv.oc-1",
+            framework_b="pci-dss-4.0",
+            control_b="12.1",
+            similarity=0.85,
+        )
+        # Direct EVIDENCES on the NIST control — reuse propagates to PCI 12.1.
+        g.add_evidence(
+            entry_hash="a" * 64,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-26T12:00:00+00:00",
+            control_refs=["nist-csf-2.0:gv.oc-1"],
+        )
+        g.rebuild_implicit_evidences(min_similarity=0.7)
+        g.add_scope(
+            name="pci",
+            frameworks=["pci-dss-4.0"],
+            justification="PCI",
+            rule_count=0,
+        )
+        return g
+
+    def test_evidenced_counts_implicit_edges_too(self):
+        """PCI 12.1 has no direct EVIDENCES but has an IMPLICITLY_EVIDENCES; counts."""
+        from lemma.services.scope_posture import compute_posture
+
+        posture = compute_posture("pci", self._graph_with_cross_scope_reuse())
+        fw = posture.frameworks[0]
+        assert fw.total == 2  # 12.1, 12.2
+        assert fw.evidenced == 1  # 12.1 via implicit
+        assert fw.reused == 1  # 12.1 is implicit-only
+
+    def test_reused_counts_only_implicit_only_controls(self):
+        """A control with both direct + implicit edges counts as evidenced, NOT reused."""
+        from lemma.services.scope_posture import compute_posture
+
+        g = self._graph_with_cross_scope_reuse()
+        # Add a direct EVIDENCES to PCI 12.1 alongside the implicit one.
+        g.add_evidence(
+            entry_hash="b" * 64,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-26T12:00:00+00:00",
+            control_refs=["pci-dss-4.0:12.1"],
+        )
+
+        posture = compute_posture("pci", g)
+        fw = posture.frameworks[0]
+        assert fw.evidenced == 1  # still 12.1 (direct now)
+        assert fw.reused == 0  # 12.1 is no longer implicit-only

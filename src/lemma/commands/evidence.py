@@ -30,6 +30,8 @@ from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.llm import get_llm_client
 from lemma.services.ocsf_normalizer import normalize_with_provenance
 
+_DEFAULT_EVIDENCE_REUSE_THRESHOLD = 0.7
+
 console = Console()
 
 evidence_app = typer.Typer(
@@ -452,6 +454,13 @@ def load_command() -> None:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    config_file = project_dir / "lemma.config.yaml"
+    automation = load_automation_config(config_file) if config_file.exists() else None
+    reuse_threshold = (
+        automation.threshold_for("evidence-reuse") if automation is not None else None
+    ) or _DEFAULT_EVIDENCE_REUSE_THRESHOLD
+    implicit_count = graph.rebuild_implicit_evidences(min_similarity=reuse_threshold)
+
     graph.save(graph_path)
 
     linked = sum(1 for env in envelopes if _extract_control_refs(env.event.metadata))
@@ -459,6 +468,47 @@ def load_command() -> None:
         f"[green]Loaded[/green] {len(envelopes)} evidence entr"
         f"{'y' if len(envelopes) == 1 else 'ies'}; "
         f"{linked} linked to at least one control."
+    )
+    if implicit_count:
+        console.print(
+            f"[green]Wrote[/green] {implicit_count} implicit reuse edge(s) via "
+            f"harmonization (min similarity {reuse_threshold})."
+        )
+
+
+@evidence_app.command(
+    name="rebuild-reuse",
+    help=(
+        "Recompute IMPLICITLY_EVIDENCES edges (Cross-Scope Evidence Reuse) without "
+        "re-running discover or load."
+    ),
+)
+def rebuild_reuse_command(
+    min_similarity: float = typer.Option(
+        None,
+        "--min-similarity",
+        help=(
+            "Harmonization-similarity floor (0.0-1.0). "
+            "Defaults to ai.automation.thresholds.evidence-reuse from lemma.config.yaml, "
+            "or 0.7 if unset."
+        ),
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    if min_similarity is None:
+        config_file = project_dir / "lemma.config.yaml"
+        automation = load_automation_config(config_file) if config_file.exists() else None
+        min_similarity = (
+            automation.threshold_for("evidence-reuse") if automation is not None else None
+        ) or _DEFAULT_EVIDENCE_REUSE_THRESHOLD
+
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    count = graph.rebuild_implicit_evidences(min_similarity=min_similarity)
+    graph.save(graph_path)
+
+    console.print(
+        f"[green]Rebuilt[/green] {count} implicit reuse edge(s) (min similarity {min_similarity})."
     )
 
 

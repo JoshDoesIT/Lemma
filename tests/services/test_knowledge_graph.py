@@ -879,3 +879,115 @@ class TestResourceImpacts:
         ac_edges = graph.get_edges("resource:r", "control:nist-800-53:ac-2")
         assert len(au_edges) == 1
         assert ac_edges == []
+
+
+class TestRebuildImplicitEvidences:
+    """Cross-Scope Evidence Reuse: walk EVIDENCES + HARMONIZED_WITH and
+    write IMPLICITLY_EVIDENCES edges so evidence on Control C in one
+    framework also satisfies its harmonized peer in another framework.
+    """
+
+    def _graph_with_evidence_and_harmonization(
+        self, *, similarity: float = 0.85
+    ) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_framework("nist-csf-2.0")
+        g.add_control(framework="nist-800-53", control_id="ac-2", title="Account Mgmt", family="AC")
+        g.add_control(
+            framework="nist-csf-2.0",
+            control_id="pr.ac-01",
+            title="Identities and credentials",
+            family="PR",
+        )
+        g.add_harmonization(
+            framework_a="nist-800-53",
+            control_a="ac-2",
+            framework_b="nist-csf-2.0",
+            control_b="pr.ac-01",
+            similarity=similarity,
+        )
+        g.add_evidence(
+            entry_hash="a" * 64,
+            producer="GitHub",
+            class_name="Compliance Finding",
+            time_iso="2026-04-26T12:00:00Z",
+            control_refs=["nist-800-53:ac-2"],
+        )
+        return g
+
+    def test_writes_implicit_edge_to_harmonized_peer(self):
+        g = self._graph_with_evidence_and_harmonization(similarity=0.9)
+
+        count = g.rebuild_implicit_evidences(min_similarity=0.7)
+        assert count == 1
+
+        evidence_id = "evidence:" + "a" * 64
+        peer_id = "control:nist-csf-2.0:pr.ac-01"
+        edges = g.get_edges(evidence_id, peer_id)
+        implicit = [e for e in edges if e.get("relationship") == "IMPLICITLY_EVIDENCES"]
+        assert len(implicit) == 1
+        assert implicit[0]["via_control"] == "control:nist-800-53:ac-2"
+        assert implicit[0]["similarity"] == 0.9
+
+    def test_skips_peers_below_similarity_threshold(self):
+        g = self._graph_with_evidence_and_harmonization(similarity=0.6)
+
+        count = g.rebuild_implicit_evidences(min_similarity=0.7)
+        assert count == 0
+
+        peer_id = "control:nist-csf-2.0:pr.ac-01"
+        edges = g.get_edges("evidence:" + "a" * 64, peer_id)
+        assert all(e.get("relationship") != "IMPLICITLY_EVIDENCES" for e in edges)
+
+    def test_skips_peers_already_directly_evidenced(self):
+        """No implicit edge alongside a direct EVIDENCES; direct wins."""
+        g = self._graph_with_evidence_and_harmonization(similarity=0.95)
+        # Add a *direct* EVIDENCES from the same Evidence to the harmonized peer
+        # (i.e. the operator declared both control_refs explicitly).
+        g.add_evidence(
+            entry_hash="a" * 64,
+            producer="GitHub",
+            class_name="Compliance Finding",
+            time_iso="2026-04-26T12:00:00Z",
+            control_refs=["nist-800-53:ac-2", "nist-csf-2.0:pr.ac-01"],
+        )
+
+        count = g.rebuild_implicit_evidences(min_similarity=0.7)
+        assert count == 0
+
+        peer_id = "control:nist-csf-2.0:pr.ac-01"
+        edges = g.get_edges("evidence:" + "a" * 64, peer_id)
+        relationships = [e.get("relationship") for e in edges]
+        assert "EVIDENCES" in relationships
+        assert "IMPLICITLY_EVIDENCES" not in relationships
+
+    def test_idempotent_rebuild_drops_stale_edges(self):
+        """Lowering then raising the threshold cleanly invalidates stale implicit edges."""
+        g = self._graph_with_evidence_and_harmonization(similarity=0.75)
+
+        first = g.rebuild_implicit_evidences(min_similarity=0.7)
+        assert first == 1
+
+        # Raise the threshold so the same harmonization no longer qualifies.
+        second = g.rebuild_implicit_evidences(min_similarity=0.8)
+        assert second == 0
+
+        peer_id = "control:nist-csf-2.0:pr.ac-01"
+        edges = g.get_edges("evidence:" + "a" * 64, peer_id)
+        assert all(e.get("relationship") != "IMPLICITLY_EVIDENCES" for e in edges)
+
+    def test_returns_zero_when_no_harmonization_edges(self):
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(framework="nist-800-53", control_id="ac-2", title="t", family="AC")
+        g.add_evidence(
+            entry_hash="b" * 64,
+            producer="x",
+            class_name="x",
+            time_iso="2026-04-26T12:00:00Z",
+            control_refs=["nist-800-53:ac-2"],
+        )
+
+        count = g.rebuild_implicit_evidences(min_similarity=0.7)
+        assert count == 0

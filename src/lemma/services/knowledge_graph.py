@@ -538,6 +538,64 @@ class ComplianceGraph:
         self._graph.add_edge(node_a, node_b, relationship="HARMONIZED_WITH", similarity=similarity)
         self._graph.add_edge(node_b, node_a, relationship="HARMONIZED_WITH", similarity=similarity)
 
+    def rebuild_implicit_evidences(self, *, min_similarity: float) -> int:
+        """Rebuild every IMPLICITLY_EVIDENCES edge from current EVIDENCES + HARMONIZED_WITH.
+
+        Walk: for each Evidence node, for each direct ``EVIDENCES → Control C`` edge,
+        for each Control C' reachable via a ``HARMONIZED_WITH`` edge whose
+        ``similarity ≥ min_similarity``, write ``IMPLICITLY_EVIDENCES`` from
+        Evidence → C' carrying ``via_control=C`` and ``similarity=<harmonization_score>``.
+
+        Skips C' if a direct ``EVIDENCES`` from the same Evidence already exists
+        (no point in adding a weaker implicit edge alongside a stronger direct one;
+        direct wins for posture math).
+
+        Idempotent: drops every existing ``IMPLICITLY_EVIDENCES`` edge before
+        rewriting, so changing the threshold cleanly invalidates stale edges.
+
+        Args:
+            min_similarity: Harmonization-similarity floor; edges below are skipped.
+
+        Returns:
+            Count of ``IMPLICITLY_EVIDENCES`` edges written.
+        """
+        # Drop every existing implicit edge first (rebuild-from-scratch).
+        for src, tgt, key, attrs in list(self._graph.edges(keys=True, data=True)):
+            if attrs.get("relationship") == "IMPLICITLY_EVIDENCES":
+                self._graph.remove_edge(src, tgt, key=key)
+
+        evidence_nodes = [
+            n for n, attrs in self._graph.nodes(data=True) if attrs.get("type") == "Evidence"
+        ]
+
+        written = 0
+        for evidence_id in evidence_nodes:
+            # Direct EVIDENCES targets for this Evidence node.
+            direct_targets: set[str] = set()
+            for _src, control_id, attrs in self._graph.out_edges(evidence_id, data=True):
+                if attrs.get("relationship") == "EVIDENCES":
+                    direct_targets.add(control_id)
+
+            for control_id in direct_targets:
+                # Walk this control's harmonized peers.
+                for _src, peer_id, h_attrs in self._graph.out_edges(control_id, data=True):
+                    if h_attrs.get("relationship") != "HARMONIZED_WITH":
+                        continue
+                    score = h_attrs.get("similarity", 0.0)
+                    if score < min_similarity:
+                        continue
+                    if peer_id in direct_targets:
+                        continue  # direct EVIDENCES already covers this peer
+                    self._graph.add_edge(
+                        evidence_id,
+                        peer_id,
+                        relationship="IMPLICITLY_EVIDENCES",
+                        via_control=control_id,
+                        similarity=score,
+                    )
+                    written += 1
+        return written
+
     # --- Bulk operations ---
 
     def populate_from_controls(self, framework: str, controls: list[dict]) -> None:

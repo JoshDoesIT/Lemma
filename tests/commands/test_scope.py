@@ -671,6 +671,106 @@ class TestScopeExplain:
         assert result.exit_code == 1
 
 
+class TestScopeReuse:
+    """`lemma scope reuse <scope>` — render IMPLICITLY_EVIDENCES chains
+    per scope. Read-only; explains Cross-Scope Evidence Reuse.
+    """
+
+    def _graph_with_cross_scope_reuse(self, tmp_path: Path) -> None:
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        (tmp_path / ".lemma").mkdir()
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_framework("pci-dss-4.0")
+        g.add_control(
+            framework="nist-csf-2.0",
+            control_id="gv.oc-1",
+            title="Org Context 1",
+            family="GV.OC",
+        )
+        g.add_control(
+            framework="pci-dss-4.0",
+            control_id="12.1",
+            title="Information Security Policy",
+            family="12",
+        )
+        g.add_harmonization(
+            framework_a="nist-csf-2.0",
+            control_a="gv.oc-1",
+            framework_b="pci-dss-4.0",
+            control_b="12.1",
+            similarity=0.85,
+        )
+        g.add_evidence(
+            entry_hash="a" * 64,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-26T12:00:00+00:00",
+            control_refs=["nist-csf-2.0:gv.oc-1"],
+        )
+        g.rebuild_implicit_evidences(min_similarity=0.7)
+        g.add_scope(
+            name="pci",
+            frameworks=["pci-dss-4.0"],
+            justification="PCI",
+            rule_count=0,
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+    def test_renders_implicit_chains(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_cross_scope_reuse(tmp_path)
+
+        result = runner.invoke(app, ["scope", "reuse", "pci"])
+        assert result.exit_code == 0, result.stdout
+        assert "pci" in result.stdout
+        assert "12.1" in result.stdout
+        assert "gv.oc-1" in result.stdout
+        assert "0.85" in result.stdout
+
+    def test_unknown_scope_exits_1(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_cross_scope_reuse(tmp_path)
+
+        result = runner.invoke(app, ["scope", "reuse", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "does-not-exist" in result.stdout
+
+    def test_no_reuse_prints_zero_summary(self, tmp_path: Path, monkeypatch):
+        """Scope with controls but no implicit edges renders a clean zero message."""
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_control(framework="nist-csf-2.0", control_id="gv.oc-1", title="t", family="GV.OC")
+        g.add_scope(
+            name="prod",
+            frameworks=["nist-csf-2.0"],
+            justification="",
+            rule_count=0,
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        result = runner.invoke(app, ["scope", "reuse", "prod"])
+        assert result.exit_code == 0, result.stdout
+        assert "0" in result.stdout
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "reuse", "anything"])
+        assert result.exit_code == 1
+
+
 def _seed_project_for_discover(tmp_path: Path) -> None:
     """Build a project with one declared scope matching aws.tags.Environment=prod."""
     from lemma.services.knowledge_graph import ComplianceGraph

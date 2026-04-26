@@ -308,6 +308,72 @@ def explain_command(
 
 
 @scope_app.command(
+    name="reuse",
+    help=(
+        "Show Cross-Scope Evidence Reuse chains for a scope: which controls are "
+        "implicitly evidenced via HARMONIZED_WITH equivalences."
+    ),
+)
+def reuse_command(
+    scope_name: str = typer.Argument(
+        help="Scope to inspect (must already be loaded into the graph).",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
+    scope_node_id = f"scope:{scope_name}"
+    if graph.get_node(scope_node_id) is None:
+        console.print(
+            f"[red]Error:[/red] Scope '{scope_name}' is not in the graph. "
+            "Run [bold]lemma scope load[/bold] first."
+        )
+        raise typer.Exit(code=1)
+
+    export = graph.export_json()
+
+    bound_frameworks = sorted(
+        edge["target"]
+        for edge in export["edges"]
+        if edge["source"] == scope_node_id and edge.get("relationship") == "APPLIES_TO"
+    )
+    controls_in_scope: set[str] = set()
+    for edge in export["edges"]:
+        if edge.get("relationship") == "CONTAINS" and edge["source"] in bound_frameworks:
+            controls_in_scope.add(edge["target"])
+
+    implicit_edges = [
+        edge
+        for edge in export["edges"]
+        if edge.get("relationship") == "IMPLICITLY_EVIDENCES"
+        and edge["target"] in controls_in_scope
+    ]
+
+    framework_names = ", ".join(fw.removeprefix("framework:") for fw in bound_frameworks)
+    console.print(
+        f"[bold]Scope:[/bold] [cyan]{scope_name}[/cyan] → {framework_names or '(no frameworks)'}"
+    )
+    console.print(f"Implicitly evidenced controls ({len(implicit_edges)}):")
+    if not implicit_edges:
+        console.print(
+            "[dim](none — no Cross-Scope Evidence Reuse via harmonization for this scope. "
+            "Run [bold]lemma harmonize[/bold] and [bold]lemma evidence load[/bold] to "
+            "populate.)[/dim]"
+        )
+        return
+
+    for edge in sorted(implicit_edges, key=lambda e: e["target"]):
+        control_name = edge["target"].removeprefix("control:")
+        evidence_id = edge["source"].removeprefix("evidence:")[:12]
+        via = edge.get("via_control", "").removeprefix("control:")
+        similarity = edge.get("similarity", 0.0)
+        console.print(
+            f"  [cyan]{control_name}[/cyan]  ← evidence:{evidence_id}…  "
+            f"[dim](via {via}, similarity {similarity})[/dim]"
+        )
+
+
+@scope_app.command(
     name="impact",
     help="Compute scope impact of a Terraform plan (exits non-zero on any scope change).",
 )
@@ -410,6 +476,7 @@ def posture_command(
         table.add_column("Controls", justify="right")
         table.add_column("Mapped", justify="right")
         table.add_column("Evidenced", justify="right")
+        table.add_column("Reused", justify="right")
         table.add_column("Covered", justify="right")
         for fw in posture.frameworks:
             table.add_row(
@@ -417,6 +484,7 @@ def posture_command(
                 str(fw.total),
                 str(fw.mapped),
                 str(fw.evidenced),
+                str(fw.reused),
                 str(fw.covered),
             )
         Console(width=120).print(table)
@@ -429,11 +497,12 @@ def posture_command(
     table.add_column("Controls", justify="right")
     table.add_column("Mapped", justify="right")
     table.add_column("Evidenced", justify="right")
+    table.add_column("Reused", justify="right")
     table.add_column("Covered", justify="right")
     for name in scope_names:
         posture = compute_posture(name, graph)
         if not posture.frameworks:
-            table.add_row(name, "[dim]—[/dim]", "0", "0", "0", "0")
+            table.add_row(name, "[dim]—[/dim]", "0", "0", "0", "0", "0")
             continue
         for i, fw in enumerate(posture.frameworks):
             table.add_row(
@@ -442,6 +511,7 @@ def posture_command(
                 str(fw.total),
                 str(fw.mapped),
                 str(fw.evidenced),
+                str(fw.reused),
                 str(fw.covered),
             )
     Console(width=120).print(table)
