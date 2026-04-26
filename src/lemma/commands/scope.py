@@ -28,6 +28,9 @@ from lemma.services.aws_discovery import discover_resources as aws_discover_reso
 from lemma.services.azure_discovery import (
     discover_resources_from_azure as azure_discover_resources,
 )
+from lemma.services.device42_discovery import (
+    discover_resources_from_device42 as device42_discover_resources,
+)
 from lemma.services.file_discovery import (
     discover_resources_from_file as file_discover_resources,
 )
@@ -599,17 +602,62 @@ def _build_servicenow_client(instance: str) -> Any:
     return client
 
 
+def _build_device42_client(url: str) -> Any:
+    """Build an httpx.Client for a Device42 deployment, validating reachability.
+
+    Auth via Basic auth from ``LEMMA_DEVICE42_USER`` / ``LEMMA_DEVICE42_PASSWORD``
+    env vars. Reachability probed with a 1-row Devices query before discovery
+    starts. URL must include a scheme (``https://`` or ``http://``).
+    """
+    import os
+
+    import httpx as httpx_module
+
+    user = os.environ.get("LEMMA_DEVICE42_USER")
+    password = os.environ.get("LEMMA_DEVICE42_PASSWORD")
+    if not user or not password:
+        msg = (
+            "lemma scope discover device42 requires LEMMA_DEVICE42_USER and "
+            "LEMMA_DEVICE42_PASSWORD environment variables."
+        )
+        raise ValueError(msg)
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        msg = f"Device42 --url must include a scheme (https:// or http://); got '{url}'."
+        raise ValueError(msg)
+
+    client = httpx_module.Client(base_url=url, auth=(user, password), timeout=30.0)
+
+    try:
+        response = client.get("/api/1.0/devices/", params={"limit": "1", "offset": "0"})
+        response.raise_for_status()
+    except httpx_module.HTTPStatusError as exc:
+        msg = (
+            f"Device42 deployment '{url}' returned {exc.response.status_code}. "
+            f"Verify the URL and credentials."
+        )
+        raise ValueError(msg) from exc
+    except httpx_module.RequestError as exc:
+        msg = (
+            f"Device42 deployment '{url}' is unreachable: {exc}. Verify the URL and network access."
+        )
+        raise ValueError(msg) from exc
+
+    return client
+
+
 @scope_app.command(
     name="discover",
     help=(
         "Auto-discover resources into the graph. Provider must be one of: "
-        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow."
+        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
         help=(
-            "Discovery source (one of: aws, terraform, k8s, gcp, azure, file, ansible, servicenow)."
+            "Discovery source (one of: "
+            "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42)."
         ),
     ),
     region: str = typer.Option(
@@ -683,6 +731,11 @@ def discover_command(
             "Default `cmdb_ci` (parent — all subclasses)."
         ),
     ),
+    url: str = typer.Option(
+        "",
+        "--url",
+        help="Device42 deployment URL (e.g. https://d42.example.com). device42 only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -698,10 +751,12 @@ def discover_command(
         "file",
         "ansible",
         "servicenow",
+        "device42",
     ):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, servicenow."
+            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, "
+            "servicenow, device42."
         )
         raise typer.Exit(code=1)
 
@@ -825,7 +880,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "ansible"
-    else:  # provider == "servicenow"
+    elif provider == "servicenow":
         inst = instance.strip()
         if not inst:
             console.print("[red]Error:[/red] --instance is required when provider is 'servicenow'.")
@@ -845,6 +900,25 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "servicenow"
+    else:  # provider == "device42"
+        deployment_url = url.strip()
+        if not deployment_url:
+            console.print("[red]Error:[/red] --url is required when provider is 'device42'.")
+            raise typer.Exit(code=1)
+        try:
+            d42_client = _build_device42_client(deployment_url)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = device42_discover_resources(
+                client=d42_client,
+                url=deployment_url,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "device42"
 
     matched = []
     skipped_no_match = 0

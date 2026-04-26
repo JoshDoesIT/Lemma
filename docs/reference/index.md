@@ -1185,6 +1185,56 @@ match_rules:
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--instance` is missing or whitespace-only, when `LEMMA_SNOW_USER` / `LEMMA_SNOW_PASSWORD` env vars are missing, or when the instance is unreachable / returns auth errors.
 
+### `lemma scope discover device42`
+
+Discover devices from a Device42 IPAM/CMDB/DCIM deployment via the v1.0 Devices API. Pairs with `lemma scope discover servicenow` to fully cover the CMDB-integration story for #24's on-prem section.
+
+```bash
+lemma scope discover device42 --url <deployment-url> [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url` | (required) | Device42 deployment URL — must include scheme (`https://d42.example.com`). Whitespace-only values are rejected. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth via env vars.** HTTP Basic auth using:
+
+- `LEMMA_DEVICE42_USER`
+- `LEMMA_DEVICE42_PASSWORD`
+
+Mirrors the ServiceNow / GitHub / Okta pattern. API token auth (`X-Auth-Token` header in newer Device42 versions) is a follow-up if anyone needs it.
+
+**URL must include scheme.** Pass `https://d42.example.com` or `http://...` (some on-prem deployments are HTTP-only inside a private network). Bare hostnames are rejected to avoid ambiguous misconfiguration.
+
+**Reachability check.** The CLI probes the deployment up front with a 1-row Devices query before discovery starts. 401 / 404 / network errors surface as a clean `ValueError` with the URL named, rather than failing mid-pagination.
+
+**What gets discovered.** Per row in the `/api/1.0/devices/` response:
+
+| Lemma field | Value |
+|---|---|
+| `id` | `device42-<host>-<device_id>` (host extracted from the URL — no scheme, no port, no path) |
+| `type` | `device42.<type>` (e.g. `device42.physical`, `device42.virtual`, `device42.cluster`) — derived per row from the device's `type` field |
+
+Type is **derived per row**, not from a Lemma-side mapping table. Operators get fine-grained types automatically including for tenant-custom values without configuration drift — same call as ServiceNow's `sys_class_name` derivation.
+
+**Attributes preserved verbatim under `device42.*`.** Device42 device records are flat dicts (no protobuf / nested-properties bloat to filter), so every column comes through. Two normalizations:
+
+1. **`custom_fields` array → flat dict.** Device42 returns custom fields as `[{key, value}, ...]` which isn't matcher-friendly. The service expands this to `device42.custom_fields.<key>: <value>` so operators write rules like:
+   ```yaml
+   match_rules:
+     - source: device42.custom_fields.environment
+       operator: equals
+       value: prod
+   ```
+2. **`tags` preserved verbatim.** Device42 returns tags differently across versions (string in older deployments, list in newer ones). The service preserves whatever shape the API returns; operators write source-version-aware rules.
+
+**Host in the id.** Multi-deployment shops (prod-d42 + staging-d42) would otherwise collide on the second discover run. Same logic as GCP project-in-id, Azure subscription-in-id, ServiceNow instance-in-id.
+
+**Pagination is transparent.** Device42 returns `total_count` in every response; the service walks `offset` until exhaustion. The `total_count`-driven termination is cleaner than ServiceNow's "partial page = stop" inference.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--url` is missing / whitespace-only / lacks a scheme, when `LEMMA_DEVICE42_USER` / `LEMMA_DEVICE42_PASSWORD` env vars are missing, or when the deployment is unreachable / returns auth errors.
+
 ### Scope-as-code schema
 
 ```yaml

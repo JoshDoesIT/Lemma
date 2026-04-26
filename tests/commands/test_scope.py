@@ -823,6 +823,7 @@ class TestScopeDiscover:
         assert "file" in result.stdout
         assert "ansible" in result.stdout
         assert "servicenow" in result.stdout
+        assert "device42" in result.stdout
 
     def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
@@ -1250,3 +1251,81 @@ class TestScopeDiscover:
         result_ws = runner.invoke(app, ["scope", "discover", "servicenow", "--instance", "   "])
         assert result_ws.exit_code == 1
         assert "--instance" in result_ws.stdout
+
+    def test_device42_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.device42_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_device42_client",
+            lambda url: object(),
+        )
+
+        result = runner.invoke(
+            app, ["scope", "discover", "device42", "--url", "https://d42.example.com"]
+        )
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_device42_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.device42_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_device42_client",
+            lambda url: object(),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "device42",
+                "--url",
+                "https://d42.example.com",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_device42_missing_or_blank_url_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "device42"])
+        assert result.exit_code == 1
+        assert "--url" in result.stdout
+
+        result_ws = runner.invoke(app, ["scope", "discover", "device42", "--url", "   "])
+        assert result_ws.exit_code == 1
+        assert "--url" in result_ws.stdout
