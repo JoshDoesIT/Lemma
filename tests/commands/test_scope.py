@@ -822,6 +822,7 @@ class TestScopeDiscover:
         assert "azure" in result.stdout
         assert "file" in result.stdout
         assert "ansible" in result.stdout
+        assert "servicenow" in result.stdout
 
     def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
@@ -1171,3 +1172,81 @@ class TestScopeDiscover:
         result = runner.invoke(app, ["scope", "discover", "ansible"])
         assert result.exit_code == 1
         assert "--inventory" in result.stdout
+
+    def test_servicenow_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.servicenow_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_servicenow_client",
+            lambda instance: object(),
+        )
+
+        result = runner.invoke(app, ["scope", "discover", "servicenow", "--instance", "dev12345"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_servicenow_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.servicenow_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_servicenow_client",
+            lambda instance: object(),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "servicenow",
+                "--instance",
+                "dev12345",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_servicenow_missing_or_blank_instance_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        # Missing --instance
+        result = runner.invoke(app, ["scope", "discover", "servicenow"])
+        assert result.exit_code == 1
+        assert "--instance" in result.stdout
+
+        # Whitespace-only --instance — same gap close as Azure subscription strip.
+        result_ws = runner.invoke(app, ["scope", "discover", "servicenow", "--instance", "   "])
+        assert result_ws.exit_code == 1
+        assert "--instance" in result_ws.stdout

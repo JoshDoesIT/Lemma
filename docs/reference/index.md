@@ -1133,6 +1133,58 @@ This works because the existing matcher's `CONTAINS` is string-substring-only an
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--inventory` is missing, when the file is missing, or when the file isn't valid JSON.
 
+### `lemma scope discover servicenow`
+
+Discover Configuration Items (CIs) from a ServiceNow CMDB via the Table API. Common in enterprise environments where ServiceNow is the authoritative asset inventory; reading the `cmdb_ci` table directly turns Lemma's scope matcher into something useful for any ITSM-managed org.
+
+```bash
+lemma scope discover servicenow --instance <name> [--ci-class <table>] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--instance` | (required) | ServiceNow instance name — the `<name>` part of `https://<name>.service-now.com`. Whitespace-only values are rejected. |
+| `--ci-class` | `cmdb_ci` | CI table to query. The default returns every CI across all subclasses; pass `cmdb_ci_server` etc. to restrict. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth via env vars.** HTTP Basic auth using:
+
+- `LEMMA_SNOW_USER` — ServiceNow user (or app credential username)
+- `LEMMA_SNOW_PASSWORD` — corresponding password
+
+Mirrors the GitHub / Okta connector pattern. OAuth2 is a follow-up if a real deployment needs it; Basic auth covers most enterprise integrations.
+
+**Reachability check.** The CLI probes the instance up front with a 1-row Table API query before discovery starts. 401 / 404 / network errors surface as a clean `ValueError` with the instance named, rather than failing mid-pagination.
+
+**What gets discovered.** Per row in the `cmdb_ci` query result (or whatever table is named via `--ci-class`):
+
+| Lemma field | Value |
+|---|---|
+| `id` | `snow-<instance>-<sys_id>` |
+| `type` | `snow.<sys_class_name>` (e.g. `snow.cmdb_ci_server`, `snow.cmdb_ci_database`) |
+
+Type is **derived from each row's `sys_class_name`** rather than a Lemma-side mapping table. Operators get fine-grained types automatically — including for tenant-custom classes (`u_acme_compute_node` → `snow.u_acme_compute_node`) — without maintaining a mapping that drifts.
+
+**Attributes preserved verbatim under `snow.*`.** ServiceNow rows are flat dicts of strings, so there's no protobuf / nested-properties bloat to filter. Every column comes through, including:
+
+- Standard fields: `name`, `operational_status`, `category`, `manufacturer`, etc.
+- **Custom `u_*` columns**: `u_environment`, `u_owner`, `u_data_center`, etc.
+
+Custom columns are exactly what operators want for scope rules; preserving them verbatim means tenant-specific schemas work without configuration:
+
+```yaml
+match_rules:
+  - source: snow.u_environment
+    operator: equals
+    value: prod
+```
+
+**Instance baked into the id.** Multi-environment ITSM deployments (prod-snow + staging-snow instances of the same vendor) would otherwise collide on the second discover run. Same logic as GCP project-in-id and Azure subscription-in-id.
+
+**Pagination is transparent.** ServiceNow caps responses at 1000 rows per page; the service walks `sysparm_offset` until exhaustion. Operators don't need to think about it.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--instance` is missing or whitespace-only, when `LEMMA_SNOW_USER` / `LEMMA_SNOW_PASSWORD` env vars are missing, or when the instance is unreachable / returns auth errors.
+
 ### Scope-as-code schema
 
 ```yaml
