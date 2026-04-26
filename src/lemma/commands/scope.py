@@ -43,6 +43,9 @@ from lemma.services.scope import load_all_scopes
 from lemma.services.scope_dot import render_scope_dot
 from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
 from lemma.services.scope_posture import compute_posture
+from lemma.services.servicenow_discovery import (
+    discover_resources_from_servicenow as servicenow_discover_resources,
+)
 from lemma.services.terraform_plan import parse_terraform_plan
 from lemma.services.terraform_state import (
     discover_resources_from_state as tf_state_discover_resources,
@@ -551,16 +554,63 @@ def _build_azure_clients(subscription: str, resource_types: list[str]) -> Any:
     return client
 
 
+def _build_servicenow_client(instance: str) -> Any:
+    """Build an httpx.Client for a ServiceNow instance, validating reachability.
+
+    Auth via Basic auth from ``LEMMA_SNOW_USER`` / ``LEMMA_SNOW_PASSWORD`` env
+    vars (mirrors the GitHub / Okta connector pattern). Reachability probed
+    with a 1-row Table API query before discovery starts.
+    """
+    import os
+
+    import httpx as httpx_module
+
+    user = os.environ.get("LEMMA_SNOW_USER")
+    password = os.environ.get("LEMMA_SNOW_PASSWORD")
+    if not user or not password:
+        msg = (
+            "lemma scope discover servicenow requires LEMMA_SNOW_USER and "
+            "LEMMA_SNOW_PASSWORD environment variables."
+        )
+        raise ValueError(msg)
+
+    base_url = f"https://{instance}.service-now.com"
+    client = httpx_module.Client(base_url=base_url, auth=(user, password), timeout=30.0)
+
+    try:
+        response = client.get(
+            "/api/now/table/cmdb_ci",
+            params={"sysparm_limit": "1", "sysparm_fields": "sys_id"},
+        )
+        response.raise_for_status()
+    except httpx_module.HTTPStatusError as exc:
+        msg = (
+            f"ServiceNow instance '{instance}' returned {exc.response.status_code}. "
+            f"Verify the instance name and credentials."
+        )
+        raise ValueError(msg) from exc
+    except httpx_module.RequestError as exc:
+        msg = (
+            f"ServiceNow instance '{instance}' is unreachable: {exc}. "
+            f"Verify the instance name and network access."
+        )
+        raise ValueError(msg) from exc
+
+    return client
+
+
 @scope_app.command(
     name="discover",
     help=(
-        "Auto-discover resources into the graph. "
-        "Provider must be one of: aws, terraform, k8s, gcp, azure, file, ansible."
+        "Auto-discover resources into the graph. Provider must be one of: "
+        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Discovery source (one of: aws, terraform, k8s, gcp, azure, file, ansible).",
+        help=(
+            "Discovery source (one of: aws, terraform, k8s, gcp, azure, file, ansible, servicenow)."
+        ),
     ),
     region: str = typer.Option(
         "us-east-1",
@@ -617,16 +667,41 @@ def discover_command(
         "--inventory",
         help="Path to `ansible-inventory --list` JSON output. ansible only.",
     ),
+    instance: str = typer.Option(
+        "",
+        "--instance",
+        help=(
+            "ServiceNow instance name (the <name> in https://<name>.service-now.com). "
+            "servicenow only."
+        ),
+    ),
+    ci_class: str = typer.Option(
+        "cmdb_ci",
+        "--ci-class",
+        help=(
+            "ServiceNow CI table to query. servicenow only. "
+            "Default `cmdb_ci` (parent — all subclasses)."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform", "k8s", "gcp", "azure", "file", "ansible"):
+    if provider not in (
+        "aws",
+        "terraform",
+        "k8s",
+        "gcp",
+        "azure",
+        "file",
+        "ansible",
+        "servicenow",
+    ):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible."
+            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, servicenow."
         )
         raise typer.Exit(code=1)
 
@@ -740,7 +815,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "file"
-    else:  # provider == "ansible"
+    elif provider == "ansible":
         if not inventory:
             console.print("[red]Error:[/red] --inventory is required when provider is 'ansible'.")
             raise typer.Exit(code=1)
@@ -750,6 +825,26 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "ansible"
+    else:  # provider == "servicenow"
+        inst = instance.strip()
+        if not inst:
+            console.print("[red]Error:[/red] --instance is required when provider is 'servicenow'.")
+            raise typer.Exit(code=1)
+        try:
+            sn_client = _build_servicenow_client(inst)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = servicenow_discover_resources(
+                client=sn_client,
+                instance=inst,
+                ci_class=ci_class,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "servicenow"
 
     matched = []
     skipped_no_match = 0
