@@ -1291,6 +1291,69 @@ vSphere 6.0+ Tags (the vAPI / `cis.tagging` REST endpoints) are a separate auth 
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--host` is missing / whitespace-only, when `LEMMA_VSPHERE_USER` / `LEMMA_VSPHERE_PASSWORD` env vars are missing, when vCenter rejects credentials, or when the vCenter is unreachable.
 
+### `lemma scope discover network`
+
+Discover live hosts on operator-supplied CIDR range(s) by shelling out to the [nmap](https://nmap.org) binary. The discovery-of-last-resort: every other on-prem source assumes the operator already has an inventory (Ansible, CMDB, vCenter); network scanning finds hosts that no inventory system knows about. Critical for shadow-IT discovery and air-gapped environments where IPAM lives in someone's spreadsheet. Closes the on-prem auto-discovery section of [#24](https://github.com/JoshDoesIT/Lemma/issues/24).
+
+```bash
+lemma scope discover network --cidr <cidr>[,<cidr>...] \
+    [--network-port 22,80,443,3389,445,3306,5432,8080] \
+    [--label <name>] [--privileged] [--detect-versions] [--ipv6] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cidr` | (required) | Comma-separated CIDR(s) to scan (e.g. `10.0.0.0/24,10.0.1.0/24`). Each is validated via `ipaddress.ip_network` before any scan runs. v6 CIDRs require `--ipv6`. |
+| `--network-port` | `22,80,443,3389,445,3306,5432,8080` | Comma-separated TCP ports to probe per host. Empty (`--network-port ""`) falls back to host-discovery only. |
+| `--label` | (none) | Optional label baked into discovered resource ids (`network-<label>-<ip>`) for multi-network shops or overlapping RFC1918 ranges. |
+| `--privileged` | `false` | Switch nmap to SYN scan + OS fingerprinting (`-sS -O`). Requires root / `CAP_NET_RAW`; the CLI errors loud at construction if missing. Surfaces `attributes.network.os` + `mac` + an OS-derived type (`network.host.linux` / `.windows` / `.bsd` / etc.). |
+| `--detect-versions` | `false` | Append nmap service-version detection (`-sV`). Adds `attributes.network.services.<port>: {name, product, version}`. Slow; significantly more network noise. |
+| `--ipv6` | `false` | Pass `-6` to nmap and accept IPv6 CIDRs only. v6 host ids are bracket-wrapped (`network-[2001:db8::1]`). |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**nmap binary prerequisite.** Install via `brew install nmap` (macOS) or `apt install nmap` (Debian/Ubuntu). The CLI errors loud at construction if `nmap` is not on PATH.
+
+**Authorization warning.** Network scanning a range you do not own may violate law or policy — typing this command is your authorization. Lemma does not interactively confirm; the operator is responsible for ensuring every CIDR passed is one they're permitted to scan.
+
+**`--privileged` IDS / IPS noise.** SYN scan + OS fingerprinting trip intrusion-detection signatures in many shops. Coordinate with the security team before running `--privileged` against any subnet that's monitored, or expect to explain a scanner alert.
+
+**`--detect-versions` time impact.** `-sV` probes service banners on every open port and waits for responses; a `/24` scan that runs in seconds without `-sV` can take minutes with it. Useful for vuln-correlation but not a smart default for routine inventory passes.
+
+**`--ipv6` routing gotcha.** `nmap -6` requires a v6-routable path from the scanner to the target. Many internal networks are v6-disabled at the router even when the host stacks support it; if scans return zero hosts on a known-live v6 range, check `ip -6 route` on the scanner before assuming the target is down.
+
+**Default scan profile.** Unprivileged TCP-connect (`nmap -sT -Pn -R -oX -`) — runs on a dev laptop without root. The default port list `{22, 80, 443, 3389, 445, 3306, 5432, 8080}` covers the SSH / web / RDP / SMB / DB pillars audit operators care about; nmap's full top-1000 takes minutes per `/24`, the eight-port list takes seconds.
+
+**What gets discovered.**
+
+| Field | Value |
+|---|---|
+| `id` | `network-<ip>` (or `network-<label>-<ip>` with `--label`; v6 wraps the address: `network-[2001:db8::1]`) |
+| `type` | `network.host` (or `network.host.<family>` with `--privileged` when nmap returns an OS match) |
+| `attributes.network.ip` | The bare IP (no brackets) |
+| `attributes.network.hostname` | Reverse DNS or `null` |
+| `attributes.network.open_ports` | List of ints, sorted ascending |
+| `attributes.network.scan_label` | Present only with `--label` |
+| `attributes.network.os` | Present only with `--privileged` and a confident match: `{name, family, accuracy}` |
+| `attributes.network.mac` | Present only with `--privileged` and when the host is on the local subnet |
+| `attributes.network.services` | Present only with `--detect-versions`: `{"<port>": {name, product, version}}` |
+
+**Worked example — find RDP-exposed hosts.** Declare a scope rule and run a default scan:
+
+```yaml
+match_rules:
+  - source: network.open_ports
+    operator: contains
+    value: 3389
+```
+
+```bash
+lemma scope discover network --cidr 10.0.0.0/24 --label prod-vlan
+```
+
+Hosts with port 3389 open land in the scope; everything else is skipped. With `--detect-versions` you can target specific service versions: `network.services.443.product, equals, nginx`.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--cidr` is missing / whitespace-only, when `--network-port` contains non-integer entries, when nmap is not on PATH, when `--privileged` is set without root / `CAP_NET_RAW`, when a CIDR's address family conflicts with `--ipv6`, or when nmap exits non-zero.
+
 ### Scope-as-code schema
 
 ```yaml

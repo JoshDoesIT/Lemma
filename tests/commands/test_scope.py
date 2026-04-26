@@ -825,6 +825,7 @@ class TestScopeDiscover:
         assert "servicenow" in result.stdout
         assert "device42" in result.stdout
         assert "vsphere" in result.stdout
+        assert "network" in result.stdout
 
     def test_k8s_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app
@@ -1408,3 +1409,125 @@ class TestScopeDiscover:
         result_ws = runner.invoke(app, ["scope", "discover", "vsphere", "--host", "   "])
         assert result_ws.exit_code == 1
         assert "--host" in result_ws.stdout
+
+    def test_network_writes_matched_resources_to_graph(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.network_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_network_scanner",
+            lambda **_kwargs: lambda c, p: {},
+        )
+
+        result = runner.invoke(app, ["scope", "discover", "network", "--cidr", "10.0.0.0/24"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is not None
+        assert g.get_node("resource:aws-s3-prod-data") is not None
+        assert g.get_node("resource:aws-ec2-i-dev1") is None
+
+    def test_network_dry_run_emits_yaml_no_graph_write(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        candidates = _candidate_resources()
+        monkeypatch.setattr(
+            "lemma.commands.scope.network_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_network_scanner",
+            lambda **_kwargs: lambda c, p: {},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "network",
+                "--cidr",
+                "10.0.0.0/24",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+
+        _, _, yaml_section = result.stdout.partition("matched resources:")
+        assert "aws-ec2-i-prod1" in yaml_section
+        assert "aws-ec2-i-dev1" not in yaml_section
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-i-prod1") is None
+
+    def test_network_missing_or_blank_cidr_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        result = runner.invoke(app, ["scope", "discover", "network"])
+        assert result.exit_code == 1
+        assert "--cidr" in result.stdout
+
+        result_ws = runner.invoke(app, ["scope", "discover", "network", "--cidr", "  ,  "])
+        assert result_ws.exit_code == 1
+        assert "--cidr" in result_ws.stdout
+
+    def test_network_passes_privileged_detect_versions_ipv6_through(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        captured: dict = {}
+
+        def _capture_builder(*, privileged: bool, detect_versions: bool, ipv6: bool):
+            captured["privileged"] = privileged
+            captured["detect_versions"] = detect_versions
+            captured["ipv6"] = ipv6
+            return lambda c, p: {}
+
+        captured_service: dict = {}
+
+        def _capture_service(**kwargs):
+            captured_service.update(kwargs)
+            return []
+
+        monkeypatch.setattr("lemma.commands.scope._build_network_scanner", _capture_builder)
+        monkeypatch.setattr("lemma.commands.scope.network_discover_resources", _capture_service)
+
+        result = runner.invoke(
+            app,
+            [
+                "scope",
+                "discover",
+                "network",
+                "--cidr",
+                "2001:db8::/64",
+                "--privileged",
+                "--detect-versions",
+                "--ipv6",
+                "--label",
+                "v6-lab",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+        assert captured == {"privileged": True, "detect_versions": True, "ipv6": True}
+        assert captured_service["cidrs"] == ["2001:db8::/64"]
+        assert captured_service["label"] == "v6-lab"
+        assert captured_service["ipv6"] is True
