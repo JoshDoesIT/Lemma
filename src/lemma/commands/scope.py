@@ -21,6 +21,9 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from lemma.services.ansible_discovery import (
+    discover_resources_from_ansible as ansible_discover_resources,
+)
 from lemma.services.aws_discovery import discover_resources as aws_discover_resources
 from lemma.services.azure_discovery import (
     discover_resources_from_azure as azure_discover_resources,
@@ -552,12 +555,12 @@ def _build_azure_clients(subscription: str, resource_types: list[str]) -> Any:
     name="discover",
     help=(
         "Auto-discover resources into the graph. "
-        "Provider must be one of: aws, terraform, k8s, gcp, azure, file."
+        "Provider must be one of: aws, terraform, k8s, gcp, azure, file, ansible."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
-        help="Discovery source (one of: aws, terraform, k8s, gcp, azure, file).",
+        help="Discovery source (one of: aws, terraform, k8s, gcp, azure, file, ansible).",
     ),
     region: str = typer.Option(
         "us-east-1",
@@ -609,16 +612,21 @@ def discover_command(
         "--resource-type",
         help="Comma-separated Azure resource types. azure only.",
     ),
+    inventory: str = typer.Option(
+        "",
+        "--inventory",
+        help="Path to `ansible-inventory --list` JSON output. ansible only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in ("aws", "terraform", "k8s", "gcp", "azure", "file"):
+    if provider not in ("aws", "terraform", "k8s", "gcp", "azure", "file", "ansible"):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp, azure, file."
+            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible."
         )
         raise typer.Exit(code=1)
 
@@ -722,7 +730,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "Azure"
-    else:  # provider == "file"
+    elif provider == "file":
         if not path:
             console.print("[red]Error:[/red] --path is required when provider is 'file'.")
             raise typer.Exit(code=1)
@@ -732,6 +740,16 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "file"
+    else:  # provider == "ansible"
+        if not inventory:
+            console.print("[red]Error:[/red] --inventory is required when provider is 'ansible'.")
+            raise typer.Exit(code=1)
+        try:
+            candidates = ansible_discover_resources(Path(inventory))
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "ansible"
 
     matched = []
     skipped_no_match = 0

@@ -1068,6 +1068,71 @@ Empty cells become empty strings — explicit, not omitted.
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--path` is missing, when the file is missing, when the extension is unrecognized, when a record is missing required fields, or when duplicate ids are present.
 
+### `lemma scope discover ansible`
+
+Discover hosts from an Ansible inventory by reading the JSON output of `ansible-inventory --list`. Useful for any Ansible-managed environment — the JSON shape is universal across static INI / static YAML / dynamic plugin inventories (AWS EC2 plugin, Terraform inventory, etc.), so one path covers them all.
+
+```bash
+lemma scope discover ansible --inventory <path-to-json> [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--inventory` | (required) | Path to a JSON file produced by `ansible-inventory --list`. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Generate the input file first.** Lemma does not invoke Ansible itself, so no Ansible install is required on Lemma's host. The operator runs:
+
+```bash
+ansible-inventory --list -i /etc/ansible/hosts > inventory.json
+# or with a dynamic inventory plugin:
+ansible-inventory --list -i ec2.aws.yml > inventory.json
+```
+
+This shifts the inventory-format details to the operator's existing Ansible toolchain and keeps the Lemma surface uniform regardless of inventory source.
+
+**What gets discovered.** One `ansible.host` resource per host in `_meta.hostvars`:
+
+| Lemma field | Value |
+|---|---|
+| `id` | `ansible-<hostname>` |
+| `type` | `ansible.host` |
+
+Attributes nest under `ansible.*`:
+
+```yaml
+ansible:
+  hostname: web-1
+  ansible_host: 10.0.1.10        # convenience extract from host_vars
+  host_vars:                     # full host_vars dict, verbatim
+    env: prod
+    owner: platform
+  groups:                        # boolean projection per group
+    webservers: true
+    production: true
+```
+
+**Group membership as boolean projection.** Each group a host belongs to becomes `attributes.ansible.groups.<group>: true`. Scope rules target group membership via the existing `equals` operator:
+
+```yaml
+match_rules:
+  - source: ansible.groups.production
+    operator: equals
+    value: true
+```
+
+This works because the existing matcher's `CONTAINS` is string-substring-only and `IN` is "actual in rule.value list" — neither cleanly supports list-membership-of-groups. The boolean projection sidesteps that limitation without forcing matcher changes.
+
+**Group hierarchy resolved transitively.** A host in `webservers` is also in `production` if `production` is a parent group (lists `webservers` as a `child`). This matches Ansible's own resolution semantics so scope rules behave the way operators expect.
+
+**Convenience extract: `ansible_host`.** Lifted out of `host_vars` to the top of the namespace because it's the most common scope-rule target after groups.
+
+**`host_vars` preserved verbatim.** Operators can write rules against arbitrary host variables (`ansible.host_vars.env`, `ansible.host_vars.datacenter`, etc.).
+
+**Implicit groups dropped.** Ansible's `all` and `ungrouped` pseudo-groups are not projected — operators almost never want to write rules against those, and including them would clutter the attribute dict.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--inventory` is missing, when the file is missing, or when the file isn't valid JSON.
+
 ### Scope-as-code schema
 
 ```yaml
