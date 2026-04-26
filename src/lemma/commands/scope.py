@@ -258,6 +258,56 @@ def matches_command(
 
 
 @scope_app.command(
+    name="explain",
+    help="Show per-scope rule attribution for a Resource node in the graph.",
+)
+def explain_command(
+    resource_id: str = typer.Argument(
+        help="Resource id (with or without 'resource:' prefix) to explain.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    node_id = resource_id if resource_id.startswith("resource:") else f"resource:{resource_id}"
+    node = graph.get_node(node_id)
+    if node is None or node.get("type") != "Resource":
+        console.print(
+            f"[red]Error:[/red] No Resource node '{resource_id}' in the graph. "
+            "Run [bold]lemma resource list[/bold] to see declared resources, or "
+            "[bold]lemma scope discover <provider>[/bold] to populate from infrastructure."
+        )
+        raise typer.Exit(code=1)
+
+    out_edges = graph.outgoing_edges(node_id)
+    scoped_edges = [e for e in out_edges if e.get("relationship") == "SCOPED_TO"]
+
+    console.print(
+        f"[bold]Resource:[/bold] {node['resource_id']} ([cyan]{node['resource_type']}[/cyan])"
+    )
+    if not scoped_edges:
+        console.print(
+            "[dim]Not in any scope (unexpected; resources should always be scoped).[/dim]"
+        )
+        return
+
+    console.print(f"In {len(scoped_edges)} scope(s):")
+    for edge in scoped_edges:
+        scope_name = edge["target"].removeprefix("scope:")
+        rules = edge.get("matched_rules") or []
+        if not rules:
+            console.print(
+                f"  [cyan]{scope_name}[/cyan]  ← [dim](no rule attribution — "
+                f"manual declaration or catch-all scope)[/dim]"
+            )
+            continue
+        for i, rule in enumerate(rules):
+            prefix = f"  [cyan]{scope_name}[/cyan]  ← " if i == 0 else "                ← "
+            console.print(f"{prefix}{rule['source']}, {rule['operator']}, {rule['value']!r}")
+
+
+@scope_app.command(
     name="impact",
     help="Compute scope impact of a Terraform plan (exits non-zero on any scope change).",
 )
@@ -1224,7 +1274,9 @@ def discover_command(
             raise typer.Exit(code=1) from exc
         source_label = "network"
 
-    matched = []
+    scope_by_name = {s.name: s for s in scopes}
+    matched: list = []
+    matched_attribution: list[dict[str, list[dict]]] = []
     skipped_no_match = 0
     for resource in candidates:
         match_names = sorted(scopes_containing(resource.attributes, scopes))
@@ -1232,13 +1284,19 @@ def discover_command(
             console.print(f"[dim]No scope match for {resource.id}; skipping.[/dim]")
             skipped_no_match += 1
             continue
-        if len(match_names) > 1:
-            console.print(
-                f"[yellow]Warning:[/yellow] {resource.id} matches multiple scopes "
-                f"({', '.join(match_names)}); using first."
-            )
-        # Pydantic models are immutable-ish; rebuild with scope set.
-        matched.append(resource.model_copy(update={"scope": match_names[0]}))
+        # Pydantic models are immutable-ish; rebuild with scopes set.
+        matched.append(resource.model_copy(update={"scopes": match_names}))
+        # Attribution: every rule in a matched scope fired (the matcher
+        # requires all rules to pass for the scope to match).
+        matched_attribution.append(
+            {
+                name: [
+                    {"source": r.source, "operator": r.operator.value, "value": r.value}
+                    for r in scope_by_name[name].match_rules
+                ]
+                for name in match_names
+            }
+        )
 
     if dry_run:
         # Emit YAML preview — one document per matched resource.
@@ -1249,13 +1307,14 @@ def discover_command(
 
     graph_path = project_dir / ".lemma" / "graph.json"
     graph = ComplianceGraph.load(graph_path)
-    for resource in matched:
+    for resource, attribution in zip(matched, matched_attribution, strict=True):
         graph.add_resource(
             resource_id=resource.id,
             type_=resource.type,
-            scope=resource.scope,
+            scopes=resource.scopes,
             attributes=resource.attributes,
             impacts=resource.impacts,
+            matched_rules_by_scope=attribution,
         )
     graph.save(graph_path)
 

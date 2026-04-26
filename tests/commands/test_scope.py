@@ -246,7 +246,7 @@ def _scope_yaml(name: str, rules: list[dict]) -> str:
 
 
 def _resource_yaml(id_: str, scope: str, attributes: dict) -> str:
-    lines = [f"id: {id_}", "type: aws.rds.instance", f"scope: {scope}", "attributes:"]
+    lines = [f"id: {id_}", "type: aws.rds.instance", "scopes:", f"  - {scope}", "attributes:"]
     for k, v in attributes.items():
         lines.append(f"  {k}: {v}")
     return "\n".join(lines) + "\n"
@@ -587,6 +587,90 @@ class TestScopeVisualize:
         assert result.exit_code == 1
 
 
+class TestScopeExplain:
+    """`lemma scope explain <resource-id>` — per-scope rule attribution."""
+
+    def _graph_with_explained_resource(self, tmp_path: Path) -> None:
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        (tmp_path / ".lemma").mkdir()
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_scope(name="prod", frameworks=["nist-csf-2.0"], justification="")
+        g.add_scope(name="us-east", frameworks=["nist-csf-2.0"], justification="")
+        g.add_resource(
+            resource_id="payments-db",
+            type_="aws.rds.instance",
+            scopes=["prod", "us-east"],
+            attributes={},
+            matched_rules_by_scope={
+                "prod": [{"source": "aws.tags.Environment", "operator": "equals", "value": "prod"}],
+                "us-east": [{"source": "aws.region", "operator": "equals", "value": "us-east-1"}],
+            },
+        )
+        g.add_resource(
+            resource_id="manual-bucket",
+            type_="aws.s3.bucket",
+            scopes=["prod"],
+            attributes={},
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+    def test_renders_per_scope_rule_attribution(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_explained_resource(tmp_path)
+
+        result = runner.invoke(app, ["scope", "explain", "resource:payments-db"])
+        assert result.exit_code == 0, result.stdout
+        assert "payments-db" in result.stdout
+        assert "prod" in result.stdout
+        assert "us-east" in result.stdout
+        assert "aws.tags.Environment" in result.stdout
+        assert "aws.region" in result.stdout
+
+    def test_manual_declaration_labels_no_rule_context(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_explained_resource(tmp_path)
+
+        result = runner.invoke(app, ["scope", "explain", "resource:manual-bucket"])
+        assert result.exit_code == 0, result.stdout
+        assert "manual-bucket" in result.stdout
+        # No matched rules recorded for manually-loaded resources.
+        assert "no rule" in result.stdout.lower() or "manual" in result.stdout.lower()
+
+    def test_unknown_resource_exits_1(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_explained_resource(tmp_path)
+
+        result = runner.invoke(app, ["scope", "explain", "resource:nope"])
+        assert result.exit_code == 1
+        assert "nope" in result.stdout
+
+    def test_resource_id_without_prefix_accepted(self, tmp_path: Path, monkeypatch):
+        """Operator can pass `payments-db` instead of `resource:payments-db`."""
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        self._graph_with_explained_resource(tmp_path)
+
+        result = runner.invoke(app, ["scope", "explain", "payments-db"])
+        assert result.exit_code == 0, result.stdout
+        assert "payments-db" in result.stdout
+
+    def test_requires_lemma_project(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["scope", "explain", "resource:anything"])
+        assert result.exit_code == 1
+
+
 def _seed_project_for_discover(tmp_path: Path) -> None:
     """Build a project with one declared scope matching aws.tags.Environment=prod."""
     from lemma.services.knowledge_graph import ComplianceGraph
@@ -619,19 +703,19 @@ def _candidate_resources():
         ResourceDefinition(
             id="aws-ec2-i-prod1",
             type="aws.ec2.instance",
-            scope="",
+            scopes=[""],
             attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
         ),
         ResourceDefinition(
             id="aws-s3-prod-data",
             type="aws.s3.bucket",
-            scope="",
+            scopes=[""],
             attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
         ),
         ResourceDefinition(
             id="aws-ec2-i-dev1",
             type="aws.ec2.instance",
-            scope="",
+            scopes=[""],
             attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "dev"}}},
         ),
     ]
@@ -663,10 +747,75 @@ class TestScopeDiscover:
         # The dev-tagged one didn't (no scope match).
         assert g.get_node("resource:aws-ec2-i-dev1") is None
 
-        # SCOPED_TO edges land.
+        # SCOPED_TO edges land with rule attribution attached.
         for rid in ("aws-ec2-i-prod1", "aws-s3-prod-data"):
             edges = g.get_edges(f"resource:{rid}", "scope:prod")
-            assert any(e.get("relationship") == "SCOPED_TO" for e in edges)
+            scoped = [e for e in edges if e.get("relationship") == "SCOPED_TO"]
+            assert len(scoped) == 1
+            assert scoped[0]["matched_rules"] == [
+                {"source": "aws.tags.Environment", "operator": "equals", "value": "prod"},
+            ]
+
+    def test_multi_scope_match_lands_n_edges_no_warning(self, tmp_path: Path, monkeypatch):
+        """Ring Model: a candidate matching 2 scopes lands with 2 SCOPED_TO edges.
+
+        The legacy "matches multiple scopes; using first" warning must NOT appear.
+        """
+        from lemma.cli import app
+        from lemma.models.resource import ResourceDefinition
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        # Seed project with TWO overlapping scopes that both match prod-tagged.
+        (tmp_path / ".lemma").mkdir()
+        scopes_dir = tmp_path / "scopes"
+        scopes_dir.mkdir()
+        (scopes_dir / "prod.yaml").write_text(
+            "name: prod\n"
+            "frameworks: [nist-csf-2.0]\n"
+            "justification: Prod.\n"
+            "match_rules:\n"
+            "  - source: aws.tags.Environment\n"
+            "    operator: equals\n"
+            "    value: prod\n"
+        )
+        (scopes_dir / "us-east.yaml").write_text(
+            "name: us-east\n"
+            "frameworks: [nist-csf-2.0]\n"
+            "justification: us-east region.\n"
+            "match_rules:\n"
+            "  - source: aws.region\n"
+            "    operator: equals\n"
+            "    value: us-east-1\n"
+        )
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_scope(name="prod", frameworks=["nist-csf-2.0"], justification="")
+        g.add_scope(name="us-east", frameworks=["nist-csf-2.0"], justification="")
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        candidate = ResourceDefinition(
+            id="aws-ec2-shared",
+            type="aws.ec2.instance",
+            scopes=[""],
+            attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: [candidate],
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "discover", "aws"])
+        assert result.exit_code == 0, result.stdout
+        assert "using first" not in result.stdout
+        assert "matches multiple scopes" not in result.stdout
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        prod_edges = loaded.get_edges("resource:aws-ec2-shared", "scope:prod")
+        us_east_edges = loaded.get_edges("resource:aws-ec2-shared", "scope:us-east")
+        assert any(e.get("relationship") == "SCOPED_TO" for e in prod_edges)
+        assert any(e.get("relationship") == "SCOPED_TO" for e in us_east_edges)
 
     def test_dry_run_emits_yaml_and_does_not_write_graph(self, tmp_path: Path, monkeypatch):
         from lemma.cli import app

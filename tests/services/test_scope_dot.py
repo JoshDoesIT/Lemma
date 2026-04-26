@@ -22,7 +22,7 @@ def _graph_with_scope_and_resource():
     g.add_resource(
         resource_id="prod-rds",
         type_="aws.rds.instance",
-        scope="prod",
+        scopes=["prod"],
         attributes={"region": "us-east-1"},
     )
     return g

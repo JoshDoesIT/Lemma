@@ -107,7 +107,7 @@ def _build_resource_definition(row: dict, url: str, host: str) -> ResourceDefini
     return ResourceDefinition(
         id=f"device42-{host}-{device_id}",
         type=lemma_type,
-        scope="",
+        scopes=[""],
         attributes={"device42": device42_attrs},
     )
 
