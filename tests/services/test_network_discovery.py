@@ -320,6 +320,111 @@ class TestIPv6:
             )
 
 
+class TestNmapWrapperCmd:
+    """Verify the cmd `_build_network_scanner` builds for each flag combination.
+
+    Patches `shutil.which` to fake nmap presence and `subprocess.run` to capture
+    the cmd without invoking nmap. These tests close the AC items in #158 / #159
+    / #160 that say "verified via captured cmd in tests."
+    """
+
+    @staticmethod
+    def _patch_nmap_present_and_capture(monkeypatch) -> dict:
+        captured: dict = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "<?xml version='1.0'?><nmaprun></nmaprun>"
+            stderr = ""
+
+        def _fake_run(cmd, **_kwargs):
+            captured["cmd"] = list(cmd)
+            return _Result()
+
+        import shutil
+        import subprocess
+
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/nmap")
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        return captured
+
+    def test_default_builds_unprivileged_tcp_connect_cmd(self, monkeypatch):
+        from lemma.commands.scope import _build_network_scanner
+
+        captured = self._patch_nmap_present_and_capture(monkeypatch)
+
+        scan = _build_network_scanner()
+        scan(["10.0.0.0/24"], [22, 80])
+
+        assert captured["cmd"][:6] == ["nmap", "-sT", "-Pn", "-R", "-oX", "-"]
+        assert "-sS" not in captured["cmd"]
+        assert "-O" not in captured["cmd"]
+        assert "-sV" not in captured["cmd"]
+        assert "-6" not in captured["cmd"]
+        assert captured["cmd"][-1] == "10.0.0.0/24"
+
+    def test_privileged_emits_syn_and_os_flags_drops_tcp_connect(self, monkeypatch):
+        import os
+
+        from lemma.commands.scope import _build_network_scanner
+
+        captured = self._patch_nmap_present_and_capture(monkeypatch)
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+
+        scan = _build_network_scanner(privileged=True)
+        scan(["10.0.0.0/24"], [22])
+
+        assert "-sS" in captured["cmd"]
+        assert "-O" in captured["cmd"]
+        assert "-sT" not in captured["cmd"]
+
+    def test_detect_versions_appends_service_version_flag(self, monkeypatch):
+        from lemma.commands.scope import _build_network_scanner
+
+        captured = self._patch_nmap_present_and_capture(monkeypatch)
+
+        scan = _build_network_scanner(detect_versions=True)
+        scan(["10.0.0.0/24"], [80])
+
+        assert "-sV" in captured["cmd"]
+
+    def test_ipv6_appends_dash_six(self, monkeypatch):
+        from lemma.commands.scope import _build_network_scanner
+
+        captured = self._patch_nmap_present_and_capture(monkeypatch)
+
+        scan = _build_network_scanner(ipv6=True)
+        scan(["2001:db8::/64"], [80])
+
+        assert "-6" in captured["cmd"]
+
+    def test_privileged_without_root_errors_loud(self, monkeypatch):
+        import os
+        import shutil
+
+        import pytest
+
+        from lemma.commands.scope import _build_network_scanner
+
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/nmap")
+        monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+
+        with pytest.raises(ValueError, match=r"(?i)privileged.*root|CAP_NET_RAW"):
+            _build_network_scanner(privileged=True)
+
+    def test_missing_nmap_binary_errors_with_install_hint(self, monkeypatch):
+        import shutil
+
+        import pytest
+
+        from lemma.commands.scope import _build_network_scanner
+
+        monkeypatch.setattr(shutil, "which", lambda _: None)
+
+        with pytest.raises(ValueError, match=r"nmap.*Install"):
+            _build_network_scanner()
+
+
 class TestParser:
     def test_parse_nmap_xml_filters_down_and_ipv6_hosts(self):
         from lemma.commands.scope import _parse_nmap_xml
@@ -404,7 +509,7 @@ class TestParser:
     <ports>
       <port protocol="tcp" portid="22">
         <state state="open"/>
-        <service name="ssh" product="OpenSSH" version="9.0p1"/>
+        <service name="ssh" product="OpenSSH" version="9.0p1" extrainfo="protocol 2.0"/>
       </port>
       <port protocol="tcp" portid="80">
         <state state="open"/>
@@ -417,7 +522,12 @@ class TestParser:
         result = _parse_nmap_xml(xml)
 
         assert result["10.0.0.5"]["services"] == {
-            "22": {"name": "ssh", "product": "OpenSSH", "version": "9.0p1"},
+            "22": {
+                "name": "ssh",
+                "product": "OpenSSH",
+                "version": "9.0p1",
+                "extrainfo": "protocol 2.0",
+            },
         }
         assert result["10.0.0.5"]["open_ports"] == [22, 80]
 

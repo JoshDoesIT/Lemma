@@ -1315,6 +1315,12 @@ lemma scope discover network --cidr <cidr>[,<cidr>...] \
 
 **Authorization warning.** Network scanning a range you do not own may violate law or policy — typing this command is your authorization. Lemma does not interactively confirm; the operator is responsible for ensuring every CIDR passed is one they're permitted to scan.
 
+**`--privileged` IDS / IPS noise.** SYN scan + OS fingerprinting trip intrusion-detection signatures in many shops. Coordinate with the security team before running `--privileged` against any subnet that's monitored, or expect to explain a scanner alert.
+
+**`--detect-versions` time impact.** `-sV` probes service banners on every open port and waits for responses; a `/24` scan that runs in seconds without `-sV` can take minutes with it. Useful for vuln-correlation but not a smart default for routine inventory passes.
+
+**`--ipv6` routing gotcha.** `nmap -6` requires a v6-routable path from the scanner to the target. Many internal networks are v6-disabled at the router even when the host stacks support it; if scans return zero hosts on a known-live v6 range, check `ip -6 route` on the scanner before assuming the target is down.
+
 **Default scan profile.** Unprivileged TCP-connect (`nmap -sT -Pn -R -oX -`) — runs on a dev laptop without root. The default port list `{22, 80, 443, 3389, 445, 3306, 5432, 8080}` covers the SSH / web / RDP / SMB / DB pillars audit operators care about; nmap's full top-1000 takes minutes per `/24`, the eight-port list takes seconds.
 
 **What gets discovered.**

@@ -791,7 +791,11 @@ def _parse_nmap_xml(xml_text: str, *, ipv6: bool = False) -> dict[str, dict]:
             open_ports.append(int(portid))
             svc_el = port_el.find("service")
             if svc_el is not None:
-                attrs = {k: svc_el.get(k) for k in ("name", "product", "version") if svc_el.get(k)}
+                attrs = {
+                    k: svc_el.get(k)
+                    for k in ("name", "product", "version", "extrainfo")
+                    if svc_el.get(k)
+                }
                 if attrs:
                     services[portid] = attrs
 
