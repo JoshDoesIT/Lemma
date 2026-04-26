@@ -1235,6 +1235,62 @@ Type is **derived per row**, not from a Lemma-side mapping table. Operators get 
 
 **Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--url` is missing / whitespace-only / lacks a scheme, when `LEMMA_DEVICE42_USER` / `LEMMA_DEVICE42_PASSWORD` env vars are missing, or when the deployment is unreachable / returns auth errors.
 
+### `lemma scope discover vsphere`
+
+Discover virtual machines, ESXi hosts, and datastores from a VMware vCenter via the vSphere Web Services SDK (pyVmomi). vCenter is the dominant on-prem virtualization platform; reading its inventory directly turns the matcher into something useful for any VMware shop without round-tripping through a CMDB.
+
+```bash
+lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure] \
+    [--datacenter <name>] [--vsphere-kind vm,host,datastore] [--dry-run]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | (required) | vCenter hostname (e.g. `vcenter.example.com`). Whitespace-only values are rejected. |
+| `--port` | `443` | vCenter port. |
+| `--insecure` | `false` | Skip SSL verification. Lab/dev vCenters with self-signed certs only — production deployments should configure proper certs and leave this off. |
+| `--datacenter` | (all) | Datacenter name filter. v0 reserves the flag; the service walks every datacenter rooted at `content.rootFolder` regardless. Per-datacenter filtering at the `CreateContainerView` level is tracked in [#154](https://github.com/JoshDoesIT/Lemma/issues/154). |
+| `--vsphere-kind` | `vm,host,datastore` | Comma-separated kinds to enumerate. Unknown kind exits `1`. |
+| `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
+
+**Auth via env vars.** Username + password (the vSphere SDK's session-based auth):
+
+- `LEMMA_VSPHERE_USER` (e.g. `administrator@vsphere.local`)
+- `LEMMA_VSPHERE_PASSWORD`
+
+**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs. Process-exit cleans up the SDK session; explicit `Disconnect()` is tracked in [#155](https://github.com/JoshDoesIT/Lemma/issues/155).
+
+**What gets discovered.** Three v0 kinds, mirroring the AWS / GCP / Azure three-pillar shape:
+
+| Kind | vSphere type | Lemma id | Lemma type |
+|---|---|---|---|
+| `vm` | `vim.VirtualMachine` | `vsphere-<vc-host>-vm-<moid>` | `vsphere.vm` |
+| `host` | `vim.HostSystem` | `vsphere-<vc-host>-host-<moid>` | `vsphere.host` |
+| `datastore` | `vim.Datastore` | `vsphere-<vc-host>-datastore-<moid>` | `vsphere.datastore` |
+
+vCenter's `_moId` (managed object id, e.g. `vm-1234`) is unique within a vCenter; combining it with `--host` lets multi-vCenter shops discover into one graph without collisions. Same convention as GCP project-in-id, Azure subscription-in-id, ServiceNow instance-in-id.
+
+**Attributes nest under `vsphere.*`.** Per-kind, an explicit projection (no `**spread` — pyVmomi managed objects have hundreds of fields, many recursive) populates:
+
+- VM — `kind`, `vc_host`, `moid`, `name`, `guest_os`, `power_state`, `cpu_count`, `memory_mb`, `tags`.
+- Host — `kind`, `vc_host`, `moid`, `name`, `version`, `connection_state`, `cpu_count`, `memory_mb` (normalized from bytes), `vendor`, `model`, `tags`.
+- Datastore — `kind`, `vc_host`, `moid`, `name`, `type` (`VMFS` / `NFS` / `vsan` / etc.), `capacity_bytes`, `free_bytes`, `tags`.
+
+**Custom Attributes (legacy) → `vsphere.tags.<name>`.** vCenter's legacy Custom Attributes (`obj.customValue` keyed by integer that resolves via `content.customFieldsManager.field`) project into a flat `tags` dict so operators write rules like:
+
+```yaml
+match_rules:
+  - source: vsphere.tags.environment
+    operator: equals
+    value: prod
+```
+
+vSphere 6.0+ Tags (the vAPI / `cis.tagging` REST endpoints) are a separate auth domain and are tracked in [#156](https://github.com/JoshDoesIT/Lemma/issues/156). Any tag scheme already migrated to Custom Attributes works in v0.
+
+**Per-kind RBAC tolerance.** A `vim.fault.NoPermission` or `vim.fault.NotAuthenticated` on one kind logs a warning and continues to the next; a service-account that can read VMs but not Hosts still produces useful output.
+
+**Exit codes.** `0` on success. `1` outside a Lemma project, when no scopes are declared, when the provider is unsupported, when `--host` is missing / whitespace-only, when `LEMMA_VSPHERE_USER` / `LEMMA_VSPHERE_PASSWORD` env vars are missing, when vCenter rejects credentials, or when the vCenter is unreachable.
+
 ### Scope-as-code schema
 
 ```yaml

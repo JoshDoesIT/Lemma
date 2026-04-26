@@ -36,6 +36,7 @@ dependencies = [
     "google-cloud-asset>=3.20",
     "azure-identity>=1.15",
     "azure-mgmt-resourcegraph>=8.0",
+    "pyvmomi>=8.0",
 ]
 
 [project.optional-dependencies]

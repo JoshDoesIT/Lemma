@@ -53,6 +53,9 @@ from lemma.services.terraform_plan import parse_terraform_plan
 from lemma.services.terraform_state import (
     discover_resources_from_state as tf_state_discover_resources,
 )
+from lemma.services.vsphere_discovery import (
+    discover_resources_from_vsphere as vsphere_discover_resources,
+)
 
 console = Console()
 
@@ -646,18 +649,61 @@ def _build_device42_client(url: str) -> Any:
     return client
 
 
+def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
+    """Connect to vCenter and return the ServiceInstanceContent.
+
+    Auth via ``LEMMA_VSPHERE_USER`` / ``LEMMA_VSPHERE_PASSWORD`` env vars.
+    ``insecure=True`` skips SSL verification (lab/dev vCenters with self-signed
+    certs); production should configure proper certs and leave it ``False``.
+    Process exit cleans up the session — no explicit ``Disconnect()``.
+    """
+    import os
+
+    from pyVim.connect import SmartConnect
+    from pyVmomi import vim
+
+    user = os.environ.get("LEMMA_VSPHERE_USER")
+    password = os.environ.get("LEMMA_VSPHERE_PASSWORD")
+    if not user or not password:
+        msg = (
+            "lemma scope discover vsphere requires LEMMA_VSPHERE_USER and "
+            "LEMMA_VSPHERE_PASSWORD environment variables."
+        )
+        raise ValueError(msg)
+
+    try:
+        si = SmartConnect(
+            host=host,
+            user=user,
+            pwd=password,
+            port=port,
+            disableSslVerification=insecure,
+        )
+    except vim.fault.InvalidLogin as exc:
+        msg = (
+            f"vCenter '{host}:{port}' rejected credentials. "
+            f"Verify LEMMA_VSPHERE_USER and LEMMA_VSPHERE_PASSWORD."
+        )
+        raise ValueError(msg) from exc
+    except Exception as exc:
+        msg = f"vCenter '{host}:{port}' is unreachable: {exc}"
+        raise ValueError(msg) from exc
+
+    return si.RetrieveContent()
+
+
 @scope_app.command(
     name="discover",
     help=(
         "Auto-discover resources into the graph. Provider must be one of: "
-        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42."
+        "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42, vsphere."
     ),
 )
 def discover_command(
     provider: str = typer.Argument(
         help=(
             "Discovery source (one of: "
-            "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42)."
+            "aws, terraform, k8s, gcp, azure, file, ansible, servicenow, device42, vsphere)."
         ),
     ),
     region: str = typer.Option(
@@ -736,6 +782,31 @@ def discover_command(
         "--url",
         help="Device42 deployment URL (e.g. https://d42.example.com). device42 only.",
     ),
+    vsphere_host: str = typer.Option(
+        "",
+        "--host",
+        help="vCenter hostname (e.g. vcenter.example.com). vsphere only.",
+    ),
+    vsphere_port: int = typer.Option(
+        443,
+        "--port",
+        help="vCenter port. vsphere only; default 443.",
+    ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Skip vCenter SSL verification (lab/dev only). vsphere only.",
+    ),
+    datacenter: str = typer.Option(
+        "",
+        "--datacenter",
+        help="Datacenter name filter. vsphere only; default = all datacenters.",
+    ),
+    vsphere_kind: str = typer.Option(
+        "vm,host,datastore",
+        "--vsphere-kind",
+        help="Comma-separated vSphere kinds to enumerate. vsphere only.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -752,11 +823,12 @@ def discover_command(
         "ansible",
         "servicenow",
         "device42",
+        "vsphere",
     ):
         console.print(
             f"[red]Error:[/red] Unknown provider '{provider}'. "
             "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, "
-            "servicenow, device42."
+            "servicenow, device42, vsphere."
         )
         raise typer.Exit(code=1)
 
@@ -900,7 +972,7 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "servicenow"
-    else:  # provider == "device42"
+    elif provider == "device42":
         deployment_url = url.strip()
         if not deployment_url:
             console.print("[red]Error:[/red] --url is required when provider is 'device42'.")
@@ -919,6 +991,28 @@ def discover_command(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         source_label = "device42"
+    else:  # provider == "vsphere"
+        vc_host = vsphere_host.strip()
+        if not vc_host:
+            console.print("[red]Error:[/red] --host is required when provider is 'vsphere'.")
+            raise typer.Exit(code=1)
+        kinds = [k.strip() for k in vsphere_kind.split(",") if k.strip()]
+        try:
+            vsphere_content = _build_vsphere_clients(vc_host, vsphere_port, insecure)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            candidates = vsphere_discover_resources(
+                content=vsphere_content,
+                vc_host=vc_host,
+                datacenter=datacenter or None,
+                kinds=kinds,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        source_label = "vsphere"
 
     matched = []
     skipped_no_match = 0
