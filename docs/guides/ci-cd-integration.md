@@ -194,12 +194,58 @@ compliance:evidence-integrity:
 
 All three follow the standard contract — `0` is the only success.
 
+## SARIF + GitHub Code Scanning
+
+`lemma check --format sarif` emits SARIF 2.1.0 JSON. Pipe it through GitHub's `upload-sarif` action and failures appear in the Security tab alongside SAST findings, with PR-aware diff annotations.
+
+```yaml
+name: lemma compliance gate
+on: [pull_request]
+permissions:
+  contents: read
+  security-events: write   # required for SARIF upload
+jobs:
+  compliance-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Run lemma check (SARIF)
+        run: |
+          uv run lemma init || true
+          uv run lemma framework add nist-csf-2.0
+          uv run lemma check --format sarif > lemma.sarif || true   # don't fail-fast; let upload-sarif annotate the PR
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: lemma.sarif
+          category: lemma-compliance
+      - name: Re-run check to set the exit code
+        run: uv run lemma check --format json
+```
+
+The `|| true` on the SARIF run ensures the upload step always executes — operators want PR annotations even on failures, and the final `lemma check` step sets the actual gate exit code. For GitLab, the same SARIF can be uploaded as a `report:sast` artifact:
+
+```yaml
+lemma_check:
+  stage: test
+  script:
+    - uv run lemma check --format sarif > lemma.sarif
+  artifacts:
+    reports:
+      sast: lemma.sarif
+```
+
+### Stricter gating with `--min-confidence`
+
+```yaml
+- name: Run strict gate (only high-confidence mappings count)
+  run: uv run lemma check --format sarif --min-confidence 0.9 > lemma.sarif
+```
+
+`--min-confidence` is **orthogonal** to `ai.automation.thresholds.map` (which governs auto-accept of new mappings). Setting `--min-confidence 0.9` in CI lets `lemma map` keep auto-accepting at 0.85 (so mappings show up in `lemma ai audit` for human review) while gating the merge on a higher bar. Useful when you're fine with low-confidence mappings being recorded but don't want them counted toward CI's pass/fail.
+
 ## What's NOT here
 
-- **SARIF output** — `lemma check --format sarif` is tracked separately ([#119](https://github.com/JoshDoesIT/Lemma/issues/119)). When it ships, GitHub will render the failures in the Code Scanning tab.
-- **Native GitHub Action** — a `lemma-ai/lemma-action` wrapper that posts results as PR comments is tracked at [#120](https://github.com/JoshDoesIT/Lemma/issues/120). Until then, the raw CLI in a workflow step does the job.
+- **Native GitHub Action** — a `lemma-ai/lemma-action` wrapper that posts results as PR comments (instead of via the SARIF upload path) is tracked at [#120](https://github.com/JoshDoesIT/Lemma/issues/120). The SARIF route above already covers Code Scanning ingestion; the wrapper adds PR-comment summaries on top.
 - **Self-hosted runner setup for `--run-eval`** — running the RAG evaluation harness in CI requires a runner with Ollama installed. Out of scope for this guide; see [`docs/guides/rag-evaluation.md`](./rag-evaluation.md) for the local-only setup that exists today.
-
-## Tuning the gate
-
-`lemma check` v0 treats any `SATISFIES` edge as sufficient. Once `--min-confidence` ships ([#122](https://github.com/JoshDoesIT/Lemma/issues/122)), CI can demand a higher threshold than the auto-accept floor — useful when you're fine with low-confidence mappings showing up in `lemma ai audit` for human review but don't want them counted toward CI's pass/fail.

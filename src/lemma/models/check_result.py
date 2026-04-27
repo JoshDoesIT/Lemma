@@ -28,6 +28,7 @@ class CheckResult(BaseModel):
 
     framework: str | None
     outcomes: list[ControlCheckOutcome] = Field(default_factory=list)
+    min_confidence_applied: float = 0.0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

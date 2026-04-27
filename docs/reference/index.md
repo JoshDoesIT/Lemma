@@ -628,19 +628,22 @@ Output reports how many events were ingested and how many were skipped as duplic
 Run the CI/CD compliance gate over the knowledge graph. Exits non-zero if any control in the selected framework has zero satisfying policies, so pipelines can fail builds on compliance regressions.
 
 ```bash
-lemma check [--framework <ID>] [--format text|json]
+lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOAT]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--framework` | all frameworks in the graph | Restrict the check to a single framework (e.g. `nist-800-53`) |
-| `--format` | `text` | Output format: `text` (human-readable Rich table) or `json` (machine-parseable) |
+| `--format` | `text` | Output format: `text` (human-readable Rich table), `json` (machine-parseable), or `sarif` (SARIF 2.1.0 for GitHub Code Scanning / GitLab CI ingestion) |
+| `--min-confidence` | `0.0` | Only count `SATISFIES` edges whose `confidence` attribute is at or above this floor. Default `0.0` accepts every edge (preserves v0 behavior). Operators raise this in CI to demand a higher bar than the auto-accept threshold. |
 
-**Pass criterion (v0).** A control is `PASSED` if at least one policy has a `SATISFIES` edge pointing at it in the compliance graph, and `FAILED` otherwise. The check does not currently weight edges by confidence score — any recorded mapping counts — and does not consider evidence-node integrity. These refinements are tracked as follow-ups (see below).
+**Pass criterion.** A control is `PASSED` if at least one policy has a `SATISFIES` edge pointing at it whose `confidence` ≥ `--min-confidence`; `FAILED` otherwise. Edges with no recorded confidence are treated as fully trusted (default `1.0`) so legacy / external-tool-written edges keep working.
 
-**Exit codes.** `0` only when every control in scope passes; `1` on any failure, on unknown `--framework`, or outside a Lemma project.
+**`--min-confidence` vs `ai.automation.thresholds.map`.** They're orthogonal: `ai.automation.thresholds.map` (default 0.85) governs whether `lemma map` *auto-accepts* a new mapping into the graph as a SATISFIES edge. `--min-confidence` filters which already-accepted edges *count toward `lemma check`'s pass/fail*. A mapping accepted at 0.85 can still be filtered out by `lemma check --min-confidence 0.95` for stricter CI gating.
 
-**JSON output shape** (stable for CI/CD integrations):
+**Exit codes.** `0` only when every control in scope passes; `1` on any failure, on unknown `--framework`, on unknown `--format`, or outside a Lemma project.
+
+**JSON output shape** (stable for CI/CD integrations; `min_confidence_applied` was added alongside the `--min-confidence` flag):
 
 ```json
 {
@@ -657,21 +660,35 @@ lemma check [--framework <ID>] [--format text|json]
   ],
   "total": 1,
   "passed": 0,
-  "failed": 1
+  "failed": 1,
+  "min_confidence_applied": 0.0
 }
 ```
+
+**SARIF output.** `--format sarif` emits SARIF 2.1.0 JSON for ingestion into GitHub Code Scanning (`github/codeql-action/upload-sarif@v3`) or GitLab's SAST report ingestion. Only `FAILED` controls become SARIF results — passing controls are not findings, so they don't clutter the Security tab. Each result carries:
+
+| SARIF field | Lemma value |
+|---|---|
+| `ruleId` | The full prefixed `control_id` (e.g. `control:nist-800-53:ac-2`) so multi-framework projects don't collide |
+| `level` | `error` for every failed control |
+| `message.text` | The control title with a "not satisfied" suffix |
+| `locations[0]` | `.lemma/graph.json` — the artifact establishing the verdict (per-policy file provenance is a future refinement) |
+| `properties` | `{framework, short_id, satisfying_policies, min_confidence_applied}` for audit context |
 
 **Example workflow:**
 
 ```bash
 lemma init
 lemma framework add nist-csf-2.0
-lemma map                                     # creates SATISFIES edges
-lemma check                                   # human-readable gate
-lemma check --format json | jq '.failed'      # machine-readable for CI
+lemma map                                                # creates SATISFIES edges
+lemma check                                              # human-readable gate
+lemma check --format json | jq '.failed'                 # machine-readable for CI
+lemma check --format sarif --min-confidence 0.9          # strict CI gate, GitHub Code Scanning
 ```
 
-**Follow-ups tracked separately** — SARIF output ([#119](https://github.com/JoshDoesIT/Lemma/issues/119)), GitHub Action wrapper ([#120](https://github.com/JoshDoesIT/Lemma/issues/120)), OPA/Rego policy-as-code ([#121](https://github.com/JoshDoesIT/Lemma/issues/121)), and `--min-confidence` flag ([#122](https://github.com/JoshDoesIT/Lemma/issues/122)). Drift detection and compliance-debt metrics stay inside the parent [#28](https://github.com/JoshDoesIT/Lemma/issues/28) task list.
+See `docs/guides/ci-cd-integration.md` for end-to-end GitHub Actions and GitLab CI snippets including the SARIF upload step.
+
+**Follow-ups tracked separately** — GitHub Action wrapper ([#120](https://github.com/JoshDoesIT/Lemma/issues/120)) and OPA/Rego policy-as-code ([#121](https://github.com/JoshDoesIT/Lemma/issues/121)). Drift detection and compliance-debt metrics stay inside the parent [#28](https://github.com/JoshDoesIT/Lemma/issues/28) task list.
 
 ---
 
