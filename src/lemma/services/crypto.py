@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from pydantic import BaseModel, Field
 
 from lemma.models.key_metadata import KeyRecord, KeyStatus
+from lemma.models.signed_evidence import RevocationEntry, RevocationList
 
 
 def _safe_producer(producer: str) -> str:
@@ -324,6 +325,115 @@ def rotate_key(*, producer: str, key_dir: Path) -> str:
     )
     _write_lifecycle(producer, key_dir, lifecycle)
     return new_key_id
+
+
+# ---------------------------------------------------------------------------
+# Offline revocation lists (CRLs) — see #101
+# ---------------------------------------------------------------------------
+
+
+def _crl_canonical_bytes(
+    producer: str,
+    issued_at: datetime,
+    revocations: list[RevocationEntry],
+    issuer_key_id: str,
+) -> bytes:
+    """Canonical JSON of every CRL field except ``signature``.
+
+    Same canonicalization scheme used elsewhere in the project
+    (``ocsf_normalizer._canonical_payload_hash``,
+    ``evidence_log._canonical_signed_bytes``) — sorted keys, no
+    whitespace — so a downstream verifier can recompute the bytes
+    deterministically from a Pydantic round-trip.
+    """
+    payload = {
+        "producer": producer,
+        "issued_at": issued_at.isoformat(),
+        "issuer_key_id": issuer_key_id,
+        "revocations": [
+            {
+                "key_id": r.key_id,
+                "revoked_at": r.revoked_at.isoformat(),
+                "reason": r.reason,
+            }
+            for r in revocations
+        ],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
+def export_crl(*, producer: str, key_dir: Path) -> RevocationList:
+    """Build and sign a CRL for ``producer`` from the local lifecycle.
+
+    Reads every ``KeyRecord`` whose ``status == REVOKED`` and signs the
+    canonical-JSON payload with the producer's currently-ACTIVE key.
+
+    Raises:
+        FileNotFoundError: If no ACTIVE key exists for the producer —
+            you can't sign a CRL with no key, and emitting an unsigned
+            CRL would defeat the purpose of the format.
+    """
+    _migrate_flat_layout_if_present(producer, key_dir)
+    lifecycle = _read_lifecycle(producer, key_dir)
+    active = lifecycle.active()
+    if active is None:
+        msg = f"No active key on file for producer '{producer}' — cannot sign a CRL."
+        raise FileNotFoundError(msg)
+
+    revocations = [
+        RevocationEntry(
+            key_id=r.key_id,
+            revoked_at=r.revoked_at,
+            reason=r.revoked_reason or "",
+        )
+        for r in lifecycle.keys
+        if r.status == KeyStatus.REVOKED and r.revoked_at is not None
+    ]
+    issued_at = datetime.now(UTC)
+    payload = _crl_canonical_bytes(producer, issued_at, revocations, active.key_id)
+    private_key = _load_private_by_key_id(producer, active.key_id, key_dir)
+    signature = private_key.sign(payload).hex()
+
+    return RevocationList(
+        producer=producer,
+        issued_at=issued_at,
+        revocations=revocations,
+        issuer_key_id=active.key_id,
+        signature=signature,
+    )
+
+
+def verify_crl(crl: RevocationList, public_key_pem: bytes) -> bool:
+    """Verify a CRL's signature against a producer's public key PEM.
+
+    Pure function — no filesystem access. Used both by ``export_crl``
+    (round-trip sanity check before emit) and by the verify path
+    (signature check before merging the entries into a lifecycle
+    decision). Returns ``False`` on any failure rather than raising,
+    mirroring ``crypto.verify`` semantics.
+    """
+    try:
+        public_key = serialization.load_pem_public_key(public_key_pem)
+    except Exception:
+        return False
+    if not isinstance(public_key, Ed25519PublicKey):
+        return False
+
+    payload = _crl_canonical_bytes(crl.producer, crl.issued_at, crl.revocations, crl.issuer_key_id)
+    try:
+        signature_bytes = bytes.fromhex(crl.signature)
+    except ValueError:
+        return False
+    try:
+        public_key.verify(signature_bytes, payload)
+    except Exception:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Rotation and revocation
+# ---------------------------------------------------------------------------
 
 
 def revoke_key(*, producer: str, key_id: str, reason: str, key_dir: Path) -> KeyRecord:

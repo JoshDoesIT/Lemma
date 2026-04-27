@@ -527,3 +527,229 @@ def test_get_envelope_returns_none_for_unknown_hash(tmp_path: Path):
     log.append(normalize(_compliance_payload(uid="only")))
 
     assert log.get_envelope("0" * 64) is None
+
+
+# ---------------------------------------------------------------------------
+# verify_entry CRL merge (Refs #101)
+# ---------------------------------------------------------------------------
+
+
+def _build_crl(
+    *,
+    producer: str,
+    revocations: list[dict],
+    issuer_key_id: str,
+    issued_at: datetime | None = None,
+    signature: str = "",
+):
+    """Construct a RevocationList for tests without invoking export_crl."""
+    from lemma.models.signed_evidence import RevocationEntry, RevocationList
+
+    return RevocationList(
+        producer=producer,
+        issued_at=issued_at or datetime.now(UTC),
+        revocations=[RevocationEntry(**r) for r in revocations],
+        issuer_key_id=issuer_key_id,
+        signature=signature or "00" * 64,
+    )
+
+
+def test_verify_entry_proven_without_crl_when_no_local_revocation(tmp_path: Path):
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("uid-1")))
+    env = log.read_envelopes()[0]
+
+    result = log.verify_entry(env.entry_hash, crl=None)
+    assert result.state == EvidenceIntegrityState.PROVEN
+
+
+def test_verify_entry_violated_when_crl_lists_revocation_at_or_before_signed_at(
+    tmp_path: Path,
+):
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("uid-1")))
+    env = log.read_envelopes()[0]
+
+    # CRL revokes the signing key at a moment before the entry was signed.
+    crl = _build_crl(
+        producer="Lemma",
+        revocations=[
+            {
+                "key_id": env.signer_key_id,
+                "revoked_at": env.signed_at - timedelta(seconds=1),
+                "reason": "leaked",
+            }
+        ],
+        issuer_key_id=env.signer_key_id,
+    )
+
+    result = log.verify_entry(env.entry_hash, crl=crl)
+    assert result.state == EvidenceIntegrityState.VIOLATED
+    assert "CRL" in result.detail
+
+
+def test_verify_entry_proven_when_crl_revocation_is_after_signed_at(tmp_path: Path):
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("uid-1")))
+    env = log.read_envelopes()[0]
+
+    # Revocation timestamp strictly after the signed_at -> still PROVEN.
+    crl = _build_crl(
+        producer="Lemma",
+        revocations=[
+            {
+                "key_id": env.signer_key_id,
+                "revoked_at": env.signed_at + timedelta(hours=1),
+                "reason": "later",
+            }
+        ],
+        issuer_key_id=env.signer_key_id,
+    )
+
+    result = log.verify_entry(env.entry_hash, crl=crl)
+    assert result.state == EvidenceIntegrityState.PROVEN
+
+
+def test_verify_entry_uses_earlier_timestamp_when_both_sources_disagree(
+    tmp_path: Path,
+):
+    """Defense in depth: when local and CRL both flag a key, the earlier wins."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services import crypto
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    key_dir = tmp_path / ".lemma" / "keys"
+    log.append(normalize(_compliance_payload("uid-1")))
+    env = log.read_envelopes()[0]
+
+    # Local revocation timestamp is AFTER signed_at (locally still PROVEN).
+    crypto.revoke_key(
+        producer="Lemma",
+        key_id=env.signer_key_id,
+        reason="local lazy revoke",
+        key_dir=key_dir,
+    )
+    local_record = crypto.read_lifecycle("Lemma", key_dir=key_dir).find(env.signer_key_id)
+    # Sanity: revoke_key stamps now(UTC) which is after signed_at by construction.
+    assert local_record.revoked_at > env.signed_at
+
+    # CRL says the key was revoked BEFORE signed_at — earlier wins → VIOLATED.
+    crl = _build_crl(
+        producer="Lemma",
+        revocations=[
+            {
+                "key_id": env.signer_key_id,
+                "revoked_at": env.signed_at - timedelta(minutes=1),
+                "reason": "earlier truth",
+            }
+        ],
+        issuer_key_id=env.signer_key_id,
+    )
+
+    result = log.verify_entry(env.entry_hash, crl=crl)
+    assert result.state == EvidenceIntegrityState.VIOLATED
+    assert "CRL" in result.detail
+
+
+def test_verify_entry_local_revocation_still_strict_when_crl_silent(tmp_path: Path):
+    """The CRL adds revocations; it cannot remove ones the local store has."""
+    from lemma.models.signed_evidence import (
+        EvidenceIntegrityState,
+        ProvenanceRecord,
+        SignedEvidence,
+    )
+    from lemma.services import crypto
+    from lemma.services.evidence_log import EvidenceLog, _compute_entry_hash
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    key_dir = tmp_path / ".lemma" / "keys"
+    log.append(normalize(_compliance_payload("pre")))
+    pre = log.read_envelopes()[0]
+
+    # Revoke locally.
+    crypto.revoke_key(
+        producer="Lemma",
+        key_id=pre.signer_key_id,
+        reason="leaked",
+        key_dir=key_dir,
+    )
+    revoked_at = crypto.read_lifecycle("Lemma", key_dir=key_dir).find(pre.signer_key_id).revoked_at
+
+    # Forge a post-revocation entry with the still-on-disk private key.
+    bad_event = normalize(_compliance_payload("post"))
+    entry_hash = _compute_entry_hash(pre.entry_hash, bad_event, [])
+    private_key = crypto._load_private_by_key_id("Lemma", pre.signer_key_id, key_dir)
+    sig = private_key.sign(bytes.fromhex(entry_hash)).hex()
+    bad_envelope = SignedEvidence(
+        event=bad_event,
+        prev_hash=pre.entry_hash,
+        entry_hash=entry_hash,
+        signature=sig,
+        signer_key_id=pre.signer_key_id,
+        signed_at=revoked_at + timedelta(milliseconds=1),
+        provenance=[
+            ProvenanceRecord(
+                stage="storage",
+                actor="lemma.services.evidence_log",
+                content_hash=entry_hash,
+            )
+        ],
+    )
+    log_file = next((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+    with log_file.open("a") as f:
+        f.write(bad_envelope.model_dump_json() + "\n")
+
+    # CRL is silent on this key; local revocation still flips post-revoke entry.
+    crl = _build_crl(
+        producer="Lemma",
+        revocations=[],
+        issuer_key_id=pre.signer_key_id,
+    )
+
+    result = log.verify_entry(bad_envelope.entry_hash, crl=crl)
+    assert result.state == EvidenceIntegrityState.VIOLATED
+
+
+def test_verify_entry_ignores_crl_for_different_producer(tmp_path: Path):
+    """A CRL for producer 'Okta' must not flip a 'Lemma'-signed entry."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    log.append(normalize(_compliance_payload("uid-1")))
+    env = log.read_envelopes()[0]
+
+    # CRL from a totally unrelated producer mentioning the same key_id —
+    # shouldn't even be considered. (key_id collision across producers is
+    # astronomically unlikely; the test makes the cross-producer guard
+    # explicit.)
+    crl = _build_crl(
+        producer="Okta",
+        revocations=[
+            {
+                "key_id": env.signer_key_id,
+                "revoked_at": env.signed_at - timedelta(seconds=1),
+                "reason": "wrong producer",
+            }
+        ],
+        issuer_key_id=env.signer_key_id,
+    )
+
+    result = log.verify_entry(env.entry_hash, crl=crl)
+    assert result.state == EvidenceIntegrityState.PROVEN

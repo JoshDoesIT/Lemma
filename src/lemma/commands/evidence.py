@@ -20,7 +20,11 @@ from rich.console import Console
 from rich.table import Table
 
 from lemma.models.ocsf import OcsfBaseEvent
-from lemma.models.signed_evidence import EvidenceIntegrityState, ProvenanceRecord
+from lemma.models.signed_evidence import (
+    EvidenceIntegrityState,
+    ProvenanceRecord,
+    RevocationList,
+)
 from lemma.sdk.connector import Connector
 from lemma.services import crypto
 from lemma.services.config import load_automation_config
@@ -67,19 +71,68 @@ def _producer_of(metadata: dict) -> str:
     return "unknown"
 
 
+def _load_and_verify_crl(crl_path: Path, key_dir: Path) -> RevocationList:
+    """Load a CRL JSON file and verify its signature, or exit 1 with a clear error.
+
+    Helpers in `crypto.verify_crl` are the actual cryptographic check;
+    this wrapper handles file I/O and the CLI exit-code semantics. A
+    CRL that fails any check (parse, public key lookup, signature
+    verify) aborts with exit 1 — silently ignoring an unverifiable
+    CRL would let an attacker suppress the local revocation check by
+    supplying a bad one.
+    """
+    try:
+        crl = RevocationList.model_validate_json(crl_path.read_text())
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error:[/red] Could not read CRL at {crl_path}: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    pem_path = key_dir / crypto._safe_producer(crl.producer) / f"{crl.issuer_key_id}.public.pem"
+    if not pem_path.exists():
+        console.print(
+            f"[red]Error:[/red] Cannot verify CRL: no public key on file for "
+            f"producer '{crl.producer}' (key_id {crl.issuer_key_id})."
+        )
+        raise typer.Exit(code=1)
+
+    if not crypto.verify_crl(crl, pem_path.read_bytes()):
+        console.print("[red]Error:[/red] CRL signature invalid — refusing to merge.")
+        raise typer.Exit(code=1)
+
+    return crl
+
+
 @evidence_app.command(
     name="verify",
-    help="Verify the integrity of a specific evidence entry by entry_hash.",
+    help=(
+        "Verify the integrity of a specific evidence entry by entry_hash. "
+        "Pass --crl to merge an offline RevocationList; without --crl, "
+        "the verifier prints a note that revocations issued elsewhere "
+        "are not visible."
+    ),
 )
 def verify_command(
     entry_hash: str = typer.Argument(
         help="Entry hash of the evidence to verify (hex)",
     ),
+    crl_path: str = typer.Option(
+        "",
+        "--crl",
+        help=(
+            "Path to a signed RevocationList JSON. The CRL's signature is "
+            "checked against the producer's currently-known public key; "
+            "an unverifiable CRL aborts with exit 1."
+        ),
+    ),
 ) -> None:
     project_dir = _require_lemma_project()
     log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
 
-    result = log.verify_entry(entry_hash)
+    crl = None
+    if crl_path:
+        crl = _load_and_verify_crl(Path(crl_path), project_dir / ".lemma" / "keys")
+
+    result = log.verify_entry(entry_hash, crl=crl)
     console.print(f"{_state_style(result.state)}  {entry_hash[:16]}…")
     console.print(f"  {result.detail}")
 
@@ -96,8 +149,48 @@ def verify_command(
                     f"hash: [dim]{record.content_hash[:12]}…[/dim]"
                 )
 
+    if not crl_path:
+        # Operators running verify without --crl have an incomplete picture
+        # — they only see local revocations, not ones issued elsewhere.
+        # Surface this once per invocation; exit code is unchanged.
+        console.print(
+            "[dim]Note: No CRL supplied; revocations issued elsewhere are not visible.[/dim]"
+        )
+
     if result.state != EvidenceIntegrityState.PROVEN:
         raise typer.Exit(code=1)
+
+
+@evidence_app.command(
+    name="export-crl",
+    help="Emit a signed RevocationList for a producer (default: stdout).",
+)
+def export_crl_command(
+    producer: str = typer.Option(..., "--producer", help="Producer name (e.g. Lemma, Okta)"),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write CRL JSON to this path. Default: stdout.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+    key_dir = project_dir / ".lemma" / "keys"
+    try:
+        crl = crypto.export_crl(producer=producer, key_dir=key_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from e
+
+    payload = crl.model_dump_json(indent=2)
+    if output:
+        Path(output).write_text(payload + "\n")
+        console.print(
+            f"Wrote CRL for [cyan]{producer}[/cyan] "
+            f"({len(crl.revocations)} revocation(s)) to {output}."
+        )
+    else:
+        # Plain stdout — pipe-friendly, no Rich markup.
+        typer.echo(payload)
 
 
 @evidence_app.command(

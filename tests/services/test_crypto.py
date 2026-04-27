@@ -219,3 +219,173 @@ def test_revoke_key_with_unknown_key_id_raises(tmp_path: Path):
             reason="test",
             key_dir=tmp_path / "keys",
         )
+
+
+# ---------------------------------------------------------------------------
+# Offline revocation lists (Refs #101)
+# ---------------------------------------------------------------------------
+
+
+def _public_pem(producer: str, key_id: str, key_dir: Path) -> bytes:
+    safe = producer.replace("/", "_").replace(" ", "_")
+    return (key_dir / safe / f"{key_id}.public.pem").read_bytes()
+
+
+def test_revocation_list_round_trips_through_json():
+    from datetime import UTC, datetime
+
+    from lemma.models.signed_evidence import RevocationEntry, RevocationList
+
+    crl = RevocationList(
+        producer="Lemma",
+        revocations=[
+            RevocationEntry(
+                key_id="ed25519:abc123",
+                revoked_at=datetime(2026, 4, 27, tzinfo=UTC),
+                reason="leaked",
+            ),
+        ],
+        issuer_key_id="ed25519:def456",
+        signature="00" * 64,
+    )
+    revived = RevocationList.model_validate_json(crl.model_dump_json())
+    assert revived == crl
+
+
+def test_export_crl_includes_revoked_keys_only(tmp_path: Path):
+    from lemma.services.crypto import (
+        export_crl,
+        generate_keypair,
+        revoke_key,
+        rotate_key,
+    )
+
+    keys = tmp_path / "keys"
+    k1 = generate_keypair(producer="Lemma", key_dir=keys)
+    k2 = rotate_key(producer="Lemma", key_dir=keys)  # k1 -> RETIRED, k2 ACTIVE
+    revoke_key(producer="Lemma", key_id=k1, reason="rotation hygiene", key_dir=keys)
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    assert crl.producer == "Lemma"
+    assert crl.issuer_key_id == k2  # signed by current ACTIVE
+    assert {e.key_id for e in crl.revocations} == {k1}
+    assert crl.revocations[0].reason == "rotation hygiene"
+
+
+def test_export_crl_excludes_active_and_retired_keys(tmp_path: Path):
+    from lemma.services.crypto import export_crl, generate_keypair, rotate_key
+
+    keys = tmp_path / "keys"
+    generate_keypair(producer="Lemma", key_dir=keys)
+    rotate_key(producer="Lemma", key_dir=keys)  # one ACTIVE + one RETIRED
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    assert crl.revocations == []  # nothing revoked
+
+
+def test_export_crl_without_active_key_raises(tmp_path: Path):
+    import pytest
+
+    from lemma.services.crypto import export_crl
+
+    with pytest.raises(FileNotFoundError, match=r"(?i)active"):
+        export_crl(producer="ghost", key_dir=tmp_path / "keys")
+
+
+def test_export_crl_signature_round_trips_via_verify_crl(tmp_path: Path):
+    from lemma.services.crypto import (
+        export_crl,
+        generate_keypair,
+        revoke_key,
+        rotate_key,
+        verify_crl,
+    )
+
+    keys = tmp_path / "keys"
+    k1 = generate_keypair(producer="Lemma", key_dir=keys)
+    k2 = rotate_key(producer="Lemma", key_dir=keys)
+    revoke_key(producer="Lemma", key_id=k1, reason="leaked", key_dir=keys)
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    pem = _public_pem("Lemma", k2, keys)
+    assert verify_crl(crl, pem) is True
+
+
+def test_verify_crl_returns_false_when_signature_tampered(tmp_path: Path):
+    from lemma.services.crypto import (
+        export_crl,
+        generate_keypair,
+        revoke_key,
+        rotate_key,
+        verify_crl,
+    )
+
+    keys = tmp_path / "keys"
+    k1 = generate_keypair(producer="Lemma", key_dir=keys)
+    k2 = rotate_key(producer="Lemma", key_dir=keys)
+    revoke_key(producer="Lemma", key_id=k1, reason="leaked", key_dir=keys)
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    pem = _public_pem("Lemma", k2, keys)
+
+    # Flip a hex digit in the signature.
+    tampered = crl.model_copy(update={"signature": ("0" + crl.signature[1:])})
+    assert verify_crl(tampered, pem) is False
+
+
+def test_verify_crl_returns_false_when_payload_tampered(tmp_path: Path):
+    from datetime import UTC, datetime
+
+    from lemma.models.signed_evidence import RevocationEntry
+    from lemma.services.crypto import (
+        export_crl,
+        generate_keypair,
+        revoke_key,
+        rotate_key,
+        verify_crl,
+    )
+
+    keys = tmp_path / "keys"
+    k1 = generate_keypair(producer="Lemma", key_dir=keys)
+    k2 = rotate_key(producer="Lemma", key_dir=keys)
+    revoke_key(producer="Lemma", key_id=k1, reason="leaked", key_dir=keys)
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    pem = _public_pem("Lemma", k2, keys)
+
+    # Add a bogus revocation entry — the signature was over the original list.
+    tampered = crl.model_copy(
+        update={
+            "revocations": [
+                *crl.revocations,
+                RevocationEntry(
+                    key_id="ed25519:never-existed",
+                    revoked_at=datetime(2026, 4, 27, tzinfo=UTC),
+                    reason="forged",
+                ),
+            ]
+        }
+    )
+    assert verify_crl(tampered, pem) is False
+
+
+def test_verify_crl_with_wrong_public_key_returns_false(tmp_path: Path):
+    from lemma.services.crypto import (
+        export_crl,
+        generate_keypair,
+        revoke_key,
+        rotate_key,
+        verify_crl,
+    )
+
+    keys = tmp_path / "keys"
+    k1 = generate_keypair(producer="Lemma", key_dir=keys)
+    rotate_key(producer="Lemma", key_dir=keys)
+    revoke_key(producer="Lemma", key_id=k1, reason="leaked", key_dir=keys)
+
+    # Generate a totally unrelated key and try to verify with that producer's PEM.
+    other_kid = generate_keypair(producer="Other", key_dir=keys)
+    other_pem = _public_pem("Other", other_kid, keys)
+
+    crl = export_crl(producer="Lemma", key_dir=keys)
+    assert verify_crl(crl, other_pem) is False

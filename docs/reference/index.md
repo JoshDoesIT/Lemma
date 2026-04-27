@@ -439,12 +439,13 @@ Inspect and verify the append-only, signed, hash-chained evidence log.
 Verify the integrity of a single evidence entry by its `entry_hash`.
 
 ```bash
-lemma evidence verify <ENTRY_HASH>
+lemma evidence verify <ENTRY_HASH> [--crl <PATH>]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `ENTRY_HASH` | Yes | Hex-encoded SHA-256 entry hash of the evidence to verify |
+| `--crl` | No | Path to a signed `RevocationList` JSON (see `export-crl`) to merge into the lifecycle check |
 
 The verdict is one of:
 
@@ -453,6 +454,10 @@ The verdict is one of:
 - **VIOLATED** — content has been modified or the chain has been broken somewhere at or before this entry.
 
 Exit code is `0` only on PROVEN; anything else exits `1` so scripts can fail-fast.
+
+**Offline revocation lists (`--crl`).** Pass a CRL JSON path to merge revocations from another machine into the verdict. The CRL's signature is checked against the producer's currently-known public key; an unverifiable CRL aborts with exit `1` and a `CRL signature invalid — refusing to merge.` message — silently ignoring an unverifiable CRL would let an attacker suppress revocations. The CRL only *adds* revocations the local lifecycle doesn't have; it cannot remove ones the local store has. When local and CRL both flag a key, the **earlier** revocation timestamp wins (defense in depth). A CRL's `producer` must match the entry's producer; cross-producer CRLs are ignored.
+
+**Missing-CRL note.** When `verify` runs without `--crl`, the command prints `Note: No CRL supplied; revocations issued elsewhere are not visible.` after the verdict. Exit code is unchanged — the note is advisory, flagging that the verifier's picture is incomplete from an audit perspective.
 
 **Provenance chain.** When the state is PROVEN or DEGRADED, verify prints the full transformation chain attached to the envelope — one indented line per stage, with timestamp, actor, and truncated content hash. A typical ingested record's chain:
 
@@ -579,6 +584,23 @@ lemma evidence revoke-key --producer <NAME> --key-id <ID> --reason <TEXT>
 | `--producer` | Yes | Producer name whose key is being revoked |
 | `--key-id` | Yes | Exact key identifier (e.g. `ed25519:abcd1234`) to revoke |
 | `--reason` | Yes | Why this key is being revoked (operator note) |
+
+### `lemma evidence export-crl`
+
+Emit a signed `RevocationList` (CRL) for a producer. Hand the resulting JSON to an external verifier alongside the evidence log so a fresh Lemma install — given only the producer's currently-active public key — can render the same PROVEN / VIOLATED / DEGRADED verdict the operator sees.
+
+```bash
+lemma evidence export-crl --producer <NAME> [--output <PATH>]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--producer` | Yes | Producer name whose CRL to emit |
+| `--output` | No | Write CRL JSON to this path. Default: stdout |
+
+**File shape.** The on-disk format is `RevocationList.model_dump_json(indent=2)` — Pydantic round-trip is the format contract; no PEM wrap, no header. Each CRL is for one producer; multi-producer audit packages ship a directory of `crl-<producer>.json` files.
+
+**Signature.** The CRL is signed with the producer's currently-ACTIVE key, recorded as `issuer_key_id`. A verifier looks up the matching public PEM and checks the signature over the canonical-JSON of every other field (sorted keys, no whitespace — same scheme used by `SignedEvidence` and the OCSF normalizer). An export with no ACTIVE key aborts with exit `1`: there is no key to sign with, and emitting an unsigned CRL would defeat the purpose of the format.
 
 ### `lemma evidence keys`
 
