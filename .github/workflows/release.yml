@@ -35,12 +35,35 @@ jobs:
       - name: Generate SBOM
         run: uv run cyclonedx-py environment -o sbom.json --output-format json
 
+      - name: Generate AI System Card
+        run: |
+          uv run lemma ai system-card --format json > ai-system-card.json
+          uv run lemma ai system-card > ai-system-card.md
+
+      - name: Generate AI BOM (CycloneDX 1.6)
+        run: uv run lemma ai bom > aibom.cdx.json
+
+      - name: Capture AI System Card version
+        id: card_version
+        run: |
+          version=$(uv run python -c 'import json;print(json.load(open("ai-system-card.json"))["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          append_body: true
+          body: |
+
+            ---
+            **AI System Card version:** `${{ steps.card_version.outputs.version }}`
+            (frozen with this release; see `ai-system-card.md` and `ai-system-card.json` attached for the canonical AI configuration in force at tag time.)
           files: |
             dist/*
             sbom.json
+            aibom.cdx.json
+            ai-system-card.json
+            ai-system-card.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

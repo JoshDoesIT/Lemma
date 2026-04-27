@@ -134,7 +134,19 @@ Only operations that produce a determination — and therefore have something to
 
 `lemma ai system-card` prints a versioned transparency document describing every model Lemma uses — its purpose, declared capabilities, known limitations, and training-data provenance. The current card is embedded in the static docs at [AI System Card](../reference/ai-system-card.md).
 
-The system card is the authoritative answer to "which AI is responsible for this output?". It's versioned independently of the Lemma release so auditors can pin the exact AI configuration in force for a given evidence snapshot. Automating the card's publication into every release artifact is tracked as issue #93.
+The system card is the authoritative answer to "which AI is responsible for this output?". It's versioned independently of the Lemma release so auditors can pin the exact AI configuration in force for a given evidence snapshot.
+
+### Versioning contract
+
+Every release stamps the card into its GitHub Release artifact set as `ai-system-card.json` and `ai-system-card.md` alongside the SBOM and AIBOM. The card's `version` field is also surfaced in the release notes footer so an auditor reading a release page sees which configuration applies without downloading attachments.
+
+The card version is independent of the Lemma release semver:
+
+- **Card patch bump** (`x.y.Z`) — wording fixes in `purpose` / `out_of_scope` / `risk_mitigations` that don't change which model runs or what it's allowed to do. Lemma release semver is unaffected.
+- **Card minor bump** (`x.Y.0`) — a model is added, an `activity_id` enum is widened, or a risk mitigation gains a new failure mode. The Lemma release accompanying the change ships at minor or patch as the rest of the release dictates.
+- **Card major bump** (`X.0.0`) — a model is removed, replaced, or its declared capability set narrows in a way that could invalidate prior `ACCEPTED` traces. The accompanying Lemma release **must** be a major bump too — old evidence's "AI System Card vN" anchor becomes stale and downstream verifiers need to re-read the card.
+
+Because the card is rendered from hardcoded source data (`lemma.models.system_card.get_default_system_card`), changing the version means editing the source — there is no separate `system-card.yaml`. PRs that touch the card are review-gated by CODEOWNERS-equivalent ownership (governance team).
 
 ## How to verify any AI output
 
