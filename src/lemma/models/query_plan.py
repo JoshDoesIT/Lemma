@@ -45,6 +45,16 @@ class QueryPlan(BaseModel):
             ``"both"`` = no direction filter.
         output_shape: ``"list"`` returns a list of result dicts;
             ``"count"`` returns an integer.
+        time_range: Optional half-open ``[start, end)`` ISO-8601 string
+            pair narrowing Evidence nodes by ``time_iso``. Half-open so
+            adjacent queries don't double-count the boundary instant.
+        severity: Optional any-of list of OCSF severity *names*
+            (``"HIGH"`` / ``"CRITICAL"`` / ...). Filters Evidence nodes.
+        producer: Optional any-of list of producer names matching the
+            Evidence ``producer`` attribute (e.g. ``"GitHub"``, ``"AWS"``).
+        class_uid: Optional any-of list of OCSF ``class_uid`` ints.
+            All four attribute filters apply only to Evidence-typed
+            nodes; non-Evidence nodes pass through unchanged.
     """
 
     entry_node: str
@@ -52,3 +62,7 @@ class QueryPlan(BaseModel):
     edge_filter: list[str] = Field(default_factory=list)
     direction: Literal["in", "out", "both"] = "both"
     output_shape: Literal["list", "count"] = "list"
+    time_range: tuple[str, str] | None = None
+    severity: list[str] | None = None
+    producer: list[str] | None = None
+    class_uid: list[int] | None = None

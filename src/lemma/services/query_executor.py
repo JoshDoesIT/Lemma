@@ -13,6 +13,28 @@ from lemma.models.query_plan import QueryPlan, QueryTraversal
 from lemma.services.knowledge_graph import ComplianceGraph
 
 
+def _passes_evidence_filters(node: dict[str, Any], plan: QueryPlan) -> bool:
+    """Apply ``plan``'s Evidence-attribute filters to a single node.
+
+    Filters are skipped for non-Evidence nodes — applying ``time_range``
+    or ``severity`` to a Resource or Framework would be incoherent. Each
+    filter is independent any-of; multiple filters compound with AND.
+    Time range is half-open ``[start, end)``.
+    """
+    if node.get("type") != "Evidence":
+        return True
+    if plan.time_range is not None:
+        start_iso, end_iso = plan.time_range
+        node_time = node.get("time_iso", "")
+        if not (start_iso <= node_time < end_iso):
+            return False
+    if plan.severity is not None and node.get("severity") not in plan.severity:
+        return False
+    if plan.producer is not None and node.get("producer") not in plan.producer:
+        return False
+    return not (plan.class_uid is not None and node.get("class_uid") not in plan.class_uid)
+
+
 def _neighbors_with_filters(plan: QueryPlan, graph: ComplianceGraph) -> list[dict[str, Any]]:
     export = graph.export_json()
     nodes_by_id = {n["id"]: n for n in export["nodes"]}
@@ -45,6 +67,8 @@ def _neighbors_with_filters(plan: QueryPlan, graph: ComplianceGraph) -> list[dic
         seen_ids.add(other_id)
 
         other_node = nodes_by_id.get(other_id, {})
+        if not _passes_evidence_filters(other_node, plan):
+            continue
         results.append({"id": other_id, **other_node, "_edge": relationship})
 
     return results

@@ -89,7 +89,13 @@ def audit_command(
         "",
         "--operation",
         "-o",
-        help="Filter traces by operation (e.g., map, harmonize)",
+        help="Filter traces by operation (e.g., map, harmonize, query, evidence_query)",
+    ),
+    kind: str = typer.Option(
+        "",
+        "--kind",
+        "-k",
+        help="Filter traces by operation kind: 'decision' (map/harmonize) or 'read' (query).",
     ),
     output_format: str = typer.Option(
         "table",
@@ -118,6 +124,12 @@ def audit_command(
 
     if operation:
         traces = [t for t in traces if t.operation == operation]
+
+    if kind:
+        if kind not in ("decision", "read"):
+            console.print(f"[red]Error:[/red] Unknown --kind '{kind}'. Use 'decision' or 'read'.")
+            raise typer.Exit(code=1)
+        traces = [t for t in traces if t.operation_kind == kind]
 
     if summary:
         _show_summary(traces)

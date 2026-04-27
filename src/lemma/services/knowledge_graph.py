@@ -184,6 +184,8 @@ class ComplianceGraph:
         class_name: str,
         time_iso: str,
         control_refs: list[str],
+        severity: str | None = None,
+        class_uid: int | None = None,
     ) -> None:
         """Add an Evidence node with EVIDENCES edges to each referenced control.
 
@@ -197,6 +199,13 @@ class ComplianceGraph:
             control_refs: ``"<framework>:<control_id>"`` strings naming
                 every control this evidence supports. Every ref must
                 resolve to an existing Control node in the graph.
+            severity: Optional OCSF severity *name* (``"HIGH"``, ``"CRITICAL"``,
+                etc.). Stored on the node so query-time filters don't have
+                to re-read the signed log. Names beat ids for auditor
+                readability.
+            class_uid: Optional OCSF ``class_uid`` int (e.g. ``3002`` for
+                Authentication). Stored alongside ``class_name`` so
+                ``lemma query`` can filter by class without translating.
 
         Raises:
             ValueError: If any entry in ``control_refs`` names a control
@@ -222,6 +231,8 @@ class ComplianceGraph:
             producer=producer,
             class_name=class_name,
             time_iso=time_iso,
+            severity=severity,
+            class_uid=class_uid,
         )
 
         # Idempotent: drop stale EVIDENCES edges before rebuilding so a

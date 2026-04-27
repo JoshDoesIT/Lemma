@@ -22,6 +22,7 @@ from lemma.models.ocsf import (
     ComplianceFinding,
     DetectionFinding,
     OcsfBaseEvent,
+    OcsfSeverity,
 )
 from lemma.models.signed_evidence import ProvenanceRecord
 
@@ -64,6 +65,19 @@ def normalize(payload: dict) -> OcsfBaseEvent:
         )
         raise ValueError(msg)
     return event
+
+
+def severity_name(severity_id: int) -> str:
+    """Return the OCSF severity *name* for a given ``severity_id``.
+
+    Names are stored on the graph (instead of ints) because auditors
+    read ``"HIGH"`` more naturally than ``"4"``. Unknown ids fall back
+    to the upper-cased numeric form so the value remains debuggable.
+    """
+    try:
+        return OcsfSeverity(severity_id).name
+    except ValueError:
+        return f"UNKNOWN_{severity_id}"
 
 
 def normalize_with_provenance(payload: dict) -> tuple[OcsfBaseEvent, ProvenanceRecord]:

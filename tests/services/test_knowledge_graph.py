@@ -359,6 +359,40 @@ class TestAddEvidence:
         assert len(first_edges) == 1
         assert second_edges == []
 
+    def test_severity_and_class_uid_stored_on_node(self):
+        graph = self._seed_graph()
+        entry = "e" * 64
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="GitHub",
+            class_name="Authentication",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=[],
+            severity="HIGH",
+            class_uid=3002,
+        )
+
+        node = graph.get_node(f"evidence:{entry}")
+        assert node is not None
+        assert node["severity"] == "HIGH"
+        assert node["class_uid"] == 3002
+
+    def test_severity_and_class_uid_default_to_none_when_omitted(self):
+        graph = self._seed_graph()
+        entry = "f" * 64
+        graph.add_evidence(
+            entry_hash=entry,
+            producer="Lemma",
+            class_name="Compliance Finding",
+            time_iso="2026-04-23T12:00:00+00:00",
+            control_refs=[],
+        )
+
+        node = graph.get_node(f"evidence:{entry}")
+        assert node is not None
+        assert node.get("severity") is None
+        assert node.get("class_uid") is None
+
 
 class TestAddEvidenceMapping:
     """Single AI-inferred EVIDENCES edge with confidence (Refs #88)."""

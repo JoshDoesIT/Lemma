@@ -159,10 +159,14 @@ def query_command(
         _error(str(exc))
 
     # Emit trace: one entry per query, with prompt + first raw response.
+    has_evidence_filters = any(
+        attr is not None for attr in (plan.time_range, plan.severity, plan.producer, plan.class_uid)
+    )
     trace_log = TraceLog(log_dir=project_dir / ".lemma" / "traces")
     trace_log.append(
         AITrace(
-            operation="query",
+            operation="evidence_query" if has_evidence_filters else "query",
+            operation_kind="read",
             input_text=question[:500],
             prompt=prompt_seen.get("first", ""),
             model_id=_model_id_from(llm_client),

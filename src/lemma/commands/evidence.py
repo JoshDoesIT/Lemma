@@ -28,7 +28,7 @@ from lemma.services.evidence_infer import infer_mappings
 from lemma.services.evidence_log import EvidenceLog
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.llm import get_llm_client
-from lemma.services.ocsf_normalizer import normalize_with_provenance
+from lemma.services.ocsf_normalizer import normalize_with_provenance, severity_name
 
 _DEFAULT_EVIDENCE_REUSE_THRESHOLD = 0.7
 
@@ -449,6 +449,8 @@ def load_command() -> None:
                 class_name=env.event.class_name,
                 time_iso=env.event.time.isoformat(),
                 control_refs=_extract_control_refs(env.event.metadata),
+                severity=severity_name(int(env.event.severity_id)),
+                class_uid=env.event.class_uid,
             )
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
