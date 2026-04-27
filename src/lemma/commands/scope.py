@@ -1664,7 +1664,7 @@ def drift_command(
     )
 
 
-def _wait_for_shutdown(observer: Any) -> None:
+def _wait_for_shutdown(observer: Any) -> None:  # pragma: no cover - OS signal-driven
     """Block until SIGINT/SIGTERM, then return so the caller can stop the observer.
 
     Pulled out so `lemma scope watch` tests can monkeypatch this to return
@@ -1730,7 +1730,7 @@ def watch_command(
         f"{resources_dir.relative_to(project_dir)}/ — Ctrl+C to stop."
     )
 
-    def _drain_loop():
+    def _drain_loop():  # pragma: no cover - background thread; tested via reload_after_yaml_change
         while True:
             if not pending.wait(timeout=1.0):
                 continue
