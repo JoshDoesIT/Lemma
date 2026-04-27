@@ -849,6 +849,63 @@ Implicitly evidenced controls (3):
 
 **Exit codes.** `0` on success (including the no-reuse case, which prints a hint), `1` on an unknown scope name or outside a Lemma project.
 
+### `lemma scope drift`
+
+Compare a provider's current discover output against the graph and report the SCOPED_TO delta — what entered scopes, what exited, what attributes changed but stayed in the same scope, what got created upstream, what was deleted upstream. Read-only by default; `--apply` mutates (and prunes Resource nodes whose underlying infrastructure no longer exists).
+
+```bash
+lemma scope drift <PROVIDER> [PROVIDER-FLAGS] [--apply]
+```
+
+The `<PROVIDER>` argument and per-provider flags are identical to `lemma scope discover` (see the discover sections below). `drift` runs the same provider auth + discover invocation; the only difference is what it does with the candidates.
+
+**Output table** — one row per resource with non-`unchanged` status:
+
+| Column | Meaning |
+|---|---|
+| Resource | The resource id |
+| Status | `created` / `deleted` / `scope_change` / `attribute_drift` |
+| Entered | Scopes the resource newly belongs to |
+| Exited | Scopes the resource no longer belongs to |
+| Attribute changes | Per-field `before→after` diffs |
+
+**Exit codes.** `0` when there's no drift (or `--apply` succeeded); `1` when drift is detected and `--apply` was not passed (CI-friendly — pipelines can gate on drift the same way they gate on `lemma scope impact --plan`).
+
+**Cron pattern for scheduled drift detection:**
+
+```cron
+# Every 15 minutes, check AWS account for drift; mail-on-failure via cron's MAILTO.
+*/15 * * * * cd /path/to/project && /usr/local/bin/lemma scope drift aws --region us-east-1 || echo "drift detected"
+```
+
+The `--apply` flag is what makes drift the active half of Continuous Scope Validation: re-evaluates scope memberships for resources whose attributes changed, creates Resource nodes for newly-discovered assets, and **prunes Resource nodes whose live infrastructure has been deleted upstream** (closes a long-standing pruning gap).
+
+### `lemma scope watch`
+
+Foreground daemon (built on `watchdog` / inotify on Linux, FSEvents on macOS) that watches `scopes/` and `resources/` for changes and re-loads them on edit. Critically, when a scope file changes the daemon **re-evaluates every existing Resource against the new rules** — using stored attributes, no provider invocation needed — so YAML/HCL edits propagate to scope memberships instantly. The other half of Continuous Scope Validation: `drift` handles infrastructure changes; `watch` handles authoring changes.
+
+```bash
+lemma scope watch [--debounce-ms 300]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--debounce-ms` | `300` | Coalesce file events fired within this window. Multi-file edits (sed across N files, an editor's atomic save sequence) don't trigger N reloads. |
+
+**One-line status per coalesced reload batch:**
+
+```text
+Watching scopes/ and resources/ — Ctrl+C to stop.
+14:32:17 reloaded 3 scope(s), 4 resource(s); propagated 2, pruned 1.
+14:35:02 reloaded 3 scope(s), 4 resource(s); propagated 0, pruned 0.
+```
+
+`propagated` counts existing Resources whose scope membership changed because the YAML rules changed; `pruned` counts Resources that no longer match any scope after the rule change (auto-cleaned).
+
+**Foreground only** — operators run under `tmux` / `screen` / `systemctl --user` / `docker run` for persistence. Lemma stays a CLI, not a service framework. Daemonization (background, log-to-file, PID-file management) is intentionally out of scope.
+
+**Signal handling.** `SIGINT` / `SIGTERM` shuts down the observer cleanly (no thread leak, no orphaned watch handles).
+
 ### `lemma scope visualize`
 
 Render the scope-centered slice of the compliance graph as Graphviz DOT on stdout. Includes Scope, Framework, Control, and Resource nodes with `APPLIES_TO`, `CONTAINS`, and `SCOPED_TO` edges. Pipe the output through any Graphviz renderer (`dot`, `neato`, etc.) to turn it into an image.

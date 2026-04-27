@@ -21,6 +21,8 @@ import typer
 import yaml
 from rich.console import Console
 from rich.table import Table
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from lemma.services.ansible_discovery import (
     discover_resources_from_ansible as ansible_discover_resources,
@@ -48,8 +50,10 @@ from lemma.services.network_discovery import (
 from lemma.services.resource import load_all_resources
 from lemma.services.scope import load_all_scopes
 from lemma.services.scope_dot import render_scope_dot
+from lemma.services.scope_drift import compute_drift
 from lemma.services.scope_matcher import scope_impact_for_change, scopes_containing
 from lemma.services.scope_posture import compute_posture
+from lemma.services.scope_watch import reload_after_yaml_change
 from lemma.services.servicenow_discovery import (
     discover_resources_from_servicenow as servicenow_discover_resources,
 )
@@ -977,6 +981,244 @@ def _parse_nmap_xml(xml_text: str, *, ipv6: bool = False) -> dict[str, dict]:
     return out
 
 
+_VALID_PROVIDERS = (
+    "aws",
+    "terraform",
+    "k8s",
+    "gcp",
+    "azure",
+    "file",
+    "ansible",
+    "servicenow",
+    "device42",
+    "vsphere",
+    "network",
+)
+
+
+def _validate_provider(provider: str) -> None:
+    if provider not in _VALID_PROVIDERS:
+        console.print(
+            f"[red]Error:[/red] Unknown provider '{provider}'. "
+            f"Currently supported: {', '.join(_VALID_PROVIDERS)}."
+        )
+        raise typer.Exit(code=1)
+
+
+def _build_candidates_for_provider(provider: str, **flags: Any) -> tuple[list, str]:
+    """Build provider auth + invoke discover_resources. Returns (candidates, label).
+
+    Used by both ``discover_command`` and ``drift_command``. Raises
+    ``typer.Exit(1)`` with a printed error on missing flags or auth/discover
+    failure (same exit semantics either command had inline today).
+    """
+    if provider == "aws":
+        services = [s.strip() for s in flags["service"].split(",") if s.strip()]
+        try:
+            session = _build_aws_session(flags["region"])
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                aws_discover_resources(session=session, region=flags["region"], services=services),
+                "AWS",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "terraform":
+        if not flags["path"]:
+            console.print("[red]Error:[/red] --path is required when provider is 'terraform'.")
+            raise typer.Exit(code=1)
+        try:
+            return tf_state_discover_resources(Path(flags["path"])), "Terraform-state"
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "k8s":
+        kinds = [k.strip() for k in flags["kind"].split(",") if k.strip()]
+        namespaces = [n.strip() for n in flags["namespace"].split(",") if n.strip()] or None
+        try:
+            api_client = _build_k8s_clients(flags["context"] or None)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                k8s_discover_resources(
+                    api_client=api_client,
+                    context=flags["context"] or None,
+                    namespaces=namespaces,
+                    kinds=kinds,
+                ),
+                "Kubernetes",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "gcp":
+        if not flags["project"]:
+            console.print("[red]Error:[/red] --project is required when provider is 'gcp'.")
+            raise typer.Exit(code=1)
+        asset_types = [t.strip() for t in flags["asset_type"].split(",") if t.strip()]
+        try:
+            asset_client = _build_gcp_client(flags["project"], asset_types)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                gcp_discover_resources(
+                    asset_client=asset_client,
+                    project=flags["project"],
+                    asset_types=asset_types,
+                ),
+                "GCP",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "azure":
+        sub = flags["subscription"].strip()
+        if not sub:
+            console.print("[red]Error:[/red] --subscription is required when provider is 'azure'.")
+            raise typer.Exit(code=1)
+        resource_types = [t.strip() for t in flags["resource_type"].split(",") if t.strip()]
+        try:
+            rg_client = _build_azure_clients(sub, resource_types)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                azure_discover_resources(
+                    rg_client=rg_client, subscription=sub, resource_types=resource_types
+                ),
+                "Azure",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "file":
+        if not flags["path"]:
+            console.print("[red]Error:[/red] --path is required when provider is 'file'.")
+            raise typer.Exit(code=1)
+        try:
+            return file_discover_resources(Path(flags["path"])), "file"
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "ansible":
+        if not flags["inventory"]:
+            console.print("[red]Error:[/red] --inventory is required when provider is 'ansible'.")
+            raise typer.Exit(code=1)
+        try:
+            return ansible_discover_resources(Path(flags["inventory"])), "ansible"
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "servicenow":
+        inst = flags["instance"].strip()
+        if not inst:
+            console.print("[red]Error:[/red] --instance is required when provider is 'servicenow'.")
+            raise typer.Exit(code=1)
+        try:
+            sn_client = _build_servicenow_client(inst)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                servicenow_discover_resources(
+                    client=sn_client, instance=inst, ci_class=flags["ci_class"]
+                ),
+                "servicenow",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "device42":
+        deployment_url = flags["url"].strip()
+        if not deployment_url:
+            console.print("[red]Error:[/red] --url is required when provider is 'device42'.")
+            raise typer.Exit(code=1)
+        try:
+            d42_client = _build_device42_client(deployment_url)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                device42_discover_resources(client=d42_client, url=deployment_url),
+                "device42",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    if provider == "vsphere":
+        vc_host = flags["vsphere_host"].strip()
+        if not vc_host:
+            console.print("[red]Error:[/red] --host is required when provider is 'vsphere'.")
+            raise typer.Exit(code=1)
+        kinds = [k.strip() for k in flags["vsphere_kind"].split(",") if k.strip()]
+        try:
+            vsphere_content = _build_vsphere_clients(
+                vc_host, flags["vsphere_port"], flags["insecure"]
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            return (
+                vsphere_discover_resources(
+                    content=vsphere_content,
+                    vc_host=vc_host,
+                    datacenter=flags["datacenter"] or None,
+                    kinds=kinds,
+                ),
+                "vsphere",
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    # provider == "network"
+    cidr_list = [c.strip() for c in flags["cidr"].split(",") if c.strip()]
+    if not cidr_list:
+        console.print("[red]Error:[/red] --cidr is required when provider is 'network'.")
+        raise typer.Exit(code=1)
+    try:
+        port_list = [int(p.strip()) for p in flags["network_port"].split(",") if p.strip()]
+    except ValueError as exc:
+        console.print(
+            f"[red]Error:[/red] --network-port must be a comma-separated list of integers: {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+    try:
+        scan_fn = _build_network_scanner(
+            privileged=flags["privileged"],
+            detect_versions=flags["detect_versions"],
+            ipv6=flags["ipv6"],
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        return (
+            network_discover_resources(
+                scan_function=scan_fn,
+                cidrs=cidr_list,
+                ports=port_list,
+                label=flags["label"] or None,
+                ipv6=flags["ipv6"],
+            ),
+            "network",
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
 @scope_app.command(
     name="discover",
     help=(
@@ -1142,25 +1384,7 @@ def discover_command(
         help="Print matched resources as YAML to stdout; do not write to the graph.",
     ),
 ) -> None:
-    if provider not in (
-        "aws",
-        "terraform",
-        "k8s",
-        "gcp",
-        "azure",
-        "file",
-        "ansible",
-        "servicenow",
-        "device42",
-        "vsphere",
-        "network",
-    ):
-        console.print(
-            f"[red]Error:[/red] Unknown provider '{provider}'. "
-            "Currently supported: aws, terraform, k8s, gcp, azure, file, ansible, "
-            "servicenow, device42, vsphere, network."
-        )
-        raise typer.Exit(code=1)
+    _validate_provider(provider)
 
     project_dir = _require_lemma_project()
     scopes_dir = project_dir / "scopes"
@@ -1179,204 +1403,34 @@ def discover_command(
         )
         raise typer.Exit(code=1)
 
-    if provider == "aws":
-        services = [s.strip() for s in service.split(",") if s.strip()]
-        try:
-            session = _build_aws_session(region)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = aws_discover_resources(session=session, region=region, services=services)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "AWS"
-    elif provider == "terraform":
-        if not path:
-            console.print("[red]Error:[/red] --path is required when provider is 'terraform'.")
-            raise typer.Exit(code=1)
-        try:
-            candidates = tf_state_discover_resources(Path(path))
-        except (ValueError, FileNotFoundError) as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "Terraform-state"
-    elif provider == "k8s":
-        kinds = [k.strip() for k in kind.split(",") if k.strip()]
-        namespaces = [n.strip() for n in namespace.split(",") if n.strip()] or None
-        try:
-            api_client = _build_k8s_clients(context or None)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = k8s_discover_resources(
-                api_client=api_client,
-                context=context or None,
-                namespaces=namespaces,
-                kinds=kinds,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "Kubernetes"
-    elif provider == "gcp":
-        if not project:
-            console.print("[red]Error:[/red] --project is required when provider is 'gcp'.")
-            raise typer.Exit(code=1)
-        asset_types = [t.strip() for t in asset_type.split(",") if t.strip()]
-        try:
-            asset_client = _build_gcp_client(project, asset_types)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = gcp_discover_resources(
-                asset_client=asset_client,
-                project=project,
-                asset_types=asset_types,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "GCP"
-    elif provider == "azure":
-        sub = subscription.strip()
-        if not sub:
-            console.print("[red]Error:[/red] --subscription is required when provider is 'azure'.")
-            raise typer.Exit(code=1)
-        resource_types = [t.strip() for t in resource_type.split(",") if t.strip()]
-        try:
-            rg_client = _build_azure_clients(sub, resource_types)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = azure_discover_resources(
-                rg_client=rg_client,
-                subscription=sub,
-                resource_types=resource_types,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "Azure"
-    elif provider == "file":
-        if not path:
-            console.print("[red]Error:[/red] --path is required when provider is 'file'.")
-            raise typer.Exit(code=1)
-        try:
-            candidates = file_discover_resources(Path(path))
-        except (ValueError, FileNotFoundError) as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "file"
-    elif provider == "ansible":
-        if not inventory:
-            console.print("[red]Error:[/red] --inventory is required when provider is 'ansible'.")
-            raise typer.Exit(code=1)
-        try:
-            candidates = ansible_discover_resources(Path(inventory))
-        except (ValueError, FileNotFoundError) as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "ansible"
-    elif provider == "servicenow":
-        inst = instance.strip()
-        if not inst:
-            console.print("[red]Error:[/red] --instance is required when provider is 'servicenow'.")
-            raise typer.Exit(code=1)
-        try:
-            sn_client = _build_servicenow_client(inst)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = servicenow_discover_resources(
-                client=sn_client,
-                instance=inst,
-                ci_class=ci_class,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "servicenow"
-    elif provider == "device42":
-        deployment_url = url.strip()
-        if not deployment_url:
-            console.print("[red]Error:[/red] --url is required when provider is 'device42'.")
-            raise typer.Exit(code=1)
-        try:
-            d42_client = _build_device42_client(deployment_url)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = device42_discover_resources(
-                client=d42_client,
-                url=deployment_url,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "device42"
-    elif provider == "vsphere":
-        vc_host = vsphere_host.strip()
-        if not vc_host:
-            console.print("[red]Error:[/red] --host is required when provider is 'vsphere'.")
-            raise typer.Exit(code=1)
-        kinds = [k.strip() for k in vsphere_kind.split(",") if k.strip()]
-        try:
-            vsphere_content = _build_vsphere_clients(vc_host, vsphere_port, insecure)
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = vsphere_discover_resources(
-                content=vsphere_content,
-                vc_host=vc_host,
-                datacenter=datacenter or None,
-                kinds=kinds,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "vsphere"
-    else:  # provider == "network"
-        cidr_list = [c.strip() for c in cidr.split(",") if c.strip()]
-        if not cidr_list:
-            console.print("[red]Error:[/red] --cidr is required when provider is 'network'.")
-            raise typer.Exit(code=1)
-        try:
-            port_list = [int(p.strip()) for p in network_port.split(",") if p.strip()]
-        except ValueError as exc:
-            console.print(
-                "[red]Error:[/red] --network-port must be a comma-separated list "
-                f"of integers: {exc}"
-            )
-            raise typer.Exit(code=1) from exc
-        try:
-            scan_fn = _build_network_scanner(
-                privileged=privileged,
-                detect_versions=detect_versions,
-                ipv6=ipv6,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            candidates = network_discover_resources(
-                scan_function=scan_fn,
-                cidrs=cidr_list,
-                ports=port_list,
-                label=label or None,
-                ipv6=ipv6,
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        source_label = "network"
+    candidates, source_label = _build_candidates_for_provider(
+        provider,
+        region=region,
+        service=service,
+        path=path,
+        context=context,
+        namespace=namespace,
+        kind=kind,
+        project=project,
+        asset_type=asset_type,
+        subscription=subscription,
+        resource_type=resource_type,
+        inventory=inventory,
+        instance=instance,
+        ci_class=ci_class,
+        url=url,
+        vsphere_host=vsphere_host,
+        vsphere_port=vsphere_port,
+        insecure=insecure,
+        datacenter=datacenter,
+        vsphere_kind=vsphere_kind,
+        cidr=cidr,
+        network_port=network_port,
+        label=label,
+        privileged=privileged,
+        detect_versions=detect_versions,
+        ipv6=ipv6,
+    )
 
     scope_by_name = {s.name: s for s in scopes}
     matched: list = []
@@ -1426,3 +1480,279 @@ def discover_command(
         f"[green]Discovered[/green] {len(candidates)} {source_label} resource(s); "
         f"{len(matched)} scoped, {skipped_no_match} skipped (no scope match)."
     )
+
+
+@scope_app.command(
+    name="drift",
+    help=(
+        "Compare a provider's current discover output against the graph and report "
+        "the SCOPED_TO delta. --apply mutates (and prunes deleted Resources)."
+    ),
+)
+def drift_command(
+    provider: str = typer.Argument(
+        help="Discovery source — same set as `lemma scope discover`.",
+    ),
+    region: str = typer.Option("us-east-1", "--region"),
+    service: str = typer.Option("ec2,s3,iam", "--service"),
+    path: str = typer.Option("", "--path"),
+    context: str = typer.Option("", "--context"),
+    namespace: str = typer.Option("", "--namespace"),
+    kind: str = typer.Option("namespace,deployment,service", "--kind"),
+    project: str = typer.Option("", "--project"),
+    asset_type: str = typer.Option(
+        "compute.googleapis.com/Instance,storage.googleapis.com/Bucket,iam.googleapis.com/ServiceAccount",
+        "--asset-type",
+    ),
+    subscription: str = typer.Option("", "--subscription"),
+    resource_type: str = typer.Option(
+        "microsoft.compute/virtualmachines,microsoft.storage/storageaccounts,microsoft.managedidentity/userassignedidentities",
+        "--resource-type",
+    ),
+    inventory: str = typer.Option("", "--inventory"),
+    instance: str = typer.Option("", "--instance"),
+    ci_class: str = typer.Option("cmdb_ci", "--ci-class"),
+    url: str = typer.Option("", "--url"),
+    vsphere_host: str = typer.Option("", "--host"),
+    vsphere_port: int = typer.Option(443, "--port"),
+    insecure: bool = typer.Option(False, "--insecure"),
+    datacenter: str = typer.Option("", "--datacenter"),
+    vsphere_kind: str = typer.Option("vm,host,datastore", "--vsphere-kind"),
+    cidr: str = typer.Option("", "--cidr"),
+    network_port: str = typer.Option("22,80,443,3389,445,3306,5432,8080", "--network-port"),
+    label: str = typer.Option("", "--label"),
+    privileged: bool = typer.Option(False, "--privileged"),
+    detect_versions: bool = typer.Option(False, "--detect-versions"),
+    ipv6: bool = typer.Option(False, "--ipv6"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help=(
+            "Apply the drift to the graph: re-evaluate scope memberships for "
+            "changed resources, prune Resource nodes the live infrastructure no "
+            "longer has. Without --apply this is a read-only report."
+        ),
+    ),
+) -> None:
+    _validate_provider(provider)
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+
+    try:
+        scopes = load_all_scopes(scopes_dir)
+    except ValueError as exc:
+        for line in str(exc).splitlines():
+            console.print(f"[red]Error:[/red] {line}")
+        raise typer.Exit(code=1) from exc
+
+    if not scopes:
+        console.print(
+            "[red]Error:[/red] No scopes declared. "
+            "Run [bold]lemma scope init[/bold] to create one, then re-run drift."
+        )
+        raise typer.Exit(code=1)
+
+    candidates, _label = _build_candidates_for_provider(
+        provider,
+        region=region,
+        service=service,
+        path=path,
+        context=context,
+        namespace=namespace,
+        kind=kind,
+        project=project,
+        asset_type=asset_type,
+        subscription=subscription,
+        resource_type=resource_type,
+        inventory=inventory,
+        instance=instance,
+        ci_class=ci_class,
+        url=url,
+        vsphere_host=vsphere_host,
+        vsphere_port=vsphere_port,
+        insecure=insecure,
+        datacenter=datacenter,
+        vsphere_kind=vsphere_kind,
+        cidr=cidr,
+        network_port=network_port,
+        label=label,
+        privileged=privileged,
+        detect_versions=detect_versions,
+        ipv6=ipv6,
+    )
+
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+    existing = graph.iter_resources()
+
+    report = compute_drift(
+        existing_resources=existing,
+        fresh_candidates=candidates,
+        scopes=scopes,
+    )
+
+    if not report.has_drift:
+        console.print(f"[green]No drift.[/green] {len(report.entries)} resource(s) checked.")
+        return
+
+    table = Table(
+        title=f"Scope Drift ({sum(1 for e in report.entries if e.status != 'unchanged')} changes)"
+    )
+    table.add_column("Resource", style="bold cyan")
+    table.add_column("Status")
+    table.add_column("Entered")
+    table.add_column("Exited")
+    table.add_column("Attribute changes")
+    for entry in report.entries:
+        if entry.status == "unchanged":
+            continue
+        attr_summary = (
+            ", ".join(f"{k}: {b!r}→{a!r}" for k, (b, a) in entry.attribute_changes.items()) or "—"
+        )
+        table.add_row(
+            entry.resource_id,
+            entry.status,
+            ", ".join(entry.entered_scopes) or "—",
+            ", ".join(entry.exited_scopes) or "—",
+            attr_summary,
+        )
+    Console(width=140).print(table)
+
+    if not apply:
+        console.print(
+            "[yellow]Drift detected.[/yellow] Re-run with [bold]--apply[/bold] to update the graph."
+        )
+        raise typer.Exit(code=1)
+
+    scope_by_name = {s.name: s for s in scopes}
+    candidates_by_id = {c.id: c for c in candidates}
+    applied_changes = 0
+    pruned = 0
+    for entry in report.entries:
+        if entry.status == "unchanged":
+            continue
+        if entry.status == "deleted":
+            graph.remove_resource(entry.resource_id)
+            pruned += 1
+            continue
+        candidate = candidates_by_id[entry.resource_id]
+        match_names = sorted(scopes_containing(candidate.attributes, scopes))
+        if not match_names:
+            graph.remove_resource(entry.resource_id)
+            pruned += 1
+            continue
+        attribution = {
+            name: [
+                {"source": r.source, "operator": r.operator.value, "value": r.value}
+                for r in scope_by_name[name].match_rules
+            ]
+            for name in match_names
+        }
+        graph.add_resource(
+            resource_id=candidate.id,
+            type_=candidate.type,
+            scopes=match_names,
+            attributes=candidate.attributes,
+            impacts=candidate.impacts,
+            matched_rules_by_scope=attribution,
+        )
+        applied_changes += 1
+    graph.save(graph_path)
+    console.print(
+        f"[green]Applied[/green] {applied_changes} resource update(s); "
+        f"pruned {pruned} stale Resource node(s)."
+    )
+
+
+def _wait_for_shutdown(observer: Any) -> None:
+    """Block until SIGINT/SIGTERM, then return so the caller can stop the observer.
+
+    Pulled out so `lemma scope watch` tests can monkeypatch this to return
+    immediately without a real signal arriving.
+    """
+    import signal
+    import threading
+
+    stop_event = threading.Event()
+
+    def _handler(_signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+    stop_event.wait()
+
+
+@scope_app.command(
+    name="watch",
+    help=(
+        "Foreground daemon: re-validate scopes/resources whenever YAML/HCL files "
+        "in the project change. Re-evaluates existing Resources against new rules "
+        "so YAML edits propagate to scope memberships instantly."
+    ),
+)
+def watch_command(
+    debounce_ms: int = typer.Option(
+        300,
+        "--debounce-ms",
+        help="Coalesce file events fired within this window (default 300ms).",
+    ),
+) -> None:
+    import threading
+    import time
+
+    project_dir = _require_lemma_project()
+    scopes_dir = project_dir / "scopes"
+    resources_dir = project_dir / "resources"
+
+    pending = threading.Event()
+    debounce_window = max(debounce_ms, 0) / 1000.0
+
+    class _ReloadHandler(FileSystemEventHandler):
+        def on_any_event(self, event):
+            if event.is_directory:
+                return
+            src = str(getattr(event, "src_path", ""))
+            if not src.endswith((".yaml", ".yml", ".hcl")):
+                return
+            pending.set()
+
+    handler = _ReloadHandler()
+    observer = Observer()
+    if scopes_dir.exists():
+        observer.schedule(handler, str(scopes_dir), recursive=False)
+    if resources_dir.exists():
+        observer.schedule(handler, str(resources_dir), recursive=False)
+    observer.start()
+
+    console.print(
+        f"[green]Watching[/green] {scopes_dir.relative_to(project_dir)}/ and "
+        f"{resources_dir.relative_to(project_dir)}/ — Ctrl+C to stop."
+    )
+
+    def _drain_loop():
+        while True:
+            if not pending.wait(timeout=1.0):
+                continue
+            time.sleep(debounce_window)
+            pending.clear()
+            try:
+                summary = reload_after_yaml_change(project_dir)
+            except ValueError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                continue
+            stamp = time.strftime("%H:%M:%S")
+            console.print(
+                f"[dim]{stamp}[/dim] reloaded {summary['scopes_loaded']} scope(s), "
+                f"{summary['resources_loaded']} resource(s); "
+                f"propagated {summary['propagated']}, pruned {summary['pruned']}."
+            )
+
+    drain_thread = threading.Thread(target=_drain_loop, daemon=True)
+    drain_thread.start()
+
+    try:
+        _wait_for_shutdown(observer)
+    finally:
+        observer.stop()
+        observer.join()

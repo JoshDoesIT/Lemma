@@ -832,6 +832,216 @@ class TestScopeReuse:
         assert result.exit_code == 1
 
 
+class TestScopeDrift:
+    """`lemma scope drift <provider>` — read-only delta detector + --apply
+    that mutates (and prunes deleted Resources, closing #144).
+    """
+
+    def test_no_drift_exits_zero(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.models.resource import ResourceDefinition
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        # Pre-populate the graph with a Resource that the next discover
+        # will return verbatim — no drift expected.
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_resource(
+            resource_id="aws-ec2-i-prod1",
+            type_="aws.ec2.instance",
+            scopes=["prod"],
+            attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        candidates = [
+            ResourceDefinition(
+                id="aws-ec2-i-prod1",
+                type="aws.ec2.instance",
+                scopes=[""],
+                attributes={"aws": {"region": "us-east-1", "tags": {"Environment": "prod"}}},
+            ),
+        ]
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "drift", "aws"])
+        assert result.exit_code == 0, result.stdout
+        assert "no drift" in result.stdout.lower() or "unchanged" in result.stdout.lower()
+
+    def test_drift_detected_exits_one(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.models.resource import ResourceDefinition
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        # Graph has nothing yet; discover will return a new Resource → "created" drift.
+        candidates = [
+            ResourceDefinition(
+                id="aws-ec2-new1",
+                type="aws.ec2.instance",
+                scopes=[""],
+                attributes={"aws": {"tags": {"Environment": "prod"}}},
+            ),
+        ]
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "drift", "aws"])
+        assert result.exit_code == 1, result.stdout
+        assert "aws-ec2-new1" in result.stdout
+        assert "created" in result.stdout.lower()
+
+        # Read-only: no mutation without --apply.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert g.get_node("resource:aws-ec2-new1") is None
+
+    def test_watch_command_starts_observer_and_shuts_down_on_signal(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`lemma scope watch` wires up an observer, registers shutdown signals,
+        and exits cleanly when the daemon's stop_event fires.
+        """
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        observer_actions: list[str] = []
+
+        class _FakeObserver:
+            def schedule(self, *args, **kwargs):
+                observer_actions.append("scheduled")
+
+            def start(self):
+                observer_actions.append("started")
+
+            def stop(self):
+                observer_actions.append("stopped")
+
+            def join(self, *args, **kwargs):
+                observer_actions.append("joined")
+
+        # Patch the Observer class the watch_command imports.
+        monkeypatch.setattr("lemma.commands.scope.Observer", _FakeObserver)
+        # Patch `signal_wait` to return immediately, simulating SIGINT.
+        monkeypatch.setattr(
+            "lemma.commands.scope._wait_for_shutdown",
+            lambda observer: None,
+        )
+
+        result = runner.invoke(app, ["scope", "watch"])
+        assert result.exit_code == 0, result.stdout
+        assert "started" in observer_actions
+        assert "stopped" in observer_actions
+        assert "joined" in observer_actions
+
+    def test_watch_yaml_edit_re_evaluates_existing_resources(self, tmp_path: Path, monkeypatch):
+        """Editing scope YAML re-evaluates every existing Resource against
+        the new rules (using stored attributes; no fresh discover needed).
+        Tests the helper directly so no real OS-level inotify is needed.
+        """
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.scope_watch import reload_after_yaml_change
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        # Pre-seed: a Resource that ISN'T in any scope (env=staging, no rule fires).
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_scope(name="prod", frameworks=["nist-csf-2.0"], justification="", rule_count=1)
+        g.add_resource(
+            resource_id="aws-ec2-staging1",
+            type_="aws.ec2.instance",
+            scopes=["prod"],  # currently in 'prod' from a prior discover
+            attributes={"aws": {"tags": {"Environment": "staging"}}},
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        # The seeded scope at scopes/prod.yaml has rule
+        # `aws.tags.Environment, equals, prod`. Our staging Resource shouldn't
+        # match — re-evaluation should drop it from the prod scope (and since
+        # it matches no scope, prune the Resource).
+        result = reload_after_yaml_change(tmp_path)
+
+        assert result["scopes_loaded"] >= 1
+        # Staging Resource matches no scope after re-eval → pruned.
+        assert result["pruned"] == 1
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        assert loaded.get_node("resource:aws-ec2-staging1") is None
+
+    def test_apply_mutates_graph_including_pruning_deleted(self, tmp_path: Path, monkeypatch):
+        """--apply: creates new Resources, prunes Resources that fell out
+        of discover output (closes #144).
+        """
+        from lemma.cli import app
+        from lemma.models.resource import ResourceDefinition
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        monkeypatch.chdir(tmp_path)
+        _seed_project_for_discover(tmp_path)
+
+        # Seed the graph with two Resources; discover only returns one of them
+        # plus a brand-new one.
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        g.add_resource(
+            resource_id="aws-ec2-stayer",
+            type_="aws.ec2.instance",
+            scopes=["prod"],
+            attributes={"aws": {"tags": {"Environment": "prod"}}},
+        )
+        g.add_resource(
+            resource_id="aws-ec2-deleted-upstream",
+            type_="aws.ec2.instance",
+            scopes=["prod"],
+            attributes={"aws": {"tags": {"Environment": "prod"}}},
+        )
+        g.save(tmp_path / ".lemma" / "graph.json")
+
+        candidates = [
+            ResourceDefinition(
+                id="aws-ec2-stayer",
+                type="aws.ec2.instance",
+                scopes=[""],
+                attributes={"aws": {"tags": {"Environment": "prod"}}},
+            ),
+            ResourceDefinition(
+                id="aws-ec2-newcomer",
+                type="aws.ec2.instance",
+                scopes=[""],
+                attributes={"aws": {"tags": {"Environment": "prod"}}},
+            ),
+        ]
+        monkeypatch.setattr(
+            "lemma.commands.scope.aws_discover_resources",
+            lambda **_kwargs: candidates,
+        )
+        monkeypatch.setattr("lemma.commands.scope._build_aws_session", lambda region: object())
+
+        result = runner.invoke(app, ["scope", "drift", "aws", "--apply"])
+        assert result.exit_code == 0, result.stdout
+
+        loaded = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        # Newcomer landed.
+        assert loaded.get_node("resource:aws-ec2-newcomer") is not None
+        # Stayer untouched.
+        assert loaded.get_node("resource:aws-ec2-stayer") is not None
+        # Deleted-upstream got pruned (closes #144).
+        assert loaded.get_node("resource:aws-ec2-deleted-upstream") is None
+
+
 def _seed_project_for_discover(tmp_path: Path) -> None:
     """Build a project with one declared scope matching aws.tags.Environment=prod."""
     from lemma.services.knowledge_graph import ComplianceGraph

@@ -38,6 +38,7 @@ dependencies = [
     "azure-mgmt-resourcegraph>=8.0",
     "pyvmomi>=8.0",
     "python-hcl2>=4.0",
+    "watchdog>=3.0",
 ]
 
 [project.optional-dependencies]
