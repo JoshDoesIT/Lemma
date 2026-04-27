@@ -1,9 +1,12 @@
 """Resource-as-code parser.
 
-Reads ``resources/*.yaml`` files from a Lemma project and validates
-them against the strict ``ResourceDefinition`` schema. Errors carry
-enough context (file, line, column when available) for operators to
-jump straight to the offending record.
+Reads ``resources/*.yaml`` and ``resources/*.hcl`` files from a Lemma
+project and validates them against the strict ``ResourceDefinition``
+schema. Both formats converge on
+``ResourceDefinition.model_validate(dict_)`` — the Pydantic model is
+format-agnostic. Errors carry enough context (file, line, column when
+available for YAML) for operators to jump straight to the offending
+record.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from lemma.models.resource import ResourceDefinition
+from lemma.services.resource_hcl import parse_resource_hcl
 
 
 def _yaml_error_to_value_error(path: Path, exc: yaml.MarkedYAMLError) -> ValueError:
@@ -32,15 +36,21 @@ def _validation_error_to_value_error(path: Path, exc: ValidationError) -> ValueE
 
 
 def load_resource(path: Path) -> ResourceDefinition:
-    """Parse and validate a single resource-as-code YAML file."""
+    """Parse and validate a single resource-as-code file (YAML or HCL)."""
     text = path.read_text()
-    try:
-        data = yaml.safe_load(text)
-    except yaml.MarkedYAMLError as exc:
-        raise _yaml_error_to_value_error(path, exc) from exc
+    if path.suffix == ".hcl":
+        try:
+            data = parse_resource_hcl(text)
+        except ValueError as exc:
+            raise ValueError(f"{path.name}: {exc}") from exc
+    else:
+        try:
+            data = yaml.safe_load(text)
+        except yaml.MarkedYAMLError as exc:
+            raise _yaml_error_to_value_error(path, exc) from exc
 
     if not isinstance(data, dict):
-        msg = f"{path.name}: top-level YAML must be a mapping, got {type(data).__name__}."
+        msg = f"{path.name}: top-level must be a mapping, got {type(data).__name__}."
         raise ValueError(msg)
 
     try:
@@ -50,7 +60,7 @@ def load_resource(path: Path) -> ResourceDefinition:
 
 
 def load_all_resources(resources_dir: Path) -> list[ResourceDefinition]:
-    """Parse every ``*.yaml`` / ``*.yml`` file in the directory.
+    """Parse every ``*.yaml`` / ``*.yml`` / ``*.hcl`` file in the directory.
 
     Accumulates all errors across files before raising, so operators
     editing multiple resources see the full picture in one pass.
@@ -59,7 +69,9 @@ def load_all_resources(resources_dir: Path) -> list[ResourceDefinition]:
         return []
 
     files = sorted(
-        list(resources_dir.glob("*.yaml")) + list(resources_dir.glob("*.yml")),
+        list(resources_dir.glob("*.yaml"))
+        + list(resources_dir.glob("*.yml"))
+        + list(resources_dir.glob("*.hcl")),
         key=lambda p: p.name,
     )
 

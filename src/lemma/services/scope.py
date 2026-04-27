@@ -1,9 +1,11 @@
 """Scope-as-code parser.
 
-Reads ``scopes/*.yaml`` files from a Lemma project and validates them
-against the strict ``ScopeDefinition`` schema. Errors carry enough
-context (file, line, column when available) for operators to jump
-straight to the offending record.
+Reads ``scopes/*.yaml`` and ``scopes/*.hcl`` files from a Lemma project
+and validates them against the strict ``ScopeDefinition`` schema. Both
+formats converge on ``ScopeDefinition.model_validate(dict_)`` — the
+Pydantic model is format-agnostic. Errors carry enough context (file,
+line, column when available for YAML) for operators to jump straight to
+the offending record.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from lemma.models.scope import ScopeDefinition
+from lemma.services.scope_hcl import parse_scope_hcl
 
 
 def _yaml_error_to_value_error(path: Path, exc: yaml.MarkedYAMLError) -> ValueError:
@@ -32,15 +35,21 @@ def _validation_error_to_value_error(path: Path, exc: ValidationError) -> ValueE
 
 
 def load_scope(path: Path) -> ScopeDefinition:
-    """Parse and validate a single scope-as-code YAML file."""
+    """Parse and validate a single scope-as-code file (YAML or HCL)."""
     text = path.read_text()
-    try:
-        data = yaml.safe_load(text)
-    except yaml.MarkedYAMLError as exc:
-        raise _yaml_error_to_value_error(path, exc) from exc
+    if path.suffix == ".hcl":
+        try:
+            data = parse_scope_hcl(text)
+        except ValueError as exc:
+            raise ValueError(f"{path.name}: {exc}") from exc
+    else:
+        try:
+            data = yaml.safe_load(text)
+        except yaml.MarkedYAMLError as exc:
+            raise _yaml_error_to_value_error(path, exc) from exc
 
     if not isinstance(data, dict):
-        msg = f"{path.name}: top-level YAML must be a mapping, got {type(data).__name__}."
+        msg = f"{path.name}: top-level must be a mapping, got {type(data).__name__}."
         raise ValueError(msg)
 
     try:
@@ -50,7 +59,7 @@ def load_scope(path: Path) -> ScopeDefinition:
 
 
 def load_all_scopes(scopes_dir: Path) -> list[ScopeDefinition]:
-    """Parse every ``*.yaml`` / ``*.yml`` file in the directory.
+    """Parse every ``*.yaml`` / ``*.yml`` / ``*.hcl`` file in the directory.
 
     Accumulates all errors across files before raising, so operators
     editing multiple scopes see the full picture in one pass.
@@ -59,7 +68,9 @@ def load_all_scopes(scopes_dir: Path) -> list[ScopeDefinition]:
         return []
 
     files = sorted(
-        list(scopes_dir.glob("*.yaml")) + list(scopes_dir.glob("*.yml")),
+        list(scopes_dir.glob("*.yaml"))
+        + list(scopes_dir.glob("*.yml"))
+        + list(scopes_dir.glob("*.hcl")),
         key=lambda p: p.name,
     )
 

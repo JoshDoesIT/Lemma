@@ -37,6 +37,7 @@ dependencies = [
     "azure-identity>=1.15",
     "azure-mgmt-resourcegraph>=8.0",
     "pyvmomi>=8.0",
+    "python-hcl2>=4.0",
 ]
 
 [project.optional-dependencies]
