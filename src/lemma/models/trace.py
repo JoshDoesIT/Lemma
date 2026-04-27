@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -81,3 +82,4 @@ class AITrace(BaseModel):
     auto_accepted: bool = False
     related_control_id: str = ""
     related_framework: str = ""
+    operation_kind: Literal["decision", "read"] = "decision"

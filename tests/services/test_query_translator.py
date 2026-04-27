@@ -244,6 +244,52 @@ def test_prompt_enumerates_all_edge_types_from_schema():
         assert edge in prompt, f"prompt should advertise {edge}"
 
 
+def test_prompt_advertises_evidence_attribute_filter_vocabulary():
+    """The cheatsheet must teach the LLM the four evidence-attribute filters."""
+    from lemma.services.query_translator import _build_prompt
+
+    graph = _build_full_edge_graph()
+    prompt = _build_prompt("anything", graph)
+
+    for token in ("time_range", "severity", "producer", "class_uid"):
+        assert token in prompt, f"prompt should advertise {token} filter"
+
+
+def test_translator_accepts_plan_with_evidence_attribute_filters():
+    """LLM may emit time_range/severity/producer/class_uid in the JSON plan."""
+    from lemma.models.query_plan import QueryPlan
+    from lemma.services.query_translator import translate
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "control:nist-800-53:ac-2",
+            "traversal": "NEIGHBORS",
+            "edge_filter": ["EVIDENCES"],
+            "direction": "in",
+            "time_range": ["2026-04-26T00:00:00+00:00", "2026-04-27T00:00:00+00:00"],
+            "severity": ["HIGH"],
+            "producer": ["GitHub"],
+            "class_uid": [3002],
+        }
+    )
+
+    plan = translate(
+        question="High-severity GitHub auth events for AC-2 in the last 24 hours?",
+        graph=_build_graph(),
+        llm_client=mock_llm,
+    )
+
+    assert isinstance(plan, QueryPlan)
+    assert plan.time_range == (
+        "2026-04-26T00:00:00+00:00",
+        "2026-04-27T00:00:00+00:00",
+    )
+    assert plan.severity == ["HIGH"]
+    assert plan.producer == ["GitHub"]
+    assert plan.class_uid == [3002]
+
+
 def test_prompt_includes_direction_hint_for_owns():
     """The cheatsheet must explain that OWNS queries from a Control use direction=in.
 

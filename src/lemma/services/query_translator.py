@@ -37,7 +37,11 @@ Respond ONLY with a JSON object matching this schema:
     "edge_filter": ["<relationship>", ...] (optional; pick from the relationship
         types in the schema summary below),
     "direction": "in" | "out" | "both" (optional, default "both"),
-    "output_shape": "list" | "count" (optional, default "list")
+    "output_shape": "list" | "count" (optional, default "list"),
+    "time_range": ["<ISO-8601 start>", "<ISO-8601 end>"] (optional; half-open),
+    "severity": ["HIGH", "CRITICAL", ...] (optional; OCSF severity names),
+    "producer": ["GitHub", "AWS", ...] (optional; Evidence producer names),
+    "class_uid": [3002, ...] (optional; OCSF class_uid ints)
   }}
 
 Graph schema (what actually exists today):
@@ -57,6 +61,17 @@ Edge type cheatsheet — pick the right filter and direction:
 Disambiguation: IMPACTS connects Resource to Control; MITIGATED_BY connects Risk
 to Control. A question about which Resource depends on a Control uses IMPACTS;
 a question about which Risk a Control mitigates uses MITIGATED_BY.
+
+Evidence attribute filters (apply only to Evidence-typed nodes; non-Evidence
+nodes reached by the same plan walk through unchanged):
+  - time_range: ["2026-04-26T00:00:00+00:00", "2026-04-27T00:00:00+00:00"]
+      "What evidence landed in the last 24 hours?" — half-open [start, end).
+  - severity: ["HIGH", "CRITICAL"]
+      "Show me critical-severity findings." — OCSF severity *names*.
+  - producer: ["GitHub", "AWS"]
+      "Authentication events from the GitHub connector."
+  - class_uid: [3002]
+      "Auth events" — OCSF class_uid (e.g. 3002 = Authentication).
 
 Example entry nodes in this graph:
 {example_nodes}

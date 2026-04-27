@@ -420,3 +420,82 @@ class TestAutoAccept:
         review = log.read_all()[-1]
         assert review.status == TraceStatus.ACCEPTED
         assert review.auto_accepted is False
+
+
+class TestOperationKind:
+    """`operation_kind` discriminator separates decision ops from read ops (#104)."""
+
+    def test_default_is_decision(self):
+        trace = AITrace(
+            operation="map",
+            input_text="t",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.9,
+            determination="MAPPED",
+            control_id="ac-1",
+            framework="fw",
+        )
+        assert trace.operation_kind == "decision"
+
+    def test_read_value_round_trips_through_json(self):
+        trace = AITrace(
+            operation="query",
+            input_text="t",
+            prompt="p",
+            model_id="m",
+            model_version="1",
+            raw_output="o",
+            confidence=0.0,
+            determination="QUERY_EXECUTED",
+            control_id="",
+            framework="",
+            operation_kind="read",
+        )
+        rebuilt = AITrace.model_validate_json(trace.model_dump_json())
+        assert rebuilt.operation_kind == "read"
+
+    def test_legacy_jsonl_without_field_defaults_to_decision(self, tmp_path: Path):
+        """JSONL records written before #104 deserialize to operation_kind='decision'."""
+        log_dir = tmp_path / ".lemma" / "traces"
+        log_dir.mkdir(parents=True)
+        legacy_line = json.dumps(
+            {
+                "trace_id": "legacy",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "operation": "map",
+                "input_text": "x",
+                "prompt": "x",
+                "model_id": "m",
+                "model_version": "1",
+                "raw_output": "x",
+                "confidence": 0.8,
+                "determination": "MAPPED",
+                "control_id": "ac-1",
+                "framework": "fw",
+            }
+        )
+        (log_dir / "2026-01-01.jsonl").write_text(legacy_line + "\n")
+
+        log = TraceLog(log_dir=log_dir)
+        traces = log.read_all()
+        assert len(traces) == 1
+        assert traces[0].operation_kind == "decision"
+
+    def test_invalid_operation_kind_rejected(self):
+        with pytest.raises(ValueError, match=r"(?i)operation_kind"):
+            AITrace(
+                operation="map",
+                input_text="t",
+                prompt="p",
+                model_id="m",
+                model_version="1",
+                raw_output="o",
+                confidence=0.9,
+                determination="MAPPED",
+                control_id="ac-1",
+                framework="fw",
+                operation_kind="invalid",  # type: ignore[arg-type]
+            )

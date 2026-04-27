@@ -194,7 +194,7 @@ Every time `lemma map` loads the automation config, it diffs the current thresho
 
 ## `lemma query`
 
-Ask the compliance graph a question in plain English. An LLM translates the question into a bounded structured plan (`QueryPlan`), the executor walks the graph using existing traversals, and every call lands in the AI trace log with `operation="query"`.
+Ask the compliance graph a question in plain English. An LLM translates the question into a bounded structured plan (`QueryPlan`), the executor walks the graph using existing traversals, and every call lands in the AI trace log with `operation="query"` (or `"evidence_query"` when the plan filters Evidence by attribute) and `operation_kind="read"`.
 
 ```bash
 lemma query "<QUESTION>" [OPTIONS]
@@ -232,11 +232,23 @@ lemma query "Which resources impact au-2?"
 | `MITIGATED_BY` | Risk → Control | "What risks does CP-9 mitigate?" |
 | `APPLIES_TO` | Scope → Framework | "What scopes apply to NIST CSF?" |
 
+**Evidence-attribute filters:**
+
+When a question narrows Evidence by attribute, the translator emits a plan with one or more of these fields. The executor applies them only to Evidence-typed nodes — non-Evidence nodes reached by the same plan walk through unchanged.
+
+| Filter | Type | Example | Question shape |
+|---|---|---|---|
+| `time_range` | `[start, end)` ISO-8601 strings (half-open) | `["2026-04-26T00:00:00Z", "2026-04-27T00:00:00Z"]` | "What evidence landed in the last 24 hours?" |
+| `severity` | any-of OCSF severity *names* | `["HIGH", "CRITICAL"]` | "Show me critical-severity findings." |
+| `producer` | any-of producer names | `["GitHub", "AWS"]` | "Authentication events from the GitHub connector." |
+| `class_uid` | any-of OCSF class_uid ints | `[3002]` | "Auth events" (3002 = Authentication) |
+
+When any of these fields is set, the trace's `operation` is `"evidence_query"` instead of `"query"`, so auditors can distinguish attribute-filtered evidence questions via `lemma ai audit --operation evidence_query`.
+
 **What it can and can't do:**
 
 - Supports single-hop traversals (NEIGHBORS / IMPACT / framework control counts) with edge-type and direction filters. Multi-hop questions ("framework → its controls → harmonized controls") land in a future release — see [#105](https://github.com/JoshDoesIT/Lemma/issues/105).
 - Results render a per-row **Attributes** column: Evidence shows `producer · time_iso`, Risk shows `title [SEVERITY]`, Person shows email, Resource shows its type.
-- Richer evidence filters (time range, severity, connector source) and a dedicated `evidence_query` trace discriminator remain open — see [#97](https://github.com/JoshDoesIT/Lemma/issues/97).
 - Short entry-node names (`"ac-2"`) are resolved against the real graph. Ambiguous short names (same control ID in multiple frameworks) fail with a message listing all candidates so you can rephrase with a framework qualifier.
 
 ---
@@ -1799,11 +1811,14 @@ lemma ai audit [OPTIONS]
 |--------|---------|-------------|
 | `--model` | *(all)* | Filter by model ID (e.g., `ollama/llama3.2`) |
 | `--status` | *(all)* | Filter by review status: `PROPOSED`, `ACCEPTED`, `REJECTED` |
-| `--operation` | *(all)* | Filter by operation type (e.g., `map`, `harmonize`) |
+| `--operation` | *(all)* | Filter by operation type (e.g., `map`, `harmonize`, `query`, `evidence_query`) |
+| `--kind` | *(all)* | Filter by operation kind: `decision` (map/harmonize/...) or `read` (query/evidence_query) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--summary` | `false` | Show aggregate statistics instead of individual traces |
 
 The audit log captures every AI decision: input, prompt, model, raw output, confidence score, and human review status.
+
+`--operation` and `--kind` are complementary. `--kind decision` returns every trace that *changed* the compliance record (map, harmonize, evidence-mapping); `--kind read` returns every read-only operation (query, evidence_query). Use `--operation` when you want a specific kind of decision or read; use `--kind` when you want to separate "what AI told us" from "what someone asked."
 
 **Examples:**
 
@@ -1819,6 +1834,15 @@ lemma ai audit --status ACCEPTED
 
 # Only harmonization traces
 lemma ai audit --operation harmonize
+
+# Only attribute-filtered evidence queries
+lemma ai audit --operation evidence_query
+
+# Every read-only operation (query + evidence_query)
+lemma ai audit --kind read
+
+# Every decision (map / harmonize / evidence-mapping)
+lemma ai audit --kind decision
 
 # JSON for CI/scripting
 lemma ai audit --format json

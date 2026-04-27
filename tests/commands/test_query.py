@@ -197,6 +197,91 @@ def test_query_output_shows_severity_tag_for_risk_result(tmp_path: Path, monkeyp
     assert "high" in result.stdout.lower()
 
 
+def test_query_trace_carries_operation_kind_read(tmp_path: Path, monkeypatch):
+    """Every `lemma query` trace must be tagged operation_kind='read'."""
+    from lemma.cli import app
+    from lemma.services.trace_log import TraceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_graph_in_lemma_project(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "ac-2",
+            "traversal": "NEIGHBORS",
+        }
+    )
+
+    with patch("lemma.commands.query.get_llm_client", return_value=mock_llm):
+        result = runner.invoke(app, ["query", "anything"])
+
+    assert result.exit_code == 0, result.stdout
+    traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+    assert len(traces) == 1
+    assert traces[0].operation_kind == "read"
+
+
+def test_query_trace_uses_evidence_query_operation_when_filters_present(
+    tmp_path: Path, monkeypatch
+):
+    """A plan with any evidence-attribute filter switches operation to 'evidence_query'."""
+    from lemma.cli import app
+    from lemma.services.trace_log import TraceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_graph_in_lemma_project(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "ac-2",
+            "traversal": "NEIGHBORS",
+            "edge_filter": ["EVIDENCES"],
+            "direction": "in",
+            "severity": ["HIGH"],
+        }
+    )
+
+    with patch("lemma.commands.query.get_llm_client", return_value=mock_llm):
+        result = runner.invoke(app, ["query", "high-severity evidence for ac-2"])
+
+    assert result.exit_code == 0, result.stdout
+    traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+    assert len(traces) == 1
+    assert traces[0].operation == "evidence_query"
+    assert traces[0].operation_kind == "read"
+
+
+def test_query_trace_uses_query_operation_when_no_evidence_filters(tmp_path: Path, monkeypatch):
+    """A plain graph-shaped plan keeps operation='query' (not 'evidence_query')."""
+    from lemma.cli import app
+    from lemma.services.trace_log import TraceLog
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    _seed_graph_in_lemma_project(tmp_path)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = json.dumps(
+        {
+            "entry_node": "ac-2",
+            "traversal": "NEIGHBORS",
+            "edge_filter": ["HARMONIZED_WITH"],
+        }
+    )
+
+    with patch("lemma.commands.query.get_llm_client", return_value=mock_llm):
+        result = runner.invoke(app, ["query", "what harmonizes with ac-2?"])
+
+    assert result.exit_code == 0, result.stdout
+    traces = TraceLog(log_dir=tmp_path / ".lemma" / "traces").read_all()
+    assert len(traces) == 1
+    assert traces[0].operation == "query"
+
+
 def test_query_exits_non_zero_when_entry_node_not_found(tmp_path: Path, monkeypatch):
     from lemma.cli import app
 

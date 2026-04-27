@@ -120,6 +120,67 @@ class TestAuditOperationFilter:
         assert len(data) == 3
 
 
+class TestAuditKindFilter:
+    """Tests for `lemma ai audit --kind` (#104)."""
+
+    def _seed_with_query(self, project_dir: Path) -> None:
+        _seed_traces(project_dir)
+        # Append one read-op trace.
+        TraceLog(log_dir=project_dir / ".lemma" / "traces").append(
+            AITrace(
+                operation="query",
+                input_text="What controls satisfy ac-2?",
+                prompt="Translate this question...",
+                model_id="ollama/llama3.2",
+                model_version="3.2",
+                raw_output="{}",
+                confidence=0.0,
+                determination="QUERY_EXECUTED",
+                control_id="",
+                framework="",
+                operation_kind="read",
+            )
+        )
+
+    def test_kind_decision_excludes_reads(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_with_query(tmp_path)
+
+        result = runner.invoke(app, ["ai", "audit", "--kind", "decision", "--format", "json"])
+        assert result.exit_code == 0, result.stdout
+        data = json.loads(result.stdout)
+        assert {t["operation"] for t in data} == {"map", "harmonize"}
+        assert all(t["operation_kind"] == "decision" for t in data)
+
+    def test_kind_read_returns_only_queries(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_with_query(tmp_path)
+
+        result = runner.invoke(app, ["ai", "audit", "--kind", "read", "--format", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["operation"] == "query"
+        assert data[0]["operation_kind"] == "read"
+
+    def test_kind_invalid_exits_one(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_traces(tmp_path)
+
+        result = runner.invoke(app, ["ai", "audit", "--kind", "invalid"])
+        assert result.exit_code == 1
+        assert "decision" in result.stdout.lower() or "read" in result.stdout.lower()
+
+
 class TestAuditCommand:
     """Tests for the `lemma ai audit` CLI command."""
 

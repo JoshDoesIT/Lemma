@@ -75,11 +75,20 @@ Users don't always know the graph schema. `lemma query "<question>"` fills that 
 2. The LLM returns a structured `QueryPlan` — an executor-bounded object describing entry node, traversal kind, edge filters, and direction.
 3. The translator resolves short entry-node names (`"ac-2"` → `"control:nist-800-53:ac-2"`) against the real graph. Ambiguous short names fail loud.
 4. The executor walks the graph using existing `ComplianceGraph` methods and returns matching nodes.
-5. Every call emits an `AITrace` with `operation="query"`, full prompt, raw LLM output, and the resolved plan — auditable alongside map and harmonize decisions via `lemma ai audit --operation query`.
+5. Every call emits an `AITrace` with `operation="query"` (or `"evidence_query"` when the plan filters Evidence by attribute) and `operation_kind="read"`, plus the full prompt, raw LLM output, and resolved plan — auditable alongside map and harmonize decisions via `lemma ai audit --operation query` or `lemma ai audit --kind read`.
 
 The LLM cannot generate arbitrary graph code; it can only emit `QueryPlan` instances the executor recognizes. That's the safety contract — the LLM gets to interpret intent creatively, the executor only does what's in the plan.
 
-Query traces use `confidence=0.0` and `determination="QUERY_EXECUTED"` as conventions for the read-only operation kind. A typed discriminator for decision-vs-read ops is a future schema change (see [#104](https://github.com/JoshDoesIT/Lemma/issues/104)).
+Plans can also carry Evidence-attribute filters — `time_range`, `severity`, `producer`, `class_uid` — which the executor applies only to Evidence-typed nodes (other node types reached by the same walk pass through unchanged). When any of those filters is set, the trace's `operation` is `"evidence_query"` so auditors can distinguish attribute-filtered evidence questions from plain graph traversals.
+
+#### `operation_kind`: decision vs. read
+
+Every `AITrace` carries an `operation_kind` discriminator:
+
+- **`decision`** (default) — the trace records an AI determination that *changed* the compliance record (mapper, harmonizer, evidence inference). Confidence and determination are load-bearing here.
+- **`read`** — the trace records a read-only operation (`lemma query`, `evidence_query`). `confidence=0.0` and `determination="QUERY_EXECUTED"` are conventions; the value of the trace is the prompt, raw output, and resolved plan, not a similarity score.
+
+Use `lemma ai audit --kind decision` to filter the audit feed to entries that changed graph state, and `--kind read` to surface the questions operators have asked.
 
 ## The trust model
 

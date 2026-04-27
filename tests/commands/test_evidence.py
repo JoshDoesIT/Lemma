@@ -684,6 +684,34 @@ class TestEvidenceLoad:
         result = runner.invoke(app, ["evidence", "load"])
         assert result.exit_code == 1
 
+    def test_load_populates_severity_name_and_class_uid_from_event(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+        from lemma.services.evidence_log import EvidenceLog
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_graph_with_controls(tmp_path)
+
+        # severity_id=4 → HIGH per OCSF
+        payload = _compliance_payload_with_refs("e-sev", ["nist-csf-2.0:gv.oc-1"])
+        payload["severity_id"] = 4
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        log.append(normalize(payload))
+
+        result = runner.invoke(app, ["evidence", "load"])
+        assert result.exit_code == 0, result.stdout
+
+        g = ComplianceGraph.load(tmp_path / ".lemma" / "graph.json")
+        env = log.read_envelopes()[0]
+        node = g.get_node(f"evidence:{env.entry_hash}")
+        assert node is not None
+        assert node["severity"] == "HIGH"
+        assert node["class_uid"] == 2003
+
     def test_in_graph_column_reflects_load_state(self, tmp_path: Path, monkeypatch):
         """`lemma evidence log` shows ✓ after load, ✗ beforehand."""
         from lemma.cli import app
