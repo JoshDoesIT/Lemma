@@ -589,6 +589,266 @@ def test_verify_prints_full_provenance_chain(tmp_path: Path, monkeypatch):
 # --- Evidence nodes in the compliance graph (Refs #76, #88) ---
 
 
+class TestExportAndVerifyCrl:
+    """`lemma evidence export-crl` and `verify --crl` (Refs #101)."""
+
+    def _project_with_revocation(self, project_dir: Path):
+        from lemma.services import crypto
+
+        # Seed an entry signed by the current ACTIVE key.
+        hashes = _seed_signed_entries(project_dir, count=1)
+
+        key_dir = project_dir / ".lemma" / "evidence" / ".." / "keys"  # not real; use the actual:
+        key_dir = project_dir / ".lemma" / "keys"
+        active = crypto.public_key_id(producer="Lemma", key_dir=key_dir)
+
+        # Rotate so we have a new ACTIVE key, then revoke the old one.
+        new_active = crypto.rotate_key(producer="Lemma", key_dir=key_dir)
+        crypto.revoke_key(
+            producer="Lemma",
+            key_id=active,
+            reason="test: simulated leak",
+            key_dir=key_dir,
+        )
+        return hashes, active, new_active
+
+    def test_export_crl_writes_signed_document_to_stdout(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.models.signed_evidence import RevocationList
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._project_with_revocation(tmp_path)
+
+        result = runner.invoke(app, ["evidence", "export-crl", "--producer", "Lemma"])
+        assert result.exit_code == 0, result.stdout
+
+        crl = RevocationList.model_validate_json(result.stdout)
+        assert crl.producer == "Lemma"
+        assert len(crl.revocations) == 1
+
+    def test_export_crl_with_output_writes_file_round_trip(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.models.signed_evidence import RevocationList
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._project_with_revocation(tmp_path)
+
+        out = tmp_path / "crl.json"
+        result = runner.invoke(
+            app,
+            ["evidence", "export-crl", "--producer", "Lemma", "--output", str(out)],
+        )
+        assert result.exit_code == 0, result.stdout
+        assert out.exists()
+        crl = RevocationList.model_validate_json(out.read_text())
+        assert crl.producer == "Lemma"
+        assert len(crl.revocations) == 1
+
+    def test_export_crl_no_active_key_exits_one(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        result = runner.invoke(app, ["evidence", "export-crl", "--producer", "ghost"])
+        assert result.exit_code == 1
+
+    def test_verify_with_crl_flag_returns_violated_for_post_revocation_entry(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+        from lemma.models.signed_evidence import (
+            ProvenanceRecord,
+            RevocationEntry,
+            RevocationList,
+            SignedEvidence,
+        )
+        from lemma.services import crypto
+        from lemma.services.evidence_log import EvidenceLog, _compute_entry_hash
+        from lemma.services.ocsf_normalizer import normalize
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+        key_dir = tmp_path / ".lemma" / "keys"
+        log.append(normalize(_compliance_payload("pre")))
+        pre = log.read_envelopes()[0]
+        active = pre.signer_key_id
+
+        # Forge a post-revocation entry signed with the same private key,
+        # but the CRL we'll supply lists that key as revoked BEFORE the
+        # forged signed_at. Local lifecycle has no revocation here — we
+        # want to prove the CRL alone is enough to flip the verdict.
+        forged_event = normalize(_compliance_payload("post"))
+        forged_hash = _compute_entry_hash(pre.entry_hash, forged_event, [])
+        priv = crypto._load_private_by_key_id("Lemma", active, key_dir)
+        sig = priv.sign(bytes.fromhex(forged_hash)).hex()
+        from datetime import UTC, datetime, timedelta
+
+        signed_at = datetime.now(UTC)
+        forged = SignedEvidence(
+            event=forged_event,
+            prev_hash=pre.entry_hash,
+            entry_hash=forged_hash,
+            signature=sig,
+            signer_key_id=active,
+            signed_at=signed_at,
+            provenance=[
+                ProvenanceRecord(
+                    stage="storage",
+                    actor="lemma.services.evidence_log",
+                    content_hash=forged_hash,
+                )
+            ],
+        )
+        log_file = next((tmp_path / ".lemma" / "evidence").glob("*.jsonl"))
+        with log_file.open("a") as f:
+            f.write(forged.model_dump_json() + "\n")
+
+        # Build a CRL using the existing ACTIVE key as issuer (only one key
+        # ever generated for this producer, so issuer == revoked key — odd
+        # but valid; Lemma can self-attest a revocation when no rotation
+        # has happened, and it tests the same code path).
+        rotated = crypto.rotate_key(producer="Lemma", key_dir=key_dir)
+        # Now the original `active` is RETIRED; revoke it locally so we
+        # can also exercise a real export. But the test uses a hand-built
+        # CRL so we don't depend on local lifecycle here.
+        crl = crypto.export_crl(producer="Lemma", key_dir=key_dir)
+        # Augment the CRL with a revocation pre-dating signed_at, signed
+        # by the new ACTIVE key.
+        augmented = RevocationList(
+            producer="Lemma",
+            issued_at=crl.issued_at,
+            revocations=[
+                *crl.revocations,
+                RevocationEntry(
+                    key_id=active,
+                    revoked_at=signed_at - timedelta(seconds=10),
+                    reason="forged",
+                ),
+            ],
+            issuer_key_id=rotated,
+            signature="00",  # placeholder; we re-sign below
+        )
+        # Re-sign with the new ACTIVE key.
+        from lemma.services.crypto import _crl_canonical_bytes
+
+        payload = _crl_canonical_bytes(
+            augmented.producer,
+            augmented.issued_at,
+            augmented.revocations,
+            augmented.issuer_key_id,
+        )
+        new_priv = crypto._load_private_by_key_id("Lemma", rotated, key_dir)
+        augmented = augmented.model_copy(update={"signature": new_priv.sign(payload).hex()})
+
+        crl_path = tmp_path / "crl.json"
+        crl_path.write_text(augmented.model_dump_json(indent=2))
+
+        # `lemma evidence verify <pre-hash>` is PROVEN; <forged-hash>
+        # without CRL is also PROVEN (signature is valid, no local
+        # revocation). With --crl, the forged entry flips to VIOLATED.
+        result = runner.invoke(app, ["evidence", "verify", forged_hash, "--crl", str(crl_path)])
+        assert result.exit_code == 1, result.stdout
+        assert "VIOLATED" in result.stdout
+
+    def test_verify_without_crl_prints_missing_crl_note(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        hashes = _seed_signed_entries(tmp_path, count=1)
+
+        result = runner.invoke(app, ["evidence", "verify", hashes[0]])
+        assert result.exit_code == 0, result.stdout
+        assert "No CRL supplied" in result.stdout
+
+    def test_verify_with_invalid_crl_signature_exits_one_and_does_not_merge(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        hashes = _seed_signed_entries(tmp_path, count=1)
+        self._project_with_revocation(tmp_path)  # sets up keys
+
+        # Build a valid CRL, then tamper with its signature so verify_crl rejects it.
+        from lemma.services.crypto import export_crl
+
+        crl = export_crl(producer="Lemma", key_dir=tmp_path / ".lemma" / "keys")
+        bad = crl.model_copy(update={"signature": "00" * (len(crl.signature) // 2)})
+        crl_path = tmp_path / "crl.json"
+        crl_path.write_text(bad.model_dump_json(indent=2))
+
+        result = runner.invoke(app, ["evidence", "verify", hashes[0], "--crl", str(crl_path)])
+        assert result.exit_code == 1
+        assert "CRL signature invalid" in result.stdout
+
+    def test_verify_with_crl_for_unknown_producer_exits_one(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        hashes = _seed_signed_entries(tmp_path, count=1)
+
+        # Hand-craft a CRL claiming to be from a producer with no public key on file.
+        from datetime import UTC, datetime
+
+        from lemma.models.signed_evidence import RevocationList
+
+        crl = RevocationList(
+            producer="UnknownVendor",
+            issued_at=datetime.now(UTC),
+            revocations=[],
+            issuer_key_id="ed25519:nonexistent",
+            signature="00" * 64,
+        )
+        crl_path = tmp_path / "crl.json"
+        crl_path.write_text(crl.model_dump_json(indent=2))
+
+        result = runner.invoke(app, ["evidence", "verify", hashes[0], "--crl", str(crl_path)])
+        assert result.exit_code == 1
+        assert "no public key" in result.stdout.lower() or "unknownvendor" in result.stdout.lower()
+
+    def test_export_crl_round_trips_through_verify_on_fresh_install(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """AC-1: a CRL exported on one machine verifies on a fresh install
+        that has only the public PEM."""
+        from lemma.cli import app
+        from lemma.services import crypto
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._project_with_revocation(tmp_path)
+
+        # Export the CRL on the operator side.
+        out = tmp_path / "crl.json"
+        export_result = runner.invoke(
+            app,
+            ["evidence", "export-crl", "--producer", "Lemma", "--output", str(out)],
+        )
+        assert export_result.exit_code == 0, export_result.stdout
+
+        # Now: simulate a fresh install. Capture the producer's CURRENT
+        # ACTIVE public PEM (which signed the CRL), drop everything else.
+        key_dir = tmp_path / ".lemma" / "keys"
+        active = crypto.public_key_id(producer="Lemma", key_dir=key_dir)
+        active_pem = (key_dir / "Lemma" / f"{active}.public.pem").read_bytes()
+
+        # Verify the CRL signature with only that public key bytes —
+        # mirrors what an external verifier with just the PEM would do.
+        from lemma.models.signed_evidence import RevocationList
+        from lemma.services.crypto import verify_crl
+
+        crl = RevocationList.model_validate_json(out.read_text())
+        assert verify_crl(crl, active_pem) is True
+
+
 def _compliance_payload_with_refs(uid: str, control_refs: list[str]) -> dict:
     p = _compliance_payload(uid)
     p["metadata"]["control_refs"] = control_refs

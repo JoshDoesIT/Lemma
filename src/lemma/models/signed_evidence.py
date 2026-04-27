@@ -101,3 +101,51 @@ class SignedEvidence(BaseModel):
     signer_key_id: str
     signed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     provenance: list[ProvenanceRecord] = Field(default_factory=list)
+
+
+class RevocationEntry(BaseModel):
+    """One revoked key in a producer's CRL.
+
+    Mirrors the lifecycle triple stored on ``KeyRecord`` so a CRL can
+    be rebuilt from local lifecycle state without translation.
+
+    Attributes:
+        key_id: The revoked key's stable identifier.
+        revoked_at: When the revocation took effect. Signatures made at
+            or after this timestamp are VIOLATED on verify.
+        reason: Operator-supplied rationale; non-empty by construction
+            (``revoke_key`` enforces this upstream).
+    """
+
+    key_id: str
+    revoked_at: datetime
+    reason: str
+
+
+class RevocationList(BaseModel):
+    """Signed list of revoked keys for one producer.
+
+    Carries enough information for an independent verifier on a fresh
+    machine to merge the revocations into its own lifecycle check —
+    given only the producer's currently-active public key.
+
+    Attributes:
+        producer: Producer identifier this CRL covers. One CRL per
+            producer; multi-producer audit packages ship a directory
+            of ``crl-<producer>.json`` files.
+        issued_at: When the CRL was generated.
+        revocations: Every revoked key the issuing producer knows
+            about at issuance time.
+        issuer_key_id: The currently-ACTIVE producer key that signed
+            this CRL. A verifier loads the matching public PEM to
+            check ``signature``.
+        signature: Hex-encoded Ed25519 signature over the canonical
+            JSON of every other field. Matches the signature encoding
+            used by ``SignedEvidence``.
+    """
+
+    producer: str
+    issued_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    revocations: list[RevocationEntry] = Field(default_factory=list)
+    issuer_key_id: str
+    signature: str

@@ -35,6 +35,7 @@ from lemma.models.ocsf import OcsfBaseEvent
 from lemma.models.signed_evidence import (
     EvidenceIntegrityState,
     ProvenanceRecord,
+    RevocationList,
     SignedEvidence,
 )
 from lemma.services import crypto
@@ -218,7 +219,12 @@ class EvidenceLog:
     def filter_by_time_range(self, start: datetime, end: datetime) -> list[OcsfBaseEvent]:
         return [e for e in self.read_all() if start <= e.time < end]
 
-    def verify_entry(self, entry_hash: str) -> VerificationResult:
+    def verify_entry(
+        self,
+        entry_hash: str,
+        *,
+        crl: RevocationList | None = None,
+    ) -> VerificationResult:
         """Check that a single entry is hash-consistent, chain-linked, and signed.
 
         Walks the full log in order until it reaches the target entry,
@@ -230,6 +236,16 @@ class EvidenceLog:
           verified (most commonly because the signer's public key is no
           longer on file).
         - PROVEN otherwise.
+
+        Args:
+            entry_hash: The entry to verify.
+            crl: Optional offline ``RevocationList`` to merge into the
+                lifecycle check. Adds revocations the local store
+                doesn't have; cannot remove ones it does. When local
+                and CRL both flag a key, the **earlier** revocation
+                timestamp wins (defense in depth — stricter beats
+                permissive). A CRL whose ``producer`` doesn't match
+                the entry's producer is ignored.
         """
         expected_prev = _GENESIS_HASH
         for envelope in self.read_envelopes():
@@ -289,20 +305,62 @@ class EvidenceLog:
                 # Signature verifies. Now check the key's lifecycle for
                 # revocation — a signature made before the key was
                 # revoked is still PROVEN; one made at or after the
-                # revocation timestamp is VIOLATED.
+                # revocation timestamp is VIOLATED. Local lifecycle and
+                # the optional CRL both contribute revocation evidence;
+                # when both fire, the earlier timestamp wins.
                 lifecycle = crypto.read_lifecycle(producer, key_dir=self._key_dir)
                 record = lifecycle.find(envelope.signer_key_id)
-                if (
-                    record is not None
+                local_revoked_at = (
+                    record.revoked_at
+                    if record is not None
                     and record.status == KeyStatus.REVOKED
                     and record.revoked_at is not None
-                    and envelope.signed_at >= record.revoked_at
-                ):
+                    else None
+                )
+                local_reason = (
+                    record.revoked_reason if record is not None else ""
+                ) or "no reason given"
+
+                # CRL contribution — only consider entries from a CRL
+                # whose producer matches the envelope's producer, so a
+                # CRL for "Okta" can't flip a "Lemma"-signed entry.
+                crl_revoked_at = None
+                crl_reason = ""
+                if crl is not None and crl.producer == producer:
+                    for entry in crl.revocations:
+                        if entry.key_id == envelope.signer_key_id:
+                            crl_revoked_at = entry.revoked_at
+                            crl_reason = entry.reason or "no reason given"
+                            break
+
+                # Choose the earlier revocation timestamp; track its source.
+                effective_revoked_at = None
+                effective_reason = ""
+                effective_source = ""
+                if local_revoked_at is not None and crl_revoked_at is not None:
+                    if local_revoked_at <= crl_revoked_at:
+                        effective_revoked_at = local_revoked_at
+                        effective_reason = local_reason
+                        effective_source = "local lifecycle"
+                    else:
+                        effective_revoked_at = crl_revoked_at
+                        effective_reason = crl_reason
+                        effective_source = "CRL"
+                elif local_revoked_at is not None:
+                    effective_revoked_at = local_revoked_at
+                    effective_reason = local_reason
+                    effective_source = "local lifecycle"
+                elif crl_revoked_at is not None:
+                    effective_revoked_at = crl_revoked_at
+                    effective_reason = crl_reason
+                    effective_source = "CRL"
+
+                if effective_revoked_at is not None and envelope.signed_at >= effective_revoked_at:
                     return VerificationResult(
                         EvidenceIntegrityState.VIOLATED,
                         f"Signer key {envelope.signer_key_id} was revoked at "
-                        f"{record.revoked_at.isoformat()} "
-                        f"({record.revoked_reason or 'no reason given'}); "
+                        f"{effective_revoked_at.isoformat()} "
+                        f"({effective_reason}, source: {effective_source}); "
                         f"this entry was signed at or after revocation.",
                     )
                 return VerificationResult(
