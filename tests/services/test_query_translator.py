@@ -290,6 +290,64 @@ def test_translator_accepts_plan_with_evidence_attribute_filters():
     assert plan.class_uid == [3002]
 
 
+class TestMultiHopPrompt:
+    """Translator surface for multi-hop traversals (Refs #105)."""
+
+    def test_prompt_advertises_follow_schema_and_three_hop_limit(self):
+        from lemma.services.query_translator import _build_prompt
+
+        graph = _build_full_edge_graph()
+        prompt = _build_prompt("anything", graph)
+
+        assert "follow" in prompt
+        # The 3-hop limit is operator-facing — has to appear in the prompt
+        # so the LLM doesn't blindly emit four-hop plans we have to reject.
+        assert "3 hop" in prompt or "3 hops" in prompt or "max 3" in prompt.lower()
+
+    def test_prompt_contains_multi_hop_examples(self):
+        from lemma.services.query_translator import _build_prompt
+
+        graph = _build_full_edge_graph()
+        prompt = _build_prompt("anything", graph)
+
+        # Two AC-driven examples: harmonized-controls fan-out and
+        # family-filtered policy lookup.
+        assert "HARMONIZED_WITH" in prompt
+        assert "family" in prompt.lower()
+
+    def test_translator_round_trips_multihop_plan_from_mocked_llm(self):
+        from lemma.models.query_plan import QueryPlan
+        from lemma.services.query_translator import translate
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "entry_node": "framework:nist-800-53",
+                "traversal": "NEIGHBORS",
+                "edge_filter": ["CONTAINS"],
+                "direction": "out",
+                "follow": [
+                    {
+                        "edge_filter": ["SATISFIES"],
+                        "direction": "in",
+                        "node_filter": {"family": "IA"},
+                    },
+                ],
+            }
+        )
+
+        plan = translate(
+            question="Which policies satisfy controls in the IA family?",
+            graph=_build_graph(),
+            llm_client=mock_llm,
+        )
+
+        assert isinstance(plan, QueryPlan)
+        assert plan.follow is not None
+        assert len(plan.follow) == 1
+        assert plan.follow[0].node_filter == {"family": "IA"}
+
+
 def test_prompt_includes_direction_hint_for_owns():
     """The cheatsheet must explain that OWNS queries from a Control use direction=in.
 

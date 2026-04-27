@@ -126,6 +126,10 @@ When a mapping is emitted at or above the threshold, a second trace entry with `
 
 Threshold changes are themselves auditable: each `lemma map` run diffs the current config against the last recorded policy state and writes `threshold_set` / `threshold_changed` / `threshold_removed` events to `.lemma/policy-events/YYYY-MM-DD.jsonl`. Governance changes leave the same kind of append-only trail as the AI decisions they gate.
 
+### Operations that accept thresholds
+
+Only operations that produce a determination — and therefore have something to auto-accept — are gate-able. The current set is `map`, `harmonize`, `evidence-mapping`, and `evidence-reuse`. Read-only operations (`query`, `evidence_query`) and unknown operation names are rejected at config-load time so `thresholds.query: 0.9` fails loudly instead of silently no-op'ing. The error names every offending key in one pass, listing the gate-able set so the operator can fix every typo without iterating Pydantic raises.
+
 ## The AI System Card
 
 `lemma ai system-card` prints a versioned transparency document describing every model Lemma uses — its purpose, declared capabilities, known limitations, and training-data provenance. The current card is embedded in the static docs at [AI System Card](../reference/ai-system-card.md).

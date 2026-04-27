@@ -245,9 +245,23 @@ When a question narrows Evidence by attribute, the translator emits a plan with 
 
 When any of these fields is set, the trace's `operation` is `"evidence_query"` instead of `"query"`, so auditors can distinguish attribute-filtered evidence questions via `lemma ai audit --operation evidence_query`.
 
+**Multi-hop chains:**
+
+Some compliance questions naturally span more than one edge. The plan can carry an optional `follow` chain — each entry adds one more hop from the prior hop's results, capped at 3 hops total (entry + up to 2 follow hops). Per-hop `node_filter` narrows the prior hop's results before walking the current edge ("from prior-hop nodes matching X, walk edge Y").
+
+```bash
+# Framework → Controls → harmonized peers (2 hops)
+lemma query "What harmonized controls cover framework nist-csf-2.0?"
+
+# Framework → IA-family controls → policies (2 hops with node_filter)
+lemma query "Which policies satisfy controls in the IA family?"
+```
+
+Translator output for the second example resolves to `entry_node="framework:nist-800-53"`, `edge_filter=["CONTAINS"]`, `direction="out"`, with `follow=[{node_filter: {family: "IA"}, edge_filter: ["SATISFIES"], direction: "in"}]`. Plans exceeding the 3-hop cap fail with a clear error before any walk runs; v1 single-hop plans (no `follow` field) keep their existing semantics byte-identical.
+
 **What it can and can't do:**
 
-- Supports single-hop traversals (NEIGHBORS / IMPACT / framework control counts) with edge-type and direction filters. Multi-hop questions ("framework → its controls → harmonized controls") land in a future release — see [#105](https://github.com/JoshDoesIT/Lemma/issues/105).
+- Supports single-hop and chained multi-hop traversals (NEIGHBORS / IMPACT / framework control counts) with edge-type, direction, per-hop attribute, and Evidence-attribute filters. Total traversal depth capped at 3 hops.
 - Results render a per-row **Attributes** column: Evidence shows `producer · time_iso`, Risk shows `title [SEVERITY]`, Person shows email, Resource shows its type.
 - Short entry-node names (`"ac-2"`) are resolved against the real graph. Ambiguous short names (same control ID in multiple frameworks) fail with a message listing all candidates so you can rephrase with a framework qualifier.
 

@@ -14,6 +14,16 @@ from pydantic import BaseModel, Field, field_validator
 from lemma.models.policy import PolicyEvent, PolicyEventType
 from lemma.services.policy_log import PolicyEventLog
 
+# Single source of truth for which operations participate in confidence-gated
+# automation. Derived from the actual ``threshold_for("…")`` call sites in
+# ``mapper.py``, ``harmonizer.py``, ``evidence_infer.py``, and the
+# evidence-reuse path in ``harmonize.py`` / ``evidence.py``. Read-only
+# operations (``query``, ``evidence_query``) are deliberately excluded —
+# there is no determination to auto-accept on a read.
+_GATE_ABLE_OPERATIONS: frozenset[str] = frozenset(
+    {"map", "harmonize", "evidence-mapping", "evidence-reuse"}
+)
+
 
 class AutomationConfig(BaseModel):
     """Confidence-gated automation configuration.
@@ -26,10 +36,30 @@ class AutomationConfig(BaseModel):
 
     Attributes:
         thresholds: Mapping of operation name (e.g., ``"map"``) to the
-            confidence threshold in the range 0.0-1.0.
+            confidence threshold in the range 0.0-1.0. Only operations
+            in ``_GATE_ABLE_OPERATIONS`` are accepted; read-only ops
+            (``query`` / ``evidence_query``) and unknown names fail
+            validation with every offending key named in one pass.
     """
 
     thresholds: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("thresholds")
+    @classmethod
+    def _validate_thresholds_gate_able(cls, value: dict[str, float]) -> dict[str, float]:
+        # Run before the range validator so a config with a typo'd
+        # operation name surfaces the typo first, not a coincidental
+        # range error against the wrong slot.
+        invalid = sorted(k for k in value if k not in _GATE_ABLE_OPERATIONS)
+        if invalid:
+            valid = ", ".join(sorted(_GATE_ABLE_OPERATIONS))
+            offending = ", ".join(repr(k) for k in invalid)
+            msg = (
+                f"Automation threshold operation(s) not gate-able: {offending}. "
+                f"Valid operations: {valid}."
+            )
+            raise ValueError(msg)
+        return value
 
     @field_validator("thresholds")
     @classmethod

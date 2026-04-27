@@ -104,6 +104,74 @@ def test_query_plan_evidence_attribute_filters_round_trip():
     assert revived.class_uid == [3002]
 
 
+class TestHopAndFollow:
+    """Multi-hop traversal: Hop model + QueryPlan.follow chain (Refs #105)."""
+
+    def test_hop_defaults_round_trip(self):
+        from lemma.models.query_plan import Hop
+
+        hop = Hop()
+        assert hop.edge_filter == []
+        assert hop.direction == "both"
+        assert hop.node_filter is None
+
+        revived = Hop.model_validate_json(hop.model_dump_json())
+        assert revived == hop
+
+    def test_query_plan_with_follow_none_matches_v1(self):
+        from lemma.models.query_plan import QueryPlan, QueryTraversal
+
+        plan = QueryPlan(
+            entry_node="control:nist-800-53:ac-2",
+            traversal=QueryTraversal.NEIGHBORS,
+        )
+        assert plan.follow is None
+        # `follow` should be omitted from a serialized plan when None — keeps
+        # the v1 shape byte-identical for any downstream consumer.
+        dumped = plan.model_dump(exclude_none=True)
+        assert "follow" not in dumped
+
+    def test_query_plan_with_two_follow_hops_accepts(self):
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+
+        plan = QueryPlan(
+            entry_node="framework:nist-csf-2.0",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=["CONTAINS"],
+            direction="out",
+            follow=[
+                Hop(edge_filter=["HARMONIZED_WITH"]),
+                Hop(edge_filter=["SATISFIES"], direction="in"),
+            ],
+        )
+        assert plan.follow is not None
+        assert len(plan.follow) == 2
+
+    def test_query_plan_with_three_follow_hops_rejected_at_limit(self):
+        import pytest
+        from pydantic import ValidationError
+
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+
+        with pytest.raises(ValidationError, match=r"(?i)max 3 hops|depth"):
+            QueryPlan(
+                entry_node="framework:nist-csf-2.0",
+                traversal=QueryTraversal.NEIGHBORS,
+                follow=[Hop(), Hop(), Hop()],
+            )
+
+    def test_hop_node_filter_round_trips(self):
+        from lemma.models.query_plan import Hop
+
+        hop = Hop(
+            edge_filter=["CONTAINS"],
+            direction="out",
+            node_filter={"family": "IA"},
+        )
+        revived = Hop.model_validate_json(hop.model_dump_json())
+        assert revived.node_filter == {"family": "IA"}
+
+
 def test_query_plan_json_round_trip():
     import json
 
