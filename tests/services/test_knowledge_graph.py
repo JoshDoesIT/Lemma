@@ -991,3 +991,82 @@ class TestRebuildImplicitEvidences:
 
         count = g.rebuild_implicit_evidences(min_similarity=0.7)
         assert count == 0
+
+
+class TestIterResourcesAndRemoveResource:
+    """Continuous Scope Validation primitives: enumerate Resource nodes
+    (with reconstructed scopes from edges) and prune them on demand.
+    """
+
+    def _seeded_graph(self) -> ComplianceGraph:
+        g = ComplianceGraph()
+        g.add_framework("nist-csf-2.0")
+        g.add_scope(name="prod", frameworks=["nist-csf-2.0"], justification="", rule_count=0)
+        g.add_scope(name="dev", frameworks=["nist-csf-2.0"], justification="", rule_count=0)
+        g.add_resource(
+            resource_id="payments-db",
+            type_="aws.rds.instance",
+            scopes=["prod", "dev"],
+            attributes={"engine": "postgres"},
+        )
+        g.add_resource(
+            resource_id="dev-bucket",
+            type_="aws.s3.bucket",
+            scopes=["dev"],
+            attributes={"region": "us-east-1"},
+        )
+        return g
+
+    def test_iter_resources_returns_every_node_with_reconstructed_scopes(self):
+        g = self._seeded_graph()
+
+        records = g.iter_resources()
+        records.sort(key=lambda r: r["resource_id"])
+
+        assert [r["resource_id"] for r in records] == ["dev-bucket", "payments-db"]
+        bucket = records[0]
+        db = records[1]
+
+        assert bucket["resource_type"] == "aws.s3.bucket"
+        assert bucket["attributes"] == {"region": "us-east-1"}
+        assert sorted(bucket["scopes"]) == ["dev"]
+
+        assert db["resource_type"] == "aws.rds.instance"
+        assert db["attributes"] == {"engine": "postgres"}
+        assert sorted(db["scopes"]) == ["dev", "prod"]
+
+    def test_remove_resource_drops_node_and_edges_returns_true(self):
+        g = self._seeded_graph()
+
+        removed = g.remove_resource("payments-db")
+        assert removed is True
+        assert g.get_node("resource:payments-db") is None
+        assert g.get_edges("resource:payments-db", "scope:prod") == []
+        assert g.get_edges("resource:payments-db", "scope:dev") == []
+
+    def test_remove_resource_nonexistent_returns_false(self):
+        g = self._seeded_graph()
+        assert g.remove_resource("does-not-exist") is False
+
+    def test_iter_resources_excludes_removed_resource(self):
+        g = self._seeded_graph()
+        g.remove_resource("payments-db")
+
+        ids = {r["resource_id"] for r in g.iter_resources()}
+        assert ids == {"dev-bucket"}
+
+    def test_iter_resources_includes_impacts_targets(self):
+        """Impacts must round-trip so watch's re-evaluation doesn't drop them."""
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53")
+        g.add_control(framework="nist-800-53", control_id="au-2", title="AU-2", family="AU")
+        g.add_scope(name="prod", frameworks=["nist-800-53"], justification="", rule_count=0)
+        g.add_resource(
+            resource_id="audit-bucket",
+            type_="aws.s3.bucket",
+            scopes=["prod"],
+            impacts=["control:nist-800-53:au-2"],
+        )
+
+        record = next(r for r in g.iter_resources() if r["resource_id"] == "audit-bucket")
+        assert record["impacts"] == ["control:nist-800-53:au-2"]

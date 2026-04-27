@@ -647,6 +647,52 @@ class ComplianceGraph:
                     edges.append(dict(attrs))
         return edges
 
+    def iter_resources(self) -> list[dict[str, Any]]:
+        """Return every Resource node as a dict with id, type, attrs, scopes, impacts.
+
+        ``scopes`` is reconstructed by walking outgoing ``SCOPED_TO`` edges
+        (post-Ring-Model semantics — edges are the source of truth, not a
+        node attribute). Used by ``lemma scope drift`` and ``lemma scope
+        watch`` to compute deltas against the current graph.
+        """
+        out: list[dict[str, Any]] = []
+        for node_id, attrs in self._graph.nodes(data=True):
+            if attrs.get("type") != "Resource":
+                continue
+            scopes: list[str] = []
+            impacts: list[str] = []
+            for _src, target, edge_attrs in self._graph.out_edges(node_id, data=True):
+                rel = edge_attrs.get("relationship")
+                if rel == "SCOPED_TO":
+                    scopes.append(target.removeprefix("scope:"))
+                elif rel == "IMPACTS":
+                    impacts.append(target)
+            out.append(
+                {
+                    "node_id": node_id,
+                    "resource_id": attrs.get("resource_id"),
+                    "resource_type": attrs.get("resource_type"),
+                    "attributes": dict(attrs.get("attributes") or {}),
+                    "scopes": scopes,
+                    "impacts": impacts,
+                }
+            )
+        return out
+
+    def remove_resource(self, resource_id: str) -> bool:
+        """Remove a Resource node and all its outgoing edges.
+
+        Returns ``True`` if the node existed and was removed; ``False``
+        if it wasn't in the graph (no-op). Used by ``lemma scope drift
+        --apply`` to prune Resources whose underlying infrastructure no
+        longer exists (closes #144).
+        """
+        node_id = f"resource:{resource_id}"
+        if node_id not in self._graph:
+            return False
+        self._graph.remove_node(node_id)
+        return True
+
     def outgoing_edges(self, node_id: str) -> list[dict[str, Any]]:
         """Return every outgoing edge from ``node_id`` as ``{target, **attrs}`` dicts.
 
