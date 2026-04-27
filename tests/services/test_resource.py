@@ -122,3 +122,52 @@ class TestLoadAllResources:
         message = str(excinfo.value)
         assert "bad1.yaml" in message
         assert "bad2.yaml" in message
+
+
+_VALID_HCL_RESOURCE = """\
+id     = "prod-rds"
+type   = "aws.rds.instance"
+scopes = ["default"]
+
+attributes = {
+  region = "us-east-1"
+  engine = "postgres"
+}
+"""
+
+
+class TestLoadResourceHcl:
+    def test_loads_valid_hcl_file(self, tmp_path: Path):
+        from lemma.services.resource import load_resource
+
+        path = tmp_path / "rds.hcl"
+        path.write_text(_VALID_HCL_RESOURCE)
+
+        resource = load_resource(path)
+
+        assert resource.id == "prod-rds"
+        assert resource.type == "aws.rds.instance"
+        assert resource.scopes == ["default"]
+        assert resource.attributes["engine"] == "postgres"
+
+    def test_hcl_with_typo_field_rejected_via_extra_forbid(self, tmp_path: Path):
+        from lemma.services.resource import load_resource
+
+        path = tmp_path / "typo.hcl"
+        path.write_text('id = "r1"\nresource_type = "foo"\nscopes = ["default"]\n')
+
+        with pytest.raises(ValueError) as excinfo:
+            load_resource(path)
+
+        msg = str(excinfo.value)
+        assert "typo.hcl" in msg
+        assert "resource_type" in msg
+
+    def test_load_all_resources_picks_up_hcl_alongside_yaml_sorted(self, tmp_path: Path):
+        from lemma.services.resource import load_all_resources
+
+        (tmp_path / "alpha.yaml").write_text(_valid_yaml("alpha-asset"))
+        (tmp_path / "zulu.hcl").write_text(_VALID_HCL_RESOURCE.replace("prod-rds", "zulu-asset"))
+
+        resources = load_all_resources(tmp_path)
+        assert [r.id for r in resources] == ["alpha-asset", "zulu-asset"]

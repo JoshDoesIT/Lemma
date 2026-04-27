@@ -75,8 +75,8 @@ _STARTER_TEMPLATE = """\
 # compliance frameworks that apply to a slice of your infrastructure,
 # plus the rules that decide which resources fall inside the slice.
 #
-# `lemma scope status` parses every *.yaml in this directory and
-# validates the schema; errors point to the offending file and line.
+# `lemma scope status` parses every *.yaml/*.yml/*.hcl in this directory
+# and validates the schema; errors point to the offending file and line.
 
 name: default
 frameworks:
@@ -90,6 +90,29 @@ match_rules:
     value: prod
 """
 
+_STARTER_TEMPLATE_HCL = """\
+# Scope-as-code definition (HCL/Terraform syntax). Edit the fields
+# below to declare the compliance frameworks that apply to a slice of
+# your infrastructure, plus the rules that decide which resources fall
+# inside the slice.
+#
+# `lemma scope status` parses every *.yaml/*.yml/*.hcl in this directory
+# and validates the schema.
+
+name = "default"
+frameworks = ["nist-csf-2.0"]
+justification = <<-EOT
+  Replace this with a short statement of why these frameworks apply
+  to the resources that match the rules below. Auditors read this.
+EOT
+
+match_rule {
+  source   = "aws.tags.Environment"
+  operator = "equals"
+  value    = "prod"
+}
+"""
+
 
 def _require_lemma_project() -> Path:
     cwd = Path.cwd()
@@ -100,19 +123,30 @@ def _require_lemma_project() -> Path:
     return cwd
 
 
-@scope_app.command(name="init", help="Scaffold a starter scope-as-code YAML file.")
+@scope_app.command(name="init", help="Scaffold a starter scope-as-code file (YAML or HCL).")
 def init_command(
     name: str = typer.Option(
         "default",
         "--name",
-        help="Scope file name (writes scopes/<name>.yaml).",
+        help="Scope file name (writes scopes/<name>.<ext>; ext follows --format).",
+    ),
+    format_: str = typer.Option(
+        "yaml",
+        "--format",
+        help="Output format: yaml (default) or hcl. HCL uses Terraform-style block syntax.",
     ),
 ) -> None:
     project_dir = _require_lemma_project()
     scopes_dir = project_dir / "scopes"
     scopes_dir.mkdir(exist_ok=True)
 
-    target = scopes_dir / f"{name}.yaml"
+    if format_ not in ("yaml", "hcl"):
+        console.print(f"[red]Error:[/red] Unknown --format '{format_}'. Choose 'yaml' or 'hcl'.")
+        raise typer.Exit(code=1)
+
+    extension = format_
+    template = _STARTER_TEMPLATE_HCL if format_ == "hcl" else _STARTER_TEMPLATE
+    target = scopes_dir / f"{name}.{extension}"
     if target.exists():
         console.print(
             f"[red]Error:[/red] {target.relative_to(project_dir)} already exists; "
@@ -120,7 +154,7 @@ def init_command(
         )
         raise typer.Exit(code=1)
 
-    target.write_text(_STARTER_TEMPLATE)
+    target.write_text(template)
     console.print(f"[green]Created[/green] {target.relative_to(project_dir)}.")
     console.print("Edit it to match your environment, then run [bold]lemma scope status[/bold].")
 

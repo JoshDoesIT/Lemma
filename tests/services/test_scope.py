@@ -113,3 +113,57 @@ class TestLoadAllScopes:
         message = str(excinfo.value)
         assert "bad1.yaml" in message
         assert "bad2.yaml" in message
+
+
+_VALID_HCL = """\
+name = "prod-us-east"
+frameworks = ["nist-800-53"]
+justification = "Prod."
+
+match_rule {
+  source   = "aws.tags.Environment"
+  operator = "equals"
+  value    = "prod"
+}
+"""
+
+
+class TestLoadScopeHcl:
+    def test_loads_valid_hcl_file(self, tmp_path: Path):
+        from lemma.services.scope import load_scope
+
+        path = tmp_path / "prod.hcl"
+        path.write_text(_VALID_HCL)
+
+        scope = load_scope(path)
+
+        assert scope.name == "prod-us-east"
+        assert scope.frameworks == ["nist-800-53"]
+        assert scope.match_rules[0].source == "aws.tags.Environment"
+        assert scope.match_rules[0].value == "prod"
+
+    def test_hcl_with_typo_field_rejected_via_extra_forbid(self, tmp_path: Path):
+        """Same Pydantic strictness as YAML — `match_rul` fails loud."""
+        from lemma.services.scope import load_scope
+
+        path = tmp_path / "typo.hcl"
+        path.write_text(
+            'name = "x"\nframeworks = ["nist-800-53"]\n\n'
+            'match_rul {\n  source = "x"\n  operator = "equals"\n  value = "y"\n}\n'
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            load_scope(path)
+
+        msg = str(excinfo.value)
+        assert "typo.hcl" in msg
+        assert "match_rul" in msg
+
+    def test_load_all_scopes_picks_up_hcl_alongside_yaml_sorted(self, tmp_path: Path):
+        from lemma.services.scope import load_all_scopes
+
+        (tmp_path / "alpha.yaml").write_text(_valid_yaml().replace("prod-us-east", "alpha"))
+        (tmp_path / "zulu.hcl").write_text(_VALID_HCL.replace("prod-us-east", "zulu"))
+
+        scopes = load_all_scopes(tmp_path)
+        assert [s.name for s in scopes] == ["alpha", "zulu"]

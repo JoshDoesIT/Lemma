@@ -683,19 +683,20 @@ This is the v0 slice of the [Living Scope Engine](https://github.com/JoshDoesIT/
 
 ### `lemma scope init`
 
-Scaffold a starter scope-as-code YAML file at `scopes/<name>.yaml`. Refuses to overwrite an existing file — operators delete it manually if they want to regenerate.
+Scaffold a starter scope-as-code file at `scopes/<name>.<ext>`. Refuses to overwrite an existing file — operators delete it manually if they want to regenerate.
 
 ```bash
-lemma scope init [--name <NAME>]
+lemma scope init [--name <NAME>] [--format yaml|hcl]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--name` | `default` | Writes `scopes/<NAME>.yaml` |
+| `--name` | `default` | Writes `scopes/<NAME>.<ext>`. |
+| `--format` | `yaml` | Output format. `yaml` writes `scopes/<NAME>.yaml`; `hcl` writes `scopes/<NAME>.hcl` using Terraform-style block syntax (`match_rule { ... }` blocks, attribute = value pairs). Both formats are interchangeable in `scopes/`. |
 
 ### `lemma scope status`
 
-Parse every `scopes/*.yaml` and `scopes/*.yml` file, validate it against the schema, and render a table of declared scopes. Exit code is `0` on success or empty state; `1` if any file has a parse or schema error.
+Parse every `scopes/*.yaml`, `scopes/*.yml`, and `scopes/*.hcl` file, validate it against the schema, and render a table of declared scopes. Exit code is `0` on success or empty state; `1` if any file has a parse or schema error.
 
 ```bash
 lemma scope status
@@ -1423,6 +1424,10 @@ Hosts with port 3389 open land in the scope; everything else is skipped. With `-
 
 ### Scope-as-code schema
 
+Both YAML and HCL are accepted side-by-side in `scopes/`. The Pydantic model is format-agnostic; pick whichever syntax fits your team's existing toolchain.
+
+**YAML form:**
+
 ```yaml
 name: prod-us-east                      # required; unique scope identifier
 frameworks:                             # required; non-empty list of framework IDs
@@ -1442,7 +1447,30 @@ match_rules:                            # optional; rules selecting in-scope res
       - us-east-2
 ```
 
-Unknown top-level fields are rejected — a typo such as `match_rule` (singular) fails with a line-numbered error rather than being silently dropped.
+**HCL form** (Terraform-style block syntax):
+
+```hcl
+name          = "prod-us-east"
+frameworks    = ["nist-800-53", "nist-csf-2.0"]
+justification = <<-EOT
+  Customer-facing production environment subject to contractual
+  obligations with our enterprise customers.
+EOT
+
+match_rule {
+  source   = "aws.tags.Environment"
+  operator = "equals"
+  value    = "prod"
+}
+
+match_rule {
+  source   = "aws.region"
+  operator = "in"
+  value    = ["us-east-1", "us-east-2"]
+}
+```
+
+The one structural difference: HCL uses repeated `match_rule { ... }` blocks where YAML uses a `match_rules:` list. The HCL parser collects every `match_rule` block into the same `match_rules` field internally; both forms produce identical `ScopeDefinition` objects. Unknown top-level fields are rejected in both formats — a typo such as `match_rul` fails with a line-numbered error rather than being silently dropped.
 
 ---
 
@@ -1454,7 +1482,7 @@ The Scope Ring Model (shipped alongside `lemma scope explain`) lets one Resource
 
 ### `lemma resource load`
 
-Parse every `resources/*.yaml` and `resources/*.yml` file, validate each against the schema, and upsert a `Resource` node into the compliance graph with one `SCOPED_TO` edge per declared scope.
+Parse every `resources/*.yaml`, `resources/*.yml`, and `resources/*.hcl` file, validate each against the schema, and upsert a `Resource` node into the compliance graph with one `SCOPED_TO` edge per declared scope.
 
 ```bash
 lemma resource load
@@ -1474,6 +1502,10 @@ lemma resource list
 
 ### Resource-as-code schema
 
+Both YAML and HCL are accepted side-by-side in `resources/`. Resource HCL has no block-style fields (everything is `attribute = value`), so the two formats map almost 1:1.
+
+**YAML form:**
+
 ```yaml
 id: payments-db                # required; unique within the project
 type: aws.rds.instance         # required; free-form string naming the resource kind
@@ -1487,6 +1519,25 @@ attributes:                    # optional; arbitrary key/value pairs copied to t
 impacts:                       # optional; control refs the resource directly contributes to
   - control:nist-800-53:au-2
   - control:nist-csf-2.0:de.cm-01
+```
+
+**HCL form:**
+
+```hcl
+id     = "payments-db"
+type   = "aws.rds.instance"
+scopes = ["prod-us-east", "pci-dss"]
+
+attributes = {
+  region   = "us-east-1"
+  engine   = "postgres"
+  multi_az = true
+}
+
+impacts = [
+  "control:nist-800-53:au-2",
+  "control:nist-csf-2.0:de.cm-01",
+]
 ```
 
 **Field rules.**

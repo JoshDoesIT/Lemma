@@ -78,6 +78,67 @@ class TestScopeInit:
         result = runner.invoke(app, ["scope", "init"])
         assert result.exit_code == 1
 
+    def test_format_hcl_writes_hcl_file_that_round_trips(self, tmp_path: Path, monkeypatch):
+        """`--format hcl` writes scopes/<name>.hcl and the file parses cleanly."""
+        from lemma.cli import app
+        from lemma.services.scope import load_scope
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        (tmp_path / "scopes").mkdir()
+
+        result = runner.invoke(app, ["scope", "init", "--format", "hcl"])
+        assert result.exit_code == 0, result.stdout
+
+        target = tmp_path / "scopes" / "default.hcl"
+        assert target.exists()
+        # Round-trips through the loader.
+        scope = load_scope(target)
+        assert scope.name
+        assert scope.frameworks
+
+    def test_format_invalid_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        (tmp_path / "scopes").mkdir()
+
+        result = runner.invoke(app, ["scope", "init", "--format", "toml"])
+        assert result.exit_code == 1
+        assert "format" in result.stdout.lower() or "toml" in result.stdout.lower()
+
+    def test_yaml_and_hcl_scopes_both_appear_in_status(self, tmp_path: Path, monkeypatch):
+        """Cross-format integration: a project with both .yaml and .hcl
+        scopes loads both and `lemma scope status` lists them together.
+        """
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        scopes_dir = tmp_path / "scopes"
+        scopes_dir.mkdir()
+
+        # YAML scope.
+        (scopes_dir / "yaml-scope.yaml").write_text(_valid_yaml("yaml-prod"))
+
+        # HCL scope.
+        (scopes_dir / "hcl-scope.hcl").write_text(
+            'name = "hcl-prod"\n'
+            'frameworks = ["nist-800-53"]\n'
+            'justification = "HCL prod."\n\n'
+            "match_rule {\n"
+            '  source   = "aws.tags.Environment"\n'
+            '  operator = "equals"\n'
+            '  value    = "prod"\n'
+            "}\n"
+        )
+
+        result = runner.invoke(app, ["scope", "status"])
+        assert result.exit_code == 0, result.stdout
+        assert "yaml-prod" in result.stdout
+        assert "hcl-prod" in result.stdout
+
 
 class TestScopeStatus:
     def test_empty_state_exits_zero_with_hint(self, tmp_path: Path, monkeypatch):
