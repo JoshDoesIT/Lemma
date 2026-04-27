@@ -48,9 +48,12 @@ def system_card_command(
         help="Output format: markdown or json",
     ),
 ) -> None:
-    """Display the AI transparency card documenting all models used."""
-    _require_lemma_project()
+    """Display the AI transparency card documenting all models used.
 
+    Renders hardcoded source data — does not read project state — so it
+    runs from any directory. Release CI stamps the card into every
+    GitHub Release artifact set without a `lemma init` dance.
+    """
     card = get_default_system_card()
 
     if output_format == "json":
@@ -64,8 +67,11 @@ def system_card_command(
     help="Export the AI Bill of Materials as CycloneDX 1.6 JSON.",
 )
 def bom_command() -> None:
-    """Emit a CycloneDX 1.6 AI BOM for the current system card to stdout."""
-    _require_lemma_project()
+    """Emit a CycloneDX 1.6 AI BOM for the current system card to stdout.
+
+    Reads no project state — runs from any directory, including the
+    release workflow's `actions/checkout`-only context.
+    """
     bom = build_aibom(get_default_system_card())
     validate_aibom(bom)
     print(json.dumps(bom, indent=2))

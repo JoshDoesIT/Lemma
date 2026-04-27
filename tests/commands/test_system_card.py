@@ -161,3 +161,25 @@ class TestSystemCardCLI:
         data = json.loads(result.stdout)
         assert "name" in data
         assert "models" in data
+
+    def test_system_card_runs_outside_a_lemma_project(self, tmp_path: Path, monkeypatch):
+        """The card is hardcoded source data — it should run from any directory.
+
+        The release CI stamps the card without a project checkout in the
+        traditional sense; requiring `.lemma/` would force an awkward
+        `lemma init` dance for an output that doesn't read project state.
+        """
+        from lemma.cli import app
+
+        # No `.lemma/` directory created.
+        monkeypatch.chdir(tmp_path)
+
+        md_result = runner.invoke(app, ["ai", "system-card"])
+        assert md_result.exit_code == 0, md_result.stdout
+        assert "# Lemma AI Transparency Card" in md_result.stdout
+
+        json_result = runner.invoke(app, ["ai", "system-card", "--format", "json"])
+        assert json_result.exit_code == 0, json_result.stdout
+        data = json.loads(json_result.stdout)
+        assert "version" in data
+        assert "models" in data
