@@ -41,6 +41,49 @@ class TestAutomationConfig:
             AutomationConfig(thresholds={"harmonize": 2.0})
 
 
+class TestAutomationConfigGateableValidation:
+    """Reject thresholds for operations that don't have a gate (Refs #106)."""
+
+    def test_all_gate_able_operations_accepted(self):
+        # All four call-site-derived operations must keep working.
+        AutomationConfig(
+            thresholds={
+                "map": 0.85,
+                "harmonize": 0.9,
+                "evidence-mapping": 0.7,
+                "evidence-reuse": 0.7,
+            }
+        )
+
+    def test_unknown_operation_rejected(self):
+        with pytest.raises(ValueError, match=r"not_a_real_op"):
+            AutomationConfig(thresholds={"not_a_real_op": 0.5})
+
+    def test_read_only_operation_query_rejected(self):
+        with pytest.raises(ValueError, match=r"(?i)query.*not gate-able|gate-able.*query"):
+            AutomationConfig(thresholds={"query": 0.9})
+
+    def test_read_only_operation_evidence_query_rejected(self):
+        with pytest.raises(ValueError, match=r"evidence_query"):
+            AutomationConfig(thresholds={"evidence_query": 0.9})
+
+    def test_multiple_invalid_keys_named_in_one_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            AutomationConfig(thresholds={"query": 0.9, "not_a_real_op": 0.5})
+        # Both offending names must appear in the same error message,
+        # so the operator can fix every key in one pass rather than
+        # iterating Pydantic raises.
+        msg = str(exc_info.value)
+        assert "query" in msg
+        assert "not_a_real_op" in msg
+
+    def test_load_automation_config_rejects_read_only_op(self, tmp_path: Path):
+        config_file = tmp_path / "lemma.config.yaml"
+        config_file.write_text(yaml.dump({"ai": {"automation": {"thresholds": {"query": 0.9}}}}))
+        with pytest.raises(ValueError, match=r"query"):
+            load_automation_config(config_file)
+
+
 class TestLoadAutomationConfig:
     """Tests for loading automation config from lemma.config.yaml."""
 

@@ -9,9 +9,9 @@ and the executor (which only does what's in the plan).
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class QueryTraversal(StrEnum):
@@ -28,6 +28,29 @@ class QueryTraversal(StrEnum):
     NEIGHBORS = "NEIGHBORS"
     IMPACT = "IMPACT"
     FRAMEWORK_CONTROL_COUNT = "FRAMEWORK_CONTROL_COUNT"
+
+
+_MAX_FOLLOW_HOPS = 2  # entry hop + 2 follow hops = 3 total hops
+
+
+class Hop(BaseModel):
+    """One additional hop in a multi-hop traversal.
+
+    Attributes:
+        edge_filter: Any-of edge relationship names. Empty list = any edge.
+        direction: Edge direction relative to the prior hop's node.
+        node_filter: Optional shallow attribute match applied to the
+            *prior hop's result set* before walking this hop's edge. Read
+            as "from prior-hop nodes matching X, walk edge Y." Each
+            ``(key, value)`` pair: list values match any-of, scalar
+            values match equality. ``None`` = no per-hop attribute
+            filter. Nested paths and operators are out of scope for v1;
+            chain more hops for finer control.
+    """
+
+    edge_filter: list[str] = Field(default_factory=list)
+    direction: Literal["in", "out", "both"] = "both"
+    node_filter: dict[str, Any] | None = None
 
 
 class QueryPlan(BaseModel):
@@ -66,3 +89,13 @@ class QueryPlan(BaseModel):
     severity: list[str] | None = None
     producer: list[str] | None = None
     class_uid: list[int] | None = None
+    follow: list[Hop] | None = None
+
+    @field_validator("follow")
+    @classmethod
+    def _validate_follow_depth(cls, value: list[Hop] | None) -> list[Hop] | None:
+        if value is not None and len(value) > _MAX_FOLLOW_HOPS:
+            total = len(value) + 1
+            msg = f"multi-hop traversal depth exceeds limit (max 3 hops; got {total} hops total)."
+            raise ValueError(msg)
+        return value

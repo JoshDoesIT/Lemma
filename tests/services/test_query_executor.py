@@ -400,6 +400,158 @@ def test_execute_evidence_filters_skip_non_evidence_nodes():
     assert "Evidence" not in types
 
 
+class TestMultiHopTraversal:
+    """Multi-hop chained traversal via QueryPlan.follow (Refs #105)."""
+
+    def _graph_for_multihop(self):
+        """Framework with mixed-family controls + harmonization + a policy."""
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        graph = ComplianceGraph()
+        graph.add_framework("nist-800-53")
+        graph.add_framework("nist-csf-2.0")
+        # AC family
+        graph.add_control(
+            framework="nist-800-53",
+            control_id="ac-2",
+            title="Account Management",
+            family="AC",
+        )
+        # IA family — two controls so the family filter has something to do.
+        graph.add_control(
+            framework="nist-800-53",
+            control_id="ia-2",
+            title="Identification and Authentication",
+            family="IA",
+        )
+        graph.add_control(
+            framework="nist-800-53",
+            control_id="ia-5",
+            title="Authenticator Management",
+            family="IA",
+        )
+        # CSF peer for harmonization
+        graph.add_control(
+            framework="nist-csf-2.0",
+            control_id="pr.aa-1",
+            title="Identities",
+            family="PR.AA",
+        )
+        graph.add_harmonization(
+            framework_a="nist-800-53",
+            control_a="ac-2",
+            framework_b="nist-csf-2.0",
+            control_b="pr.aa-1",
+            similarity=0.92,
+        )
+        # Policy satisfying ia-2 only — gives the family-filter test something
+        # to discriminate.
+        graph.add_policy("identity-mgmt.md", title="Identity Management Policy")
+        graph.add_mapping(
+            policy="identity-mgmt.md",
+            framework="nist-800-53",
+            control_id="ia-2",
+            confidence=0.9,
+        )
+        return graph
+
+    def test_single_hop_unchanged_when_follow_none(self):
+        """Regression guard: plans without `follow` walk the v1 path byte-identical."""
+        from lemma.models.query_plan import QueryPlan, QueryTraversal
+        from lemma.services.query_executor import execute
+
+        graph = self._graph_for_multihop()
+        plan = QueryPlan(
+            entry_node="control:nist-800-53:ac-2",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=["HARMONIZED_WITH"],
+        )
+        results = execute(plan, graph)
+        ids = {r["id"] for r in results}
+        assert ids == {"control:nist-csf-2.0:pr.aa-1"}
+
+    def test_multihop_framework_to_harmonized_controls(self):
+        """AC #1: framework -> CONTAINS -> controls -> HARMONIZED_WITH -> peers."""
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+        from lemma.services.query_executor import execute
+
+        graph = self._graph_for_multihop()
+        plan = QueryPlan(
+            entry_node="framework:nist-800-53",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=["CONTAINS"],
+            direction="out",
+            follow=[Hop(edge_filter=["HARMONIZED_WITH"])],
+        )
+
+        results = execute(plan, graph)
+        ids = {r["id"] for r in results}
+        # Only ac-2 is harmonized (with pr.aa-1); ia-2/ia-5 have no peers.
+        assert ids == {"control:nist-csf-2.0:pr.aa-1"}
+
+    def test_multihop_with_node_filter_for_ia_family(self):
+        """AC #2: framework -> CONTAINS (filtered to IA family) -> SATISFIES (in)."""
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+        from lemma.services.query_executor import execute
+
+        graph = self._graph_for_multihop()
+        plan = QueryPlan(
+            entry_node="framework:nist-800-53",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=["CONTAINS"],
+            direction="out",
+            follow=[
+                Hop(node_filter={"family": "IA"}, edge_filter=["SATISFIES"], direction="in"),
+            ],
+        )
+
+        results = execute(plan, graph)
+        ids = {r["id"] for r in results}
+        # Only the IA-family path leads to identity-mgmt.md; AC and PR.AA paths drop out.
+        assert ids == {"policy:identity-mgmt.md"}
+
+    def test_multihop_count_output_shape(self):
+        """output_shape='count' returns the size of the final-hop result set."""
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+        from lemma.services.query_executor import execute
+
+        graph = self._graph_for_multihop()
+        plan = QueryPlan(
+            entry_node="framework:nist-800-53",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=["CONTAINS"],
+            direction="out",
+            follow=[Hop(edge_filter=["HARMONIZED_WITH"])],
+            output_shape="count",
+        )
+        result = execute(plan, graph)
+        assert result == 1
+
+    def test_executor_raises_on_four_hop_plan_built_bypassing_pydantic(self):
+        """Defense-in-depth: if a caller assembles a QueryPlan via model_construct,
+        the executor still rejects four-hop walks."""
+        from lemma.models.query_plan import Hop, QueryPlan, QueryTraversal
+        from lemma.services.query_executor import execute
+
+        graph = self._graph_for_multihop()
+        # model_construct skips field_validator; only the executor's own
+        # depth check catches the abuse.
+        plan = QueryPlan.model_construct(
+            entry_node="framework:nist-800-53",
+            traversal=QueryTraversal.NEIGHBORS,
+            edge_filter=[],
+            direction="both",
+            output_shape="list",
+            time_range=None,
+            severity=None,
+            producer=None,
+            class_uid=None,
+            follow=[Hop(), Hop(), Hop()],
+        )
+        with pytest.raises(ValueError, match=r"(?i)max 3 hops|depth"):
+            execute(plan, graph)
+
+
 def test_execute_neighbors_mixed_type_results_are_all_returned():
     """A Control's full neighborhood returns Policy, Evidence, Risk, Person — no crash."""
     from lemma.models.query_plan import QueryPlan, QueryTraversal

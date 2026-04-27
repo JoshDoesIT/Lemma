@@ -41,7 +41,9 @@ Respond ONLY with a JSON object matching this schema:
     "time_range": ["<ISO-8601 start>", "<ISO-8601 end>"] (optional; half-open),
     "severity": ["HIGH", "CRITICAL", ...] (optional; OCSF severity names),
     "producer": ["GitHub", "AWS", ...] (optional; Evidence producer names),
-    "class_uid": [3002, ...] (optional; OCSF class_uid ints)
+    "class_uid": [3002, ...] (optional; OCSF class_uid ints),
+    "follow": [{{ "edge_filter": [...], "direction": "...", "node_filter": {{...}} }}, ...]
+        (optional; max 2 entries — total traversal capped at 3 hops)
   }}
 
 Graph schema (what actually exists today):
@@ -61,6 +63,19 @@ Edge type cheatsheet — pick the right filter and direction:
 Disambiguation: IMPACTS connects Resource to Control; MITIGATED_BY connects Risk
 to Control. A question about which Resource depends on a Control uses IMPACTS;
 a question about which Risk a Control mitigates uses MITIGATED_BY.
+
+Multi-hop chains (use only when the question genuinely needs more than one
+edge; single-hop questions stay single-hop). Each entry in "follow" adds one
+more hop from the prior hop's results. Max 3 hops total (entry + 2 follow).
+Per-hop "node_filter" narrows the *prior hop's results* before walking the
+current edge — read it as "from prior-hop nodes matching X, walk edge Y."
+  - "What harmonized controls cover framework nist-csf-2.0?"
+      entry_node="framework:nist-csf-2.0", edge_filter=["CONTAINS"], direction="out",
+      follow=[{{"edge_filter": ["HARMONIZED_WITH"]}}]
+  - "Which policies satisfy controls in the IA family?"
+      entry_node="framework:nist-800-53", edge_filter=["CONTAINS"], direction="out",
+      follow=[{{"node_filter": {{"family": "IA"}},
+                "edge_filter": ["SATISFIES"], "direction": "in"}}]
 
 Evidence attribute filters (apply only to Evidence-typed nodes; non-Evidence
 nodes reached by the same plan walk through unchanged):
