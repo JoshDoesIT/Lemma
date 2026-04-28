@@ -439,13 +439,14 @@ Inspect and verify the append-only, signed, hash-chained evidence log.
 Verify the integrity of a single evidence entry by its `entry_hash`.
 
 ```bash
-lemma evidence verify <ENTRY_HASH> [--crl <PATH>]
+lemma evidence verify <ENTRY_HASH> [--crl <PATH> | --bundle <PATH>]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `ENTRY_HASH` | Yes | Hex-encoded SHA-256 entry hash of the evidence to verify |
 | `--crl` | No | Path to a signed `RevocationList` JSON (see `export-crl`) to merge into the lifecycle check |
+| `--bundle` | No | Path to an audit bundle directory (see `lemma evidence bundle`). Reads the bundle's evidence + CRLs + keys; does not require `.lemma/`. Mutually exclusive with `--crl`. |
 
 The verdict is one of:
 
@@ -584,6 +585,39 @@ lemma evidence revoke-key --producer <NAME> --key-id <ID> --reason <TEXT>
 | `--producer` | Yes | Producer name whose key is being revoked |
 | `--key-id` | Yes | Exact key identifier (e.g. `ed25519:abcd1234`) to revoke |
 | `--reason` | Yes | Why this key is being revoked (operator note) |
+
+### `lemma evidence bundle`
+
+Pack the signed evidence log, every producer's CRL, the public PEMs needed to verify both, and the AI System Card + AIBOM into a single deterministic directory artifact for offline audit. The bundle is self-contained — an external auditor with only the bundle and a fresh `lemma` install can render the same PROVEN / VIOLATED / DEGRADED verdict the operator sees.
+
+```bash
+lemma evidence bundle --output <PATH> [--no-ai] [--force]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--output` | Yes | Bundle directory to create |
+| `--no-ai` | No | Omit the AI System Card and AIBOM (`ai/` directory) |
+| `--force` | No | Overwrite an existing non-empty output directory |
+
+**Layout** (every entry's SHA-256 lives in `manifest.json`):
+
+```
+<bundle>/
+├── evidence/<date>.jsonl       # copied verbatim from .lemma/evidence/
+├── crls/crl-<producer>.json    # one per producer with at least one revocation
+├── keys/<producer>/<key_id>.public.pem
+├── ai/                         # omitted when --no-ai
+│   ├── system-card.json
+│   ├── system-card.md
+│   └── aibom.cdx.json
+├── manifest.json               # bundle_version, generated_at, lemma_version, files[]
+└── manifest.sig                # Ed25519 signature over manifest.json bytes
+```
+
+**Determinism.** Two consecutive `bundle` calls with no underlying changes produce a byte-identical `manifest.json` and `manifest.sig`. `manifest.generated_at` is pinned to the most-recent CRL `issued_at` (else the latest envelope's `signed_at`, else `now`). The AIBOM's `serialNumber` is derived from the System Card's content hash and its `metadata.timestamp` is pinned to `generated_at`. Ed25519 signatures are deterministic per RFC 8032, so identical bytes go in and identical bytes come out.
+
+**Manifest signature.** The bundle's `manifest.json` is signed end-to-end by the project's `Lemma` producer key; the hex signature lives in a sidecar `manifest.sig`. Verifiers check this signature first, before per-file SHA-256s, so any tampering with the manifest body is caught before propagating into the file-level checks. The `Lemma` producer's public PEM is always included in `keys/Lemma/`.
 
 ### `lemma evidence export-crl`
 

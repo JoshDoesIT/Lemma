@@ -106,9 +106,9 @@ def _load_and_verify_crl(crl_path: Path, key_dir: Path) -> RevocationList:
     name="verify",
     help=(
         "Verify the integrity of a specific evidence entry by entry_hash. "
-        "Pass --crl to merge an offline RevocationList; without --crl, "
-        "the verifier prints a note that revocations issued elsewhere "
-        "are not visible."
+        "Pass --crl to merge a single offline RevocationList, or --bundle "
+        "to verify against a complete audit bundle on a fresh machine "
+        "without `.lemma/`. The two flags are mutually exclusive."
     ),
 )
 def verify_command(
@@ -124,7 +124,24 @@ def verify_command(
             "an unverifiable CRL aborts with exit 1."
         ),
     ),
+    bundle_path: str = typer.Option(
+        "",
+        "--bundle",
+        help=(
+            "Path to an audit bundle directory (see `lemma evidence bundle`). "
+            "Reads the bundle's evidence + CRLs + keys; does not require "
+            "`.lemma/`. Mutually exclusive with --crl."
+        ),
+    ),
 ) -> None:
+    if crl_path and bundle_path:
+        console.print("[red]Error:[/red] Use --crl OR --bundle, not both.")
+        raise typer.Exit(code=1)
+
+    if bundle_path:
+        _verify_with_bundle(entry_hash, Path(bundle_path))
+        return
+
     project_dir = _require_lemma_project()
     log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
 
@@ -159,6 +176,73 @@ def verify_command(
 
     if result.state != EvidenceIntegrityState.PROVEN:
         raise typer.Exit(code=1)
+
+
+def _verify_with_bundle(entry_hash: str, bundle_dir: Path) -> None:
+    """Self-contained verify path: reads the bundle, no .lemma/ required."""
+    from lemma.models.signed_evidence import RevocationList
+    from lemma.services.audit_bundle import verify_bundle as _verify_bundle
+
+    bundle_result = _verify_bundle(bundle_dir)
+    if not bundle_result.ok:
+        console.print(f"[red]Error:[/red] {bundle_result.detail}")
+        raise typer.Exit(code=1)
+
+    log = EvidenceLog(log_dir=bundle_dir / "evidence", key_dir=bundle_dir / "keys")
+    target_envelope = log.get_envelope(entry_hash)
+    crl = None
+    if target_envelope is not None:
+        producer = _producer_of(target_envelope.event.metadata)
+        crl_file = bundle_dir / "crls" / f"crl-{crypto._safe_producer(producer)}.json"
+        if crl_file.exists():
+            crl = RevocationList.model_validate_json(crl_file.read_text())
+
+    result = log.verify_entry(entry_hash, crl=crl)
+    console.print(f"{_state_style(result.state)}  {entry_hash[:16]}…")
+    console.print(f"  {result.detail}")
+    if result.state != EvidenceIntegrityState.PROVEN:
+        raise typer.Exit(code=1)
+
+
+@evidence_app.command(
+    name="bundle",
+    help=(
+        "Pack the signed evidence log + CRLs + public keys + AI System Card "
+        "+ AIBOM into a single deterministic directory for offline audit."
+    ),
+)
+def bundle_command(
+    output: str = typer.Option(..., "--output", help="Bundle directory to create."),
+    no_ai: bool = typer.Option(
+        False, "--no-ai", help="Omit the AI System Card and AIBOM from the bundle."
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite an existing non-empty output directory.",
+    ),
+) -> None:
+    from lemma.services.audit_bundle import build_bundle
+
+    project_dir = _require_lemma_project()
+    output_path = Path(output)
+    try:
+        manifest = build_bundle(
+            project_dir=project_dir,
+            output_dir=output_path,
+            include_ai=not no_ai,
+            force=force,
+        )
+    except FileExistsError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[green]Wrote[/green] audit bundle to {output_path} ({len(manifest.files)} files)."
+    )
 
 
 @evidence_app.command(
