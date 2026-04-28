@@ -16,6 +16,7 @@ Usage:
 
 import typer
 
+from lemma.commands.agent import agent_app
 from lemma.commands.ai import ai_app
 from lemma.commands.check import check_command
 from lemma.commands.connector import connector_app
@@ -67,6 +68,7 @@ app.add_typer(scope_app, name="scope", help="Manage scope-as-code definitions")
 app.add_typer(resource_app, name="resource", help="Manage declared infrastructure resources")
 app.add_typer(person_app, name="person", help="Manage person-as-code definitions")
 app.add_typer(risk_app, name="risk", help="Manage risk-as-code definitions")
+app.add_typer(agent_app, name="agent", help="Federated agent commands (#25 Slice C scaffold)")
 
 
 if __name__ == "__main__":

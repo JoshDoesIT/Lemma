@@ -328,8 +328,12 @@ def test_verify_crl_returns_false_when_signature_tampered(tmp_path: Path):
     crl = export_crl(producer="Lemma", key_dir=keys)
     pem = _public_pem("Lemma", k2, keys)
 
-    # Flip a hex digit in the signature.
-    tampered = crl.model_copy(update={"signature": ("0" + crl.signature[1:])})
+    # Flip the first hex digit deterministically — picking "0" works
+    # only ~15/16 of the time because the signature occasionally already
+    # starts with "0", which made this test flaky on CI.
+    flipped = "1" if crl.signature[0] == "0" else "0"
+    tampered = crl.model_copy(update={"signature": flipped + crl.signature[1:]})
+    assert tampered.signature != crl.signature, "tampering must actually change the bytes"
     assert verify_crl(tampered, pem) is False
 
 
