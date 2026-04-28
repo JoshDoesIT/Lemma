@@ -619,6 +619,32 @@ lemma evidence bundle --output <PATH> [--no-ai] [--force]
 
 **Manifest signature.** The bundle's `manifest.json` is signed end-to-end by the project's `Lemma` producer key; the hex signature lives in a sidecar `manifest.sig`. Verifiers check this signature first, before per-file SHA-256s, so any tampering with the manifest body is caught before propagating into the file-level checks. The `Lemma` producer's public PEM is always included in `keys/Lemma/`.
 
+### `lemma evidence assessment-results`
+
+Emit an [OSCAL Assessment Results 1.1.2](https://pages.nist.gov/OSCAL/concepts/layer/assessment/assessment-results/) document describing the project's per-control verdicts. Each `lemma check` outcome becomes one OSCAL Finding; the document is signed by the project's `Lemma` producer key when written to disk.
+
+```bash
+lemma evidence assessment-results [--output <PATH>] [--no-sign] [--force] [--framework <NAME>] [--min-confidence <FLOAT>]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--output` | No | Directory to write the AR document into. Without it, the AR JSON is emitted to stdout (signing requires `--output`). |
+| `--no-sign` | No | Skip the sidecar Ed25519 signature. Ignored without `--output`. |
+| `--force` | No | Overwrite a non-empty `--output` directory. |
+| `--framework` | No | Restrict findings to one framework (mirrors `lemma check --framework`). |
+| `--min-confidence` | No | Confidence floor for SATISFIES edges (mirrors `lemma check --min-confidence`). |
+
+**Source of truth.** The AR builder goes through `lemma check` so the AR document and `lemma check` always agree on what passes. Each `ControlCheckOutcome` becomes one OSCAL Finding with `target.type="objective-id"` and `target.target-id="control:<framework>:<short_id>"`.
+
+**State vocabulary.** Lemma uses the OSCAL canonical controlled vocabulary on each Finding: `props.[{"name": "state", "value": "satisfied"}]` for PASSED, `value: "other-than-satisfied"` for FAILED. `not-applicable` is **not** part of the canonical vocabulary; controls that don't apply to a system would be expressed via `reviewed-controls.exclude-controls` or a `result.risks[]` deviation entry — neither is emitted today, but those layers are how Lemma will surface NOT_APPLICABLE if/when it grows that concept (likely via scope-as-code marking out-of-scope controls).
+
+**Determinism.** Document, Result, and Finding UUIDs are all UUID5 derivations from a fixed namespace (`uuid5(NAMESPACE_URL, "https://github.com/JoshDoesIT/Lemma/oscal-ar/v1")`). `metadata.last-modified` and `result.start` pin to the most recent envelope's `signed_at` from the project's evidence log when any exists. Two consecutive runs against an unchanged project produce a byte-identical AR JSON and signature.
+
+**Signing.** With `--output PATH`, writes `<PATH>/assessment-results.json` plus a sidecar `<PATH>/assessment-results.sig` (hex Ed25519 over the JSON bytes, signed by the same `Lemma` producer key that signs the audit-bundle manifest). External verifiers use the same public PEM that lives in `keys/Lemma/` inside an audit bundle.
+
+**`import-ap.href`.** The AR document'`s `import-ap` field references a synthetic URN (`urn:lemma:assessment-plan:<framework>`) until a real Assessment Plan emission command lands.
+
 ### `lemma evidence export-crl`
 
 Emit a signed `RevocationList` (CRL) for a producer. Hand the resulting JSON to an external verifier alongside the evidence log so a fresh Lemma install — given only the producer's currently-active public key — can render the same PROVEN / VIOLATED / DEGRADED verdict the operator sees.

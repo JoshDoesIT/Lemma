@@ -589,6 +589,104 @@ def test_verify_prints_full_provenance_chain(tmp_path: Path, monkeypatch):
 # --- Evidence nodes in the compliance graph (Refs #76, #88) ---
 
 
+class TestAssessmentResults:
+    """`lemma evidence assessment-results` (Refs #25 Slice A)."""
+
+    def _seed_graph_with_one_passed_control(self, project_dir: Path) -> None:
+        """Persist a graph with one mapped control so AR has at least one finding."""
+        from lemma.services.knowledge_graph import ComplianceGraph
+
+        g = ComplianceGraph()
+        g.add_framework("nist-800-53", title="NIST 800-53")
+        g.add_control(
+            framework="nist-800-53", control_id="ac-1", title="Access Control", family="AC"
+        )
+        g.add_policy("access-control.md", title="Access Control Policy")
+        g.add_mapping(
+            policy="access-control.md", framework="nist-800-53", control_id="ac-1", confidence=0.9
+        )
+        g.save(project_dir / ".lemma" / "graph.json")
+
+    def test_stdout_mode_emits_valid_ar_json(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.oscal_ar import validate_assessment_results
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_graph_with_one_passed_control(tmp_path)
+
+        result = runner.invoke(app, ["evidence", "assessment-results"])
+        assert result.exit_code == 0, result.stdout
+        ar = json.loads(result.stdout)
+        validate_assessment_results(ar)
+        findings = ar["assessment-results"]["results"][0]["findings"]
+        assert len(findings) == 1
+        assert findings[0]["target"]["target-id"] == "control:nist-800-53:ac-1"
+
+    def test_output_writes_signed_pair(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services import crypto
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_graph_with_one_passed_control(tmp_path)
+
+        out = tmp_path / "ar"
+        result = runner.invoke(app, ["evidence", "assessment-results", "--output", str(out)])
+        assert result.exit_code == 0, result.stdout
+        json_path = out / "assessment-results.json"
+        sig_path = out / "assessment-results.sig"
+        assert json_path.is_file()
+        assert sig_path.is_file()
+
+        # Sig hex-decodes and verifies against the project's Lemma key.
+        sig_bytes = bytes.fromhex(sig_path.read_text().strip())
+        ok = crypto.verify(
+            json_path.read_bytes(),
+            sig_bytes,
+            producer="Lemma",
+            key_dir=tmp_path / ".lemma" / "keys",
+        )
+        assert ok is True
+
+    def test_no_sign_flag_skips_sidecar(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_graph_with_one_passed_control(tmp_path)
+
+        out = tmp_path / "ar"
+        result = runner.invoke(
+            app, ["evidence", "assessment-results", "--output", str(out), "--no-sign"]
+        )
+        assert result.exit_code == 0, result.stdout
+        assert (out / "assessment-results.json").is_file()
+        assert not (out / "assessment-results.sig").exists()
+
+    def test_existing_non_empty_output_requires_force(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        self._seed_graph_with_one_passed_control(tmp_path)
+
+        out = tmp_path / "ar"
+        out.mkdir()
+        (out / "stray.txt").write_text("existing content")
+
+        first = runner.invoke(app, ["evidence", "assessment-results", "--output", str(out)])
+        assert first.exit_code == 1
+        assert "force" in first.stdout.lower()
+
+        second = runner.invoke(
+            app, ["evidence", "assessment-results", "--output", str(out), "--force"]
+        )
+        assert second.exit_code == 0, second.stdout
+        assert not (out / "stray.txt").exists()
+        assert (out / "assessment-results.json").is_file()
+
+
 class TestEvidenceBundle:
     """`lemma evidence bundle` and `verify --bundle` (Refs #175, #25)."""
 

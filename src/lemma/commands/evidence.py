@@ -246,6 +246,101 @@ def bundle_command(
 
 
 @evidence_app.command(
+    name="assessment-results",
+    help=(
+        "Emit an OSCAL Assessment Results 1.1.2 document for the project's "
+        "controls. Without --output, writes JSON to stdout. With --output, "
+        "writes assessment-results.json (and a sidecar .sig unless --no-sign)."
+    ),
+)
+def assessment_results_command(
+    output: str = typer.Option(
+        "",
+        "--output",
+        help=(
+            "Directory to write the AR document into. When omitted, JSON "
+            "is emitted to stdout (signing requires --output)."
+        ),
+    ),
+    no_sign: bool = typer.Option(
+        False,
+        "--no-sign",
+        help="Skip the sidecar Ed25519 signature. Ignored without --output.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite a non-empty --output directory.",
+    ),
+    framework: str = typer.Option(
+        "",
+        "--framework",
+        help="Restrict findings to one framework (matches `lemma check --framework`).",
+    ),
+    min_confidence: float = typer.Option(
+        0.0,
+        "--min-confidence",
+        help="Confidence floor for SATISFIES edges (matches `lemma check --min-confidence`).",
+    ),
+) -> None:
+    import shutil
+
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.oscal_ar import build_assessment_results
+
+    project_dir = _require_lemma_project()
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    # Pin generated_at to the most recent envelope's signed_at when any
+    # exist — gives byte-stable AR rebuilds against an unchanged log,
+    # same trick `build_bundle` uses.
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    envelopes = log.read_envelopes()
+    generated_at = max((env.signed_at for env in envelopes), default=None)
+
+    try:
+        ar = build_assessment_results(
+            graph,
+            framework=framework or None,
+            min_confidence=min_confidence,
+            generated_at=generated_at,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    payload = json.dumps(ar, sort_keys=True, indent=2) + "\n"
+
+    if not output:
+        # stdout mode — pipe-friendly, no Rich markup.
+        typer.echo(payload, nl=False)
+        return
+
+    output_path = Path(output)
+    if output_path.exists() and any(output_path.iterdir()) and not force:
+        console.print(f"[red]Error:[/red] {output_path} is not empty. Pass --force to overwrite.")
+        raise typer.Exit(code=1)
+    if force and output_path.exists():
+        shutil.rmtree(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    json_path = output_path / "assessment-results.json"
+    json_path.write_text(payload)
+
+    if not no_sign:
+        crypto.generate_keypair(producer="Lemma", key_dir=project_dir / ".lemma" / "keys")
+        sig = crypto.sign(
+            payload.encode(),
+            producer="Lemma",
+            key_dir=project_dir / ".lemma" / "keys",
+        ).hex()
+        (output_path / "assessment-results.sig").write_text(sig + "\n")
+
+    console.print(f"[green]Wrote[/green] OSCAL Assessment Results to {output_path}.")
+
+
+@evidence_app.command(
     name="export-crl",
     help="Emit a signed RevocationList for a producer (default: stdout).",
 )
