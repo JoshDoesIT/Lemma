@@ -1947,3 +1947,44 @@ lemma ai audit --format json
 lemma ai audit --summary
 ```
 
+
+## `lemma agent`
+
+Federated-agent CLI surface. The full agent (a stateless Go/Rust binary deployed inside target environments and federating compliance state to a control plane) is tracked under [#25](https://github.com/JoshDoesIT/Lemma/issues/25). The CLI surface lands ahead of the binary so operator scripts stay stable across the implementation rollout. Today only `lemma agent sync --offline` is fully wired.
+
+### `lemma agent install`
+
+Install the Lemma agent in the target environment.
+
+```bash
+lemma agent install
+```
+
+Not yet implemented; tracked under #25 (Lemma Agent section). Exits 1 with a clear pointer message. When the agent binary ships, this command will deploy it as a K8s sidecar, systemd unit, or bare-metal process depending on the host.
+
+### `lemma agent status`
+
+Report agent health, last sync time, and control evaluation counts.
+
+```bash
+lemma agent status
+```
+
+Not yet implemented; tracked under #25. Exits 1 with a clear pointer message. When the agent ships, this command will query the running agent's local health endpoint.
+
+### `lemma agent sync`
+
+Sync compliance state. `--offline` is fully wired today (thin wrapper over `lemma evidence bundle`); online federation is tracked under #25.
+
+```bash
+lemma agent sync --offline --output <PATH> [--no-ai] [--force]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--offline` | Yes (in v1) | Export a signed audit bundle. The only mode wired today; without it, the command exits 1 pointing at this flag. |
+| `--output` | Yes (with --offline) | Bundle directory to create. |
+| `--no-ai` | No | Omit the AI System Card and AIBOM from the bundle. |
+| `--force` | No | Overwrite a non-empty `--output` directory. |
+
+**Why this surface ships ahead of the binary.** The eventual federated-online `lemma agent sync` will reuse the same `audit_bundle.build_bundle` primitive on the agent side. Operators can script against `lemma agent sync --offline` today knowing their scripts won't need to change when online sync lands. See `lemma evidence bundle` for the full bundle layout.
