@@ -589,6 +589,96 @@ def test_verify_prints_full_provenance_chain(tmp_path: Path, monkeypatch):
 # --- Evidence nodes in the compliance graph (Refs #76, #88) ---
 
 
+class TestEvidenceBundle:
+    """`lemma evidence bundle` and `verify --bundle` (Refs #175, #25)."""
+
+    def test_bundle_creates_directory_and_prints_summary(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_signed_entries(tmp_path, count=2)
+
+        out = tmp_path / "bundle"
+        result = runner.invoke(app, ["evidence", "bundle", "--output", str(out)])
+        assert result.exit_code == 0, result.stdout
+        assert (out / "manifest.json").is_file()
+        assert (out / "manifest.sig").is_file()
+        assert "audit bundle" in result.stdout.lower()
+
+    def test_bundle_into_existing_non_empty_directory_requires_force(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_signed_entries(tmp_path, count=1)
+
+        out = tmp_path / "bundle"
+        out.mkdir()
+        (out / "stray.txt").write_text("not from a bundle")
+
+        first = runner.invoke(app, ["evidence", "bundle", "--output", str(out)])
+        assert first.exit_code == 1
+        assert "force" in first.stdout.lower()
+
+        second = runner.invoke(app, ["evidence", "bundle", "--output", str(out), "--force"])
+        assert second.exit_code == 0
+        assert not (out / "stray.txt").exists()
+
+    def test_verify_with_bundle_works_on_fresh_install(self, tmp_path: Path, monkeypatch):
+        """End-to-end: export bundle, blow away `.lemma/`, verify with --bundle."""
+        import shutil
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        hashes = _seed_signed_entries(tmp_path, count=2)
+        target_hash = hashes[0]
+
+        bundle_dir = tmp_path / "bundle"
+        export_result = runner.invoke(app, ["evidence", "bundle", "--output", str(bundle_dir)])
+        assert export_result.exit_code == 0, export_result.stdout
+
+        # Simulate fresh install: nuke .lemma/ entirely. The bundle must
+        # carry everything verify needs.
+        shutil.rmtree(tmp_path / ".lemma")
+        # Re-init so verify_command's `--bundle` branch (which does NOT call
+        # `_require_lemma_project`) is exercised cleanly. Without a `.lemma/`
+        # directory, the runner's CWD is fine.
+        result = runner.invoke(
+            app, ["evidence", "verify", target_hash, "--bundle", str(bundle_dir)]
+        )
+        assert result.exit_code == 0, result.stdout
+        assert "PROVEN" in result.stdout
+
+    def test_verify_rejects_both_crl_and_bundle(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        hashes = _seed_signed_entries(tmp_path, count=1)
+
+        # We don't actually need a real bundle or CRL on disk — argument parsing
+        # short-circuits before either is opened.
+        result = runner.invoke(
+            app,
+            [
+                "evidence",
+                "verify",
+                hashes[0],
+                "--crl",
+                "/nope/crl.json",
+                "--bundle",
+                "/nope/bundle",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "OR" in result.stdout or "both" in result.stdout.lower()
+
+
 class TestExportAndVerifyCrl:
     """`lemma evidence export-crl` and `verify --crl` (Refs #101)."""
 
