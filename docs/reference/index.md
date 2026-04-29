@@ -1985,7 +1985,9 @@ lemma ai audit --summary
 
 ## `lemma agent`
 
-Federated-agent CLI surface. The full agent (a stateless Go/Rust binary deployed inside target environments and federating compliance state to a control plane) is tracked under [#25](https://github.com/JoshDoesIT/Lemma/issues/25). The CLI surface lands ahead of the binary so operator scripts stay stable across the implementation rollout. Today only `lemma agent sync --offline` is fully wired.
+Federated-agent CLI surface. The full agent (a stateless Go binary deployed inside target environments and federating compliance state to a control plane) is tracked under [#25](https://github.com/JoshDoesIT/Lemma/issues/25). The CLI surface lands ahead of the binary so operator scripts stay stable across the implementation rollout. Today only `lemma agent sync --offline` is fully wired.
+
+The agent binary's source tree lives at [`agent/`](https://github.com/JoshDoesIT/Lemma/tree/main/agent) — a Go scaffold that compiles, prints its version, and reports "not yet implemented." See [`agent/README.md`](https://github.com/JoshDoesIT/Lemma/blob/main/agent/README.md) for build instructions. Install/status/sync wiring is tracked under #25.
 
 ### `lemma agent install`
 

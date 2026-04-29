@@ -64,6 +64,8 @@ def test_agent_install_exits_one_with_tracking_pointer(tmp_path: Path, monkeypat
     assert result.exit_code == 1
     assert "not yet implemented" in result.stdout.lower()
     assert "#25" in result.stdout
+    # Now that the Go scaffold lives at agent/, point operators at it.
+    assert "agent/README.md" in result.stdout
 
 
 def test_agent_status_exits_one_with_tracking_pointer(tmp_path: Path, monkeypatch):
@@ -75,6 +77,7 @@ def test_agent_status_exits_one_with_tracking_pointer(tmp_path: Path, monkeypatc
     assert result.exit_code == 1
     assert "not yet implemented" in result.stdout.lower()
     assert "#25" in result.stdout
+    assert "agent/README.md" in result.stdout
 
 
 def test_agent_sync_without_offline_exits_one_pointing_at_offline(tmp_path: Path, monkeypatch):
@@ -87,6 +90,7 @@ def test_agent_sync_without_offline_exits_one_pointing_at_offline(tmp_path: Path
     assert "--offline" in result.stdout
     # Online sync requires the binary + control plane, both tracked on #25.
     assert "#25" in result.stdout
+    assert "agent/README.md" in result.stdout
 
 
 def test_agent_sync_offline_without_output_exits_one(tmp_path: Path, monkeypatch):
