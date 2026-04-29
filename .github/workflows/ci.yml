@@ -78,3 +78,26 @@ jobs:
 
       - name: Run Tests with Coverage
         run: uv run pytest --cov=lemma --cov-report=term-missing -v
+
+  agent-build:
+    name: Agent Build (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Vet
+        working-directory: agent
+        run: go vet ./...
+
+      - name: Test
+        working-directory: agent
+        run: go test ./...
+
+      - name: Build
+        working-directory: agent
+        run: go build -o lemma-agent .

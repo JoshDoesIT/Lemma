@@ -57,3 +57,7 @@ Thumbs.db
 
 # Generated artifacts
 *.generated.*
+
+# Go agent build artifacts
+agent/lemma-agent
+*.exe

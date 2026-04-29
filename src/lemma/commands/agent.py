@@ -51,17 +51,20 @@ _NOT_YET = (
 )
 
 
+_SCAFFOLD_POINTER = (
+    "The agent source lives at [bold]agent/[/bold]. See "
+    "[bold]agent/README.md[/bold] for current build instructions. "
+    "Install/status/sync wiring is tracked under #25."
+)
+
+
 @agent_app.command(
     name="install",
     help="Install the Lemma agent in the target environment (not yet implemented).",
 )
 def install_command() -> None:
     console.print(_NOT_YET)
-    console.print(
-        "When the agent binary ships, [bold]lemma agent install[/bold] will "
-        "deploy it as a K8s sidecar, systemd unit, or bare-metal process "
-        "depending on the host. Tracking under #25 (Lemma Agent section)."
-    )
+    console.print(_SCAFFOLD_POINTER)
     raise typer.Exit(code=1)
 
 
@@ -73,10 +76,7 @@ def install_command() -> None:
 )
 def status_command() -> None:
     console.print(_NOT_YET)
-    console.print(
-        "When the agent ships, [bold]lemma agent status[/bold] will query the "
-        "running agent's local health endpoint. Tracking under #25."
-    )
+    console.print(_SCAFFOLD_POINTER)
     raise typer.Exit(code=1)
 
 
@@ -114,8 +114,9 @@ def sync_command(
         console.print(
             "Online sync requires the agent binary + Control Plane; "
             "use [bold]lemma agent sync --offline[/bold] to export a signed "
-            "audit bundle today. Tracking under #25 (Federation Protocol section)."
+            "audit bundle today."
         )
+        console.print(_SCAFFOLD_POINTER)
         raise typer.Exit(code=1)
 
     if not output:
