@@ -643,7 +643,34 @@ lemma evidence assessment-results [--output <PATH>] [--no-sign] [--force] [--fra
 
 **Signing.** With `--output PATH`, writes `<PATH>/assessment-results.json` plus a sidecar `<PATH>/assessment-results.sig` (hex Ed25519 over the JSON bytes, signed by the same `Lemma` producer key that signs the audit-bundle manifest). External verifiers use the same public PEM that lives in `keys/Lemma/` inside an audit bundle.
 
-**`import-ap.href`.** The AR document'`s `import-ap` field references a synthetic URN (`urn:lemma:assessment-plan:<framework>`) until a real Assessment Plan emission command lands.
+**`import-ap.href`.** The AR document'`s `import-ap` field references a synthetic URN (`urn:lemma:assessment-plan:<framework>`). To materialize the document that URN names, see `lemma evidence assessment-plan` below.
+
+### `lemma evidence assessment-plan`
+
+Emit an [OSCAL Assessment Plan 1.1.2](https://pages.nist.gov/OSCAL/concepts/layer/assessment/assessment-plan/) document declaring which controls Lemma intends to assess. The AP is what the AR's `import-ap.href` URN names — running this command materializes the document a downstream verifier needs to walk from AR back to the planned scope.
+
+```bash
+lemma evidence assessment-plan [--output <PATH>] [--no-sign] [--force] [--framework <NAME>]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--output` | No | Directory to write the AP document into. Without it, the AP JSON is emitted to stdout (signing requires `--output`). |
+| `--no-sign` | No | Skip the sidecar Ed25519 signature. Ignored without `--output`. |
+| `--force` | No | Overwrite a non-empty `--output` directory. |
+| `--framework` | No | Restrict the plan to one framework. |
+
+**Source of scope.** The AP enumerates every Control under each indexed Framework via `reviewed-controls.control-selections[].include-controls[]`. Each `control-id` uses OSCAL's canonical flat form `<framework>:<short_id>` (no `control:` prefix — that prefix is Lemma-internal for graph nodes only). With `--framework X`, the plan ships one Selection covering controls in X. Without the filter, one Selection per indexed framework, sorted alphabetically.
+
+**Why no `--min-confidence`.** The AP enumerates *planned* controls regardless of mapping confidence. Confidence-gated verdicts belong only in the AR (Assessment Results) document; the AP says "these are the controls in scope," not "these are the ones that passed."
+
+**Determinism.** The document UUID and per-Selection content are derived from a fixed namespace (`uuid5(NAMESPACE_URL, "https://github.com/JoshDoesIT/Lemma/oscal-ap/v1")` — distinct from the AR namespace so AP and AR documents about the same controls don't collide on UUIDs). `metadata.last-modified` pins to the most recent evidence envelope's `signed_at` when any exists. Two consecutive runs against an unchanged project produce byte-identical AP JSON and signature.
+
+**Signing.** With `--output PATH`, writes `<PATH>/assessment-plan.json` plus a sidecar `<PATH>/assessment-plan.sig` (hex Ed25519 over the JSON bytes, signed by the same `Lemma` producer key that signs the AR and audit-bundle manifest).
+
+**`import-ssp.href`.** The AP'`s `import-ssp` field references a synthetic URN (`urn:lemma:system-security-plan:<framework>`) — Lemma doesn't emit SSP documents yet. When an SSP emitter ships, the URN becomes a real path or URL.
+
+**Wiring an AR to a real AP path.** The AR'`s `import-ap.href` defaults to the synthetic URN convention. To make it resolve to the file this command writes, post-process the AR JSON after emission to swap the URN for the real path; future operator-controlled config will make this a flag.
 
 ### `lemma evidence export-crl`
 
