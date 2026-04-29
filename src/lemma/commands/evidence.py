@@ -216,6 +216,11 @@ def bundle_command(
     no_ai: bool = typer.Option(
         False, "--no-ai", help="Omit the AI System Card and AIBOM from the bundle."
     ),
+    no_assessments: bool = typer.Option(
+        False,
+        "--no-assessments",
+        help="Omit the OSCAL Assessment Results and Assessment Plan documents.",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -231,6 +236,7 @@ def bundle_command(
             project_dir=project_dir,
             output_dir=output_path,
             include_ai=not no_ai,
+            include_assessments=not no_assessments,
             force=force,
         )
     except FileExistsError as exc:

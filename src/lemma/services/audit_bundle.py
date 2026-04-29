@@ -110,6 +110,7 @@ def build_bundle(
     project_dir: Path,
     output_dir: Path,
     include_ai: bool = True,
+    include_assessments: bool = True,
     force: bool = False,
 ) -> BundleManifest:
     """Build the deterministic audit bundle directory at ``output_dir``.
@@ -123,6 +124,11 @@ def build_bundle(
         include_ai: When True (default), writes an ``ai/`` subdirectory
             with the AI System Card (JSON + Markdown) and AIBOM. When
             False, omits the entire ``ai/`` directory.
+        include_assessments: When True (default), writes an
+            ``assessments/`` subdirectory containing OSCAL Assessment
+            Results and Assessment Plan documents (each with sidecar
+            ``.sig`` signed by the project's ``Lemma`` key). When
+            False, omits the entire ``assessments/`` directory.
         force: When True, removes ``output_dir`` before writing. Use with
             care; a force-rebuild deletes anything already at the path.
 
@@ -148,6 +154,8 @@ def build_bundle(
     (output_dir / "keys").mkdir()
     if include_ai:
         (output_dir / "ai").mkdir()
+    if include_assessments:
+        (output_dir / "assessments").mkdir()
 
     project_log_dir = project_dir / ".lemma" / "evidence"
     key_dir = project_dir / ".lemma" / "keys"
@@ -204,6 +212,35 @@ def build_bundle(
             bom["metadata"]["timestamp"] = generated_at.isoformat().replace("+00:00", "Z")
         validate_aibom(bom)
         (output_dir / "ai" / "aibom.cdx.json").write_text(json.dumps(bom, indent=2, sort_keys=True))
+
+    if include_assessments:
+        # Both OSCAL documents share the bundle's pinned `generated_at` so
+        # rebuilds against an unchanged project produce byte-identical
+        # output. Each gets a sidecar Ed25519 signature signed by the same
+        # `Lemma` producer key that signs the manifest, so an external
+        # verifier extracting AR or AP independently of the bundle can
+        # check it against `keys/Lemma/<key_id>.public.pem`.
+        from lemma.services.knowledge_graph import ComplianceGraph
+        from lemma.services.oscal_ap import build_assessment_plan
+        from lemma.services.oscal_ar import build_assessment_results
+
+        graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+
+        ar = build_assessment_results(graph, generated_at=generated_at)
+        ar_payload = json.dumps(ar, sort_keys=True, indent=2) + "\n"
+        (output_dir / "assessments" / "assessment-results.json").write_text(ar_payload)
+        ar_sig = crypto.sign(
+            ar_payload.encode(), producer=_MANIFEST_SIGNER_PRODUCER, key_dir=key_dir
+        ).hex()
+        (output_dir / "assessments" / "assessment-results.sig").write_text(ar_sig + "\n")
+
+        ap = build_assessment_plan(graph, generated_at=generated_at)
+        ap_payload = json.dumps(ap, sort_keys=True, indent=2) + "\n"
+        (output_dir / "assessments" / "assessment-plan.json").write_text(ap_payload)
+        ap_sig = crypto.sign(
+            ap_payload.encode(), producer=_MANIFEST_SIGNER_PRODUCER, key_dir=key_dir
+        ).hex()
+        (output_dir / "assessments" / "assessment-plan.sig").write_text(ap_sig + "\n")
 
     files: list[BundleManifestEntry] = []
     for path in _walk_files(output_dir):
