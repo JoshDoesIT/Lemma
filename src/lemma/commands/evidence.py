@@ -341,6 +341,93 @@ def assessment_results_command(
 
 
 @evidence_app.command(
+    name="assessment-plan",
+    help=(
+        "Emit an OSCAL Assessment Plan 1.1.2 document describing which "
+        "controls Lemma intends to assess. The AR's import-ap.href URN "
+        "is what this command materializes. Without --output, writes "
+        "JSON to stdout. With --output, writes assessment-plan.json "
+        "(and a sidecar .sig unless --no-sign)."
+    ),
+)
+def assessment_plan_command(
+    output: str = typer.Option(
+        "",
+        "--output",
+        help=(
+            "Directory to write the AP document into. When omitted, JSON "
+            "is emitted to stdout (signing requires --output)."
+        ),
+    ),
+    no_sign: bool = typer.Option(
+        False,
+        "--no-sign",
+        help="Skip the sidecar Ed25519 signature. Ignored without --output.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite a non-empty --output directory.",
+    ),
+    framework: str = typer.Option(
+        "",
+        "--framework",
+        help="Restrict the plan to one framework (matches `lemma check --framework`).",
+    ),
+) -> None:
+    import shutil
+
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.oscal_ap import build_assessment_plan
+
+    project_dir = _require_lemma_project()
+    graph_path = project_dir / ".lemma" / "graph.json"
+    graph = ComplianceGraph.load(graph_path)
+
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    envelopes = log.read_envelopes()
+    generated_at = max((env.signed_at for env in envelopes), default=None)
+
+    try:
+        ap = build_assessment_plan(
+            graph,
+            framework=framework or None,
+            generated_at=generated_at,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    payload = json.dumps(ap, sort_keys=True, indent=2) + "\n"
+
+    if not output:
+        typer.echo(payload, nl=False)
+        return
+
+    output_path = Path(output)
+    if output_path.exists() and any(output_path.iterdir()) and not force:
+        console.print(f"[red]Error:[/red] {output_path} is not empty. Pass --force to overwrite.")
+        raise typer.Exit(code=1)
+    if force and output_path.exists():
+        shutil.rmtree(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    json_path = output_path / "assessment-plan.json"
+    json_path.write_text(payload)
+
+    if not no_sign:
+        crypto.generate_keypair(producer="Lemma", key_dir=project_dir / ".lemma" / "keys")
+        sig = crypto.sign(
+            payload.encode(),
+            producer="Lemma",
+            key_dir=project_dir / ".lemma" / "keys",
+        ).hex()
+        (output_path / "assessment-plan.sig").write_text(sig + "\n")
+
+    console.print(f"[green]Wrote[/green] OSCAL Assessment Plan to {output_path}.")
+
+
+@evidence_app.command(
     name="export-crl",
     help="Emit a signed RevocationList for a producer (default: stdout).",
 )
