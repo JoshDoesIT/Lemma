@@ -802,7 +802,26 @@ class TestEvidenceBundle:
         assert result.exit_code == 0, result.stdout
         assert (out / "manifest.json").is_file()
         assert (out / "manifest.sig").is_file()
+        # Default-on: AR + AP land in assessments/ alongside ai/.
+        assert (out / "assessments" / "assessment-results.json").is_file()
+        assert (out / "assessments" / "assessment-plan.json").is_file()
         assert "audit bundle" in result.stdout.lower()
+
+    def test_bundle_no_assessments_flag_omits_assessments_directory(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        _seed_signed_entries(tmp_path, count=1)
+
+        out = tmp_path / "bundle"
+        result = runner.invoke(
+            app, ["evidence", "bundle", "--output", str(out), "--no-assessments"]
+        )
+        assert result.exit_code == 0, result.stdout
+        assert not (out / "assessments").exists()
 
     def test_bundle_into_existing_non_empty_directory_requires_force(
         self, tmp_path: Path, monkeypatch

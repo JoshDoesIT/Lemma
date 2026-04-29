@@ -588,16 +588,17 @@ lemma evidence revoke-key --producer <NAME> --key-id <ID> --reason <TEXT>
 
 ### `lemma evidence bundle`
 
-Pack the signed evidence log, every producer's CRL, the public PEMs needed to verify both, and the AI System Card + AIBOM into a single deterministic directory artifact for offline audit. The bundle is self-contained — an external auditor with only the bundle and a fresh `lemma` install can render the same PROVEN / VIOLATED / DEGRADED verdict the operator sees.
+Pack the signed evidence log, every producer's CRL, the public PEMs needed to verify both, the AI System Card + AIBOM, and OSCAL Assessment Results + Assessment Plan into a single deterministic directory artifact for offline audit. The bundle is self-contained — an external auditor with only the bundle and a fresh `lemma` install can render the same PROVEN / VIOLATED / DEGRADED verdict the operator sees.
 
 ```bash
-lemma evidence bundle --output <PATH> [--no-ai] [--force]
+lemma evidence bundle --output <PATH> [--no-ai] [--no-assessments] [--force]
 ```
 
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--output` | Yes | Bundle directory to create |
 | `--no-ai` | No | Omit the AI System Card and AIBOM (`ai/` directory) |
+| `--no-assessments` | No | Omit the OSCAL AR and AP documents (`assessments/` directory) |
 | `--force` | No | Overwrite an existing non-empty output directory |
 
 **Layout** (every entry's SHA-256 lives in `manifest.json`):
@@ -611,11 +612,18 @@ lemma evidence bundle --output <PATH> [--no-ai] [--force]
 │   ├── system-card.json
 │   ├── system-card.md
 │   └── aibom.cdx.json
+├── assessments/                # omitted when --no-assessments
+│   ├── assessment-results.json
+│   ├── assessment-results.sig
+│   ├── assessment-plan.json
+│   └── assessment-plan.sig
 ├── manifest.json               # bundle_version, generated_at, lemma_version, files[]
 └── manifest.sig                # Ed25519 signature over manifest.json bytes
 ```
 
-**Determinism.** Two consecutive `bundle` calls with no underlying changes produce a byte-identical `manifest.json` and `manifest.sig`. `manifest.generated_at` is pinned to the most-recent CRL `issued_at` (else the latest envelope's `signed_at`, else `now`). The AIBOM's `serialNumber` is derived from the System Card's content hash and its `metadata.timestamp` is pinned to `generated_at`. Ed25519 signatures are deterministic per RFC 8032, so identical bytes go in and identical bytes come out.
+**Determinism.** Two consecutive `bundle` calls with no underlying changes produce a byte-identical `manifest.json`, `manifest.sig`, and bundled OSCAL documents. `manifest.generated_at` is pinned to the most-recent CRL `issued_at` (else the latest envelope's `signed_at`, else `now`); the AR and AP documents share that same pinned timestamp. The AIBOM's `serialNumber` is derived from the System Card's content hash and its `metadata.timestamp` is pinned to `generated_at`. Ed25519 signatures are deterministic per RFC 8032, so identical bytes go in and identical bytes come out.
+
+**Bundled OSCAL documents.** The `assessments/` subdirectory carries `assessment-results.json` (the AR) and `assessment-plan.json` (the AP) emitted by the same primitives `lemma evidence assessment-results` / `lemma evidence assessment-plan` use, with sidecar `.sig` files signed by the project's `Lemma` producer key. Per-file SHA-256s land in `manifest.json` so any tampering of the JSON or signature files is caught by the bundle's existing integrity check. Auditors who extract individual AR/AP files independently of the bundle can verify them against `keys/Lemma/<key_id>.public.pem` (always included).
 
 **Manifest signature.** The bundle's `manifest.json` is signed end-to-end by the project's `Lemma` producer key; the hex signature lives in a sidecar `manifest.sig`. Verifiers check this signature first, before per-file SHA-256s, so any tampering with the manifest body is caught before propagating into the file-level checks. The `Lemma` producer's public PEM is always included in `keys/Lemma/`.
 

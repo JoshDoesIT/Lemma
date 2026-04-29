@@ -329,3 +329,132 @@ def test_verify_bundle_fails_when_manifest_sig_missing(tmp_path: Path):
     result = verify_bundle(out)
     assert result.ok is False
     assert result.failed_path == "manifest.sig"
+
+
+# ---------------------------------------------------------------------------
+# Cycles for #184: AR + AP in bundle
+# ---------------------------------------------------------------------------
+
+
+def test_build_bundle_writes_assessments_directory_with_signed_ar_and_ap(tmp_path: Path):
+    from lemma.services.audit_bundle import build_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    build_bundle(project_dir=project, output_dir=out)
+
+    # The assessments/ subdirectory carries both OSCAL documents Lemma
+    # emits, each with its sidecar signature.
+    assert (out / "assessments").is_dir()
+    assert (out / "assessments" / "assessment-results.json").is_file()
+    assert (out / "assessments" / "assessment-results.sig").is_file()
+    assert (out / "assessments" / "assessment-plan.json").is_file()
+    assert (out / "assessments" / "assessment-plan.sig").is_file()
+
+
+def test_bundled_ar_and_ap_appear_in_manifest_with_correct_sha256(tmp_path: Path):
+    import hashlib
+
+    from lemma.services.audit_bundle import build_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    manifest = build_bundle(project_dir=project, output_dir=out)
+
+    paths_in_manifest = {f.path: f.sha256 for f in manifest.files}
+
+    for rel in (
+        "assessments/assessment-results.json",
+        "assessments/assessment-results.sig",
+        "assessments/assessment-plan.json",
+        "assessments/assessment-plan.sig",
+    ):
+        assert rel in paths_in_manifest, f"{rel} missing from manifest"
+        actual = hashlib.sha256((out / rel).read_bytes()).hexdigest()
+        assert paths_in_manifest[rel] == actual
+
+
+def test_bundled_assessments_signatures_verify_against_lemma_key(tmp_path: Path):
+    """The AR/AP sidecar sigs hex-decode and verify under the project's Lemma key."""
+    from lemma.services import crypto
+    from lemma.services.audit_bundle import build_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    build_bundle(project_dir=project, output_dir=out)
+
+    key_dir = project / ".lemma" / "keys"
+    for json_name, sig_name in (
+        ("assessment-results.json", "assessment-results.sig"),
+        ("assessment-plan.json", "assessment-plan.sig"),
+    ):
+        json_bytes = (out / "assessments" / json_name).read_bytes()
+        sig_bytes = bytes.fromhex((out / "assessments" / sig_name).read_text().strip())
+        ok = crypto.verify(json_bytes, sig_bytes, producer="Lemma", key_dir=key_dir)
+        assert ok is True, f"{sig_name} did not verify under the Lemma key"
+
+
+def test_build_bundle_no_assessments_flag_omits_assessments_directory(tmp_path: Path):
+    from lemma.services.audit_bundle import build_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    manifest = build_bundle(project_dir=project, output_dir=out, include_assessments=False)
+
+    assert not (out / "assessments").exists()
+    assert not any(f.path.startswith("assessments/") for f in manifest.files)
+
+
+def test_verify_bundle_still_passes_with_assessments_present(tmp_path: Path):
+    """Adding AR/AP to the bundle doesn't break the existing verify path."""
+    from lemma.services.audit_bundle import build_bundle, verify_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    build_bundle(project_dir=project, output_dir=out)
+
+    result = verify_bundle(out)
+    assert result.ok is True
+
+
+def test_verify_bundle_detects_tampered_assessment_results_json(tmp_path: Path):
+    """Per-file SHA-256 enforcement catches tampering of the AR JSON."""
+    from lemma.services.audit_bundle import build_bundle, verify_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+    out = tmp_path / "bundle"
+    build_bundle(project_dir=project, output_dir=out)
+
+    target = out / "assessments" / "assessment-results.json"
+    target.write_bytes(target.read_bytes() + b" ")
+
+    result = verify_bundle(out)
+    assert result.ok is False
+    assert result.failed_path == "assessments/assessment-results.json"
+
+
+def test_bundle_with_assessments_remains_deterministic(tmp_path: Path):
+    """Two builds against the same project yield byte-identical manifests."""
+    from lemma.services.audit_bundle import build_bundle
+
+    project = _project_with_lemma(tmp_path / "proj")
+    _seed_evidence(project, ["a"])
+
+    out1 = tmp_path / "bundle1"
+    out2 = tmp_path / "bundle2"
+    build_bundle(project_dir=project, output_dir=out1)
+    build_bundle(project_dir=project, output_dir=out2)
+
+    assert (out1 / "manifest.json").read_bytes() == (out2 / "manifest.json").read_bytes()
+    assert (out1 / "assessments" / "assessment-results.json").read_bytes() == (
+        out2 / "assessments" / "assessment-results.json"
+    ).read_bytes()
+    assert (out1 / "assessments" / "assessment-plan.json").read_bytes() == (
+        out2 / "assessments" / "assessment-plan.json"
+    ).read_bytes()
