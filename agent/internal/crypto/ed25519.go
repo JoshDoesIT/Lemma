@@ -13,6 +13,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // LoadPublicKey decodes a PEM-encoded SubjectPublicKeyInfo block and
@@ -36,6 +38,32 @@ func LoadPublicKey(pemBytes []byte) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("crypto: public key is %T, want ed25519.PublicKey", pubAny)
 	}
 	return pub, nil
+}
+
+// LoadPublicKeyByID walks the immediate subdirectories of keysDir
+// looking for a file named `<signerKeyID>.public.pem`. Returns the PEM
+// bytes when found. The envelope itself does not name the producer
+// directory (its storage record's actor is the writer module, not the
+// key namespace), so the agent treats keysDir as a flat trust store.
+// signer_key_id is a SHA-256 prefix of the public-key bytes, so
+// collisions across producers are not a concern in practice.
+func LoadPublicKeyByID(keysDir, signerKeyID string) ([]byte, error) {
+	entries, err := os.ReadDir(keysDir)
+	if err != nil {
+		return nil, fmt.Errorf("read keys-dir %s: %w", keysDir, err)
+	}
+	candidate := signerKeyID + ".public.pem"
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(keysDir, e.Name(), candidate)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("public key not found for key_id %s under %s", signerKeyID, keysDir)
 }
 
 // VerifyEntryHash reports whether sig (hex) is a valid Ed25519 signature

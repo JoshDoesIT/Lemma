@@ -181,3 +181,166 @@ def test_no_args_prints_version_line(agent_binary: Path) -> None:
     assert result.returncode == 0
     assert "lemma-agent v" in result.stdout
     assert "verify" in result.stdout
+
+
+# CRL parity tests ------------------------------------------------------
+
+
+def _export_crl(project_dir: Path, producer: str) -> Path:
+    """Run `lemma evidence export-crl` end-to-end and return the file path."""
+    out = project_dir / f"crl-{producer}.json"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "lemma",
+            "evidence",
+            "export-crl",
+            "--producer",
+            producer,
+            "--output",
+            str(out),
+        ],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"export-crl failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert out.is_file()
+    return out
+
+
+def _retroactively_revoke_signing_key(project_dir: Path, producer: str, revoked_at_iso: str) -> str:
+    """Rotate then revoke the producer's first ACTIVE key, pinning the
+    revocation timestamp to ``revoked_at_iso``.
+
+    The agent's CRL flip rule is ``signed_at >= revoked_at`` → VIOLATED. To
+    observe a flip, ``revoked_at`` has to be earlier than the envelope's
+    ``signed_at``; the production ``revoke_key`` API stamps ``now()``, which
+    is always *after* the envelope was signed during a single test run.
+    Workaround: rotate (so the producer still has a current ACTIVE key for
+    signing the CRL), revoke as usual, then rewrite the lifecycle on disk
+    with the desired ``revoked_at``.
+    """
+    from datetime import datetime
+
+    from lemma.services import crypto as lemma_crypto
+
+    keys_dir = project_dir / ".lemma" / "keys"
+    lifecycle = lemma_crypto._read_lifecycle(producer, keys_dir)
+    old_active = lifecycle.active()
+    assert old_active is not None
+
+    lemma_crypto.rotate_key(producer=producer, key_dir=keys_dir)
+    lemma_crypto.revoke_key(
+        producer=producer,
+        key_id=old_active.key_id,
+        reason="test-retroactive",
+        key_dir=keys_dir,
+    )
+
+    # Pin revoked_at to the requested moment.
+    lifecycle = lemma_crypto._read_lifecycle(producer, keys_dir)
+    record = lifecycle.find(old_active.key_id)
+    assert record is not None
+    record.revoked_at = datetime.fromisoformat(revoked_at_iso)
+    lemma_crypto._write_lifecycle(producer, keys_dir, lifecycle)
+    return old_active.key_id
+
+
+@requires_go
+def test_verify_with_crl_flips_revoked_entry_to_violated(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    log_path = _seed_signed_log(project, count=1)
+
+    # Pin revoked_at to a moment well before the envelope's signed_at so
+    # the CRL flip rule (signed_at >= revoked_at → VIOLATED) fires.
+    _retroactively_revoke_signing_key(project, "Lemma", "2020-01-01T00:00:00+00:00")
+    crl_path = _export_crl(project, "Lemma")
+    keys_dir = project / ".lemma" / "keys"
+
+    result = subprocess.run(
+        [
+            str(agent_binary),
+            "verify",
+            str(log_path),
+            "--keys-dir",
+            str(keys_dir),
+            "--crl",
+            str(crl_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, (
+        f"expected exit 1\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "VIOLATED" in result.stdout
+    assert "CRL" in result.stdout
+    # The advisory must NOT appear when --crl was supplied.
+    assert "No CRL supplied" not in result.stdout
+
+
+@requires_go
+def test_verify_with_crl_does_not_affect_unrelated_producer(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """A CRL for a different producer must not flip a Lemma-signed entry.
+
+    Stand up a second producer ("Okta") with its own active key, revoke that
+    key, export the Okta CRL, then run the agent against the Lemma-signed
+    evidence log. The Lemma envelope must still verify PROVEN.
+    """
+    from lemma.services import crypto as lemma_crypto
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    log_path = _seed_signed_log(project, count=1)
+    keys_dir = project / ".lemma" / "keys"
+
+    # Mint a key for "Okta", rotate+revoke (with retroactive revoked_at
+    # so the CRL would flip a matching producer's envelope), then export
+    # Okta's CRL.
+    lemma_crypto.generate_keypair(producer="Okta", key_dir=keys_dir)
+    _retroactively_revoke_signing_key(project, "Okta", "2020-01-01T00:00:00+00:00")
+    okta_crl = _export_crl(project, "Okta")
+
+    result = subprocess.run(
+        [
+            str(agent_binary),
+            "verify",
+            str(log_path),
+            "--keys-dir",
+            str(keys_dir),
+            "--crl",
+            str(okta_crl),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"cross-producer CRL must be ignored — exit 0 expected\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "PROVEN" in result.stdout
+
+
+@requires_go
+def test_verify_emits_no_crl_advisory_without_crl_flag(agent_binary: Path, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    log_path = _seed_signed_log(project, count=1)
+    keys_dir = project / ".lemma" / "keys"
+
+    result = subprocess.run(
+        [str(agent_binary), "verify", str(log_path), "--keys-dir", str(keys_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "No CRL supplied" in result.stdout

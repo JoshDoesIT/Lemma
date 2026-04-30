@@ -113,6 +113,85 @@ func TestComputeEntryHashChangesWhenEventChanges(t *testing.T) {
 	}
 }
 
+func TestProducerExtractsEventMetadataProductName(t *testing.T) {
+	// CRL matching keys off event.metadata.product.name — same field
+	// Python's evidence_log._producer_of reads.
+	const line = `{"event":{"class_uid":2003,"metadata":{"product":{"name":"Lemma"},"uid":"e1"}},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`
+	env, err := Parse([]byte(line))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got, err := env.Producer()
+	if err != nil {
+		t.Fatalf("Producer: %v", err)
+	}
+	if got != "Lemma" {
+		t.Errorf("Producer = %q, want %q", got, "Lemma")
+	}
+}
+
+func TestProducerFallsBackToUnknownWhenFieldMissing(t *testing.T) {
+	// Mirrors Python evidence_log._producer_of's "unknown" fallback at line 67.
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"no_metadata", `{"event":{"class_uid":2003},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+		{"metadata_not_object", `{"event":{"metadata":"oops"},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+		{"no_product", `{"event":{"metadata":{"uid":"e1"}},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+		{"product_not_object", `{"event":{"metadata":{"product":"Lemma"}},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+		{"empty_name", `{"event":{"metadata":{"product":{"name":""}}},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+		{"name_not_string", `{"event":{"metadata":{"product":{"name":42}}},"prev_hash":"00","entry_hash":"00","signature":"00","signer_key_id":"ed25519:0","signed_at":"2026-01-01T00:00:00+00:00","provenance":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := Parse([]byte(tc.line))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			got, err := env.Producer()
+			if err != nil {
+				t.Fatalf("Producer: %v", err)
+			}
+			if got != "unknown" {
+				t.Errorf("Producer = %q, want %q", got, "unknown")
+			}
+		})
+	}
+}
+
+func TestSignedAtTimeAcceptsBothTimezoneSuffixes(t *testing.T) {
+	cases := []struct {
+		name, signedAt string
+	}{
+		{"plus_00_00", "2026-04-30T12:34:56.123456+00:00"},
+		{"Z_suffix", "2026-04-30T12:34:56.123456Z"},
+		{"no_microseconds_Z", "2026-04-30T12:34:56Z"},
+		{"no_microseconds_offset", "2026-04-30T12:34:56+00:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &Envelope{SignedAt: tc.signedAt}
+			ts, err := env.SignedAtTime()
+			if err != nil {
+				t.Fatalf("SignedAtTime: %v", err)
+			}
+			// All four cases should land on 2026-04-30, not e.g. 2025-12-31 due to
+			// timezone misinterpretation.
+			if ts.UTC().Year() != 2026 || ts.UTC().Month() != 4 || ts.UTC().Day() != 30 {
+				t.Errorf("parsed wrong date: %v from %q", ts, tc.signedAt)
+			}
+		})
+	}
+}
+
+func TestSignedAtTimeRejectsUnparseableInput(t *testing.T) {
+	env := &Envelope{SignedAt: "not a timestamp"}
+	if _, err := env.SignedAtTime(); err == nil {
+		t.Error("expected error on unparseable signed_at, got nil")
+	}
+}
+
 // Sanity check: round-tripping via Parse + json.Marshal preserves the
 // envelope's identifying fields. (Doesn't have to be byte-identical.)
 func TestParsePopulatesAllPublicFields(t *testing.T) {
