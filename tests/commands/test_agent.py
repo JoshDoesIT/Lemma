@@ -66,6 +66,8 @@ def test_agent_install_exits_one_with_tracking_pointer(tmp_path: Path, monkeypat
     assert "#25" in result.stdout
     # Now that the Go scaffold lives at agent/, point operators at it.
     assert "agent/README.md" in result.stdout
+    # And advertise the verify subcommand the binary actually supports today.
+    assert "lemma-agent verify" in result.stdout
 
 
 def test_agent_status_exits_one_with_tracking_pointer(tmp_path: Path, monkeypatch):

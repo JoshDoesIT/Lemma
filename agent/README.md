@@ -7,18 +7,21 @@ runtime counterpart to the `lemma agent` CLI in the main Python package.
 
 ## Status
 
-**Scaffold only.** This module compiles, runs, and prints its version. It does
-not yet talk to a Control Plane, manage evidence, or implement any of the
+**Verifies signed evidence logs offline today.** The agent does not yet
+talk to a Control Plane, manage evidence, or implement any of the
 `install` / `status` / `sync` behaviour described by the CLI surface in
-`src/lemma/commands/agent.py`.
+`src/lemma/commands/agent.py`. What it can do is read a Lemma signed
+evidence JSONL and check, byte-for-byte against the Python signer:
 
-The current binary exists so that:
+1. each entry's `prev_hash` matches the prior entry's `entry_hash`;
+2. recomputing the entry hash from the canonical
+   `{event, provenance_excluding_storage}` payload yields the claimed value;
+3. the Ed25519 signature over the 32-byte entry hash verifies under the
+   producer's public key.
 
-1. There is a real artefact for future install / status / sync work to land in.
-2. CI exercises a Go build (`go vet`, `go test`, `go build`) so the module
-   cannot rot while the slices that fill it in are landing.
-3. The Python `lemma agent install` command has somewhere concrete to point
-   operators at instead of a phantom binary path.
+That bridges Python and Go through the envelope format and gives every
+later slice (forwarding, mTLS sync, agent-side evidence load) something
+concrete to build on.
 
 ## Build
 
@@ -29,18 +32,26 @@ cd agent
 go build -o lemma-agent .
 ```
 
-## Run
+## Usage
 
 ```bash
-./lemma-agent
+./lemma-agent verify <evidence.jsonl> --keys-dir <dir>
 ```
 
-Expected output:
+`<dir>` is the directory containing producer subdirectories with
+`<key_id>.public.pem` files — the same layout Lemma writes under
+`.lemma/keys/`. The agent walks every subdirectory looking for the
+matching key, so a flat trust-store with multiple producers works too.
 
-```
-lemma-agent v0.1.0
-not yet implemented; tracked under #25
-```
+Exit codes:
+
+- `0` — every entry PROVEN
+- `1` — at least one entry VIOLATED (chain mismatch, hash mismatch, or
+  signature failure)
+- `2` — usage error (missing flag, malformed JSONL)
+
+Run `./lemma-agent` (no arguments) for a one-line summary of the version
+and available subcommands.
 
 ## Test
 
@@ -50,10 +61,16 @@ go vet ./...
 go test ./...
 ```
 
+The Python integration test at `tests/integration/test_agent_verify.py`
+is the parity oracle: it asks Python's `EvidenceLog` to write a signed
+log, then runs this binary against it and asserts a PROVEN verdict. Any
+canonical-JSON drift between the two implementations surfaces there as a
+VIOLATED entry-hash mismatch.
+
 ## Roadmap
 
-The full agent design — federation protocol, evidence forwarding, control plane
-wiring, deployment shapes — is tracked under
+The full agent design — federation protocol, evidence forwarding, control
+plane wiring, deployment shapes, signing — is tracked under
 [#25 Federated Agent Architecture](https://github.com/JoshDoesIT/Lemma/issues/25).
-Subsequent slices on that issue will replace the placeholder `run` body with
-real install / status / sync implementations.
+Subsequent slices on that issue layer on top of the verify primitive
+shipped here.

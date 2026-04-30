@@ -54,7 +54,9 @@ _NOT_YET = (
 _SCAFFOLD_POINTER = (
     "The agent source lives at [bold]agent/[/bold]. See "
     "[bold]agent/README.md[/bold] for current build instructions. "
-    "Install/status/sync wiring is tracked under #25."
+    "The current binary supports "
+    "[bold]lemma-agent verify <file> --keys-dir <dir>[/bold] for offline "
+    "evidence-log verification; install/status/sync wiring is tracked under #25."
 )
 
 
