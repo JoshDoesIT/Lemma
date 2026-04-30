@@ -1987,7 +1987,13 @@ lemma ai audit --summary
 
 Federated-agent CLI surface. The full agent (a stateless Go binary deployed inside target environments and federating compliance state to a control plane) is tracked under [#25](https://github.com/JoshDoesIT/Lemma/issues/25). The CLI surface lands ahead of the binary so operator scripts stay stable across the implementation rollout. Today only `lemma agent sync --offline` is fully wired.
 
-The agent binary's source tree lives at [`agent/`](https://github.com/JoshDoesIT/Lemma/tree/main/agent) — a Go scaffold that compiles, prints its version, and reports "not yet implemented." See [`agent/README.md`](https://github.com/JoshDoesIT/Lemma/blob/main/agent/README.md) for build instructions. Install/status/sync wiring is tracked under #25.
+The agent binary's source tree lives at [`agent/`](https://github.com/JoshDoesIT/Lemma/tree/main/agent). It currently exposes one subcommand:
+
+```bash
+lemma-agent verify <evidence.jsonl> --keys-dir <dir>
+```
+
+`verify` walks a Lemma signed evidence JSONL, recomputes each entry's chain hash from the canonical `{event, provenance_excluding_storage}` payload, and checks the Ed25519 signature against the producer's public key under `<dir>/<producer>/<key_id>.public.pem`. Exit `0` means every entry is PROVEN; exit `1` means at least one entry is VIOLATED (chain mismatch, hash mismatch, or signature failure); exit `2` is a usage error. The check is byte-for-byte parity with Python's `lemma evidence verify` envelope layer; later slices add CRL handling, signing, and federation. See [`agent/README.md`](https://github.com/JoshDoesIT/Lemma/blob/main/agent/README.md) for build instructions and the full feature roadmap under #25.
 
 ### `lemma agent install`
 
