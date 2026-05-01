@@ -18,14 +18,17 @@ Python signer:
    matches the prior entry's `entry_hash`; recomputing the entry hash
    from the canonical `{event, provenance_excluding_storage}` payload
    yields the claimed value; the Ed25519 signature over the 32-byte
-   entry hash verifies under the producer's public key; and for each
-   `--crl <path>` whose `producer` matches the envelope's
-   `event.metadata.product.name`, the signing key is **not** revoked at
-   or before the envelope's `signed_at` (Python's
-   `signed_at >= revoked_at` rule). CRL signatures are themselves
+   entry hash verifies under the producer's public key; the signing
+   key is **not** revoked at or before the envelope's `signed_at`
+   from either revocation source — the local lifecycle file at
+   `<keys-dir>/<producer>/meta.json` (`status: REVOKED` records) and
+   any `--crl <path>` whose `producer` matches the envelope's
+   `event.metadata.product.name`. When BOTH sources flag the same key,
+   the earlier `revoked_at` wins. CRL signatures are themselves
    verified against the issuer's public key before any per-envelope
-   check runs; a bad CRL aborts the run with exit 1 rather than silently
-   being ignored.
+   check runs; a bad CRL aborts the run with exit 1 rather than
+   silently being ignored. Missing or unreadable `meta.json` is treated
+   as no local revocation (pass-through).
 2. **Sign** an OCSF event into a complete envelope — given an ACTIVE
    producer key under `--keys-dir`, the agent computes the canonical
    payload, hashes the chain, signs the hash, and emits a single JSONL
