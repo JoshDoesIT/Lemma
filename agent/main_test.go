@@ -82,7 +82,10 @@ MCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 	mainFixtureProducer = "TestProducer"
 	mainFixtureKeyID    = "ed25519:56475aa75463474c"
 
-	mainFixtureLine0 = `{"event":{"class_uid":2003,"activity_id":1,"time":1700000000,"metadata":{"uid":"fixture-0"}},"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","entry_hash":"ad45fdb920ab0ac996b793afa2785983d0fab8a5bf53ca12ed506baf5505249c","signature":"4a4570e276691556d546902f00c76d0d30e504a75d6f3221b7508e5492f49787bd0132553b8f8d5d41d4156014812a76c6713fd448310d7bcf9859c67e373a05","signer_key_id":"ed25519:56475aa75463474c","signed_at":"2026-01-01T00:00:00Z","provenance":[{"stage":"storage","actor":"TestProducer","timestamp":"2026-01-01T00:00:00Z","content_hash":"ad45fdb920ab0ac996b793afa2785983d0fab8a5bf53ca12ed506baf5505249c"}]}`
+	mainFixtureLine0 = `{"event":{"class_uid":2003,"activity_id":1,"time":1700000000,"metadata":{"uid":"fixture-0","product":{"name":"TestProducer"}}},"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","entry_hash":"f732ee4807b6c2b9f13acd72f406daf2f46a3b968215c34ccc89993a3ec577bf","signature":"a74c2115e069ddb6ab7a6335e910ff2dbd702befc34d1767c5674f0ba250ca66fb1d65350570e81f8304f35775dfde50494f9364a426bdff27b7428968c03100","signer_key_id":"ed25519:56475aa75463474c","signed_at":"2026-01-01T00:00:00+00:00","provenance":[{"stage":"storage","actor":"lemma.test","timestamp":"2026-01-01T00:00:00+00:00","content_hash":"f732ee4807b6c2b9f13acd72f406daf2f46a3b968215c34ccc89993a3ec577bf"}]}`
+
+	// CRL revoking the fixture's signer key BEFORE signed_at — entry flips to VIOLATED.
+	mainCRLRevokedBefore = `{"producer":"TestProducer","issued_at":"2026-01-02T00:00:00+00:00","revocations":[{"key_id":"ed25519:56475aa75463474c","revoked_at":"2025-12-01T00:00:00+00:00","reason":"leaked"}],"issuer_key_id":"ed25519:56475aa75463474c","signature":"5e54a867dfdaa6e02d8843441ce6dcb8385295164abf8280dab0d0cead81b870c04864d82b9afaea068d58510cb2d24b5befa3bfc8edfd4c25ae030d4a1f2c08"}`
 )
 
 func writeMainFixture(t *testing.T, lines []string) (logPath, keysDir string) {
@@ -120,7 +123,7 @@ func TestVerifySucceedsForPristineLog(t *testing.T) {
 }
 
 func TestVerifyExitsOneForTamperedLog(t *testing.T) {
-	bad := strings.Replace(mainFixtureLine0, `"signature":"4a`, `"signature":"5a`, 1)
+	bad := strings.Replace(mainFixtureLine0, `"signature":"a74c`, `"signature":"b74c`, 1)
 	if bad == mainFixtureLine0 {
 		t.Fatal("test bug: tamper substring not found")
 	}
@@ -132,5 +135,91 @@ func TestVerifyExitsOneForTamperedLog(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "VIOLATED") {
 		t.Errorf("stdout should report VIOLATED; got:\n%s", stdout.String())
+	}
+}
+
+// CRL flag + advisory tests --------------------------------------------
+
+func writeMainCRL(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "crl.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestVerifyMissingCRLAdvisoryWhenNoCRLFlag(t *testing.T) {
+	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "No CRL supplied") {
+		t.Errorf("stdout should mention the missing-CRL advisory; got:\n%s", stdout.String())
+	}
+}
+
+func TestVerifyNoAdvisoryWhenCRLProvided(t *testing.T) {
+	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
+	crlPath := writeMainCRL(t, mainCRLRevokedBefore)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, &stdout, &stderr)
+	// The fixture's key is revoked before signed_at → exit 1, VIOLATED.
+	if code != 1 {
+		t.Errorf("exit code %d, want 1\nstdout:\n%s", code, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "No CRL supplied") {
+		t.Errorf("advisory should not appear when --crl is given; got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "VIOLATED") {
+		t.Errorf("stdout should report VIOLATED; got:\n%s", stdout.String())
+	}
+}
+
+func TestVerifyCRLFlagWithoutValueExitsTwo(t *testing.T) {
+	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit code %d, want 2 (usage)", code)
+	}
+}
+
+func TestVerifyMultipleCRLFlagsAccepted(t *testing.T) {
+	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
+	crl1 := writeMainCRL(t, mainCRLRevokedBefore)
+	crl2 := writeMainCRL(t, mainCRLRevokedBefore)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir,
+		"--crl", crl1, "--crl", crl2}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit code %d, want 1 (key revoked)\nstderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestVerifyTamperedCRLExitsOneBeforeWalkingEnvelopes(t *testing.T) {
+	// Bad signature on the CRL must short-circuit before per-envelope checks.
+	tampered := strings.Replace(mainCRLRevokedBefore,
+		`"signature":"5e54a8`,
+		`"signature":"6e54a8`, 1)
+	if tampered == mainCRLRevokedBefore {
+		t.Fatal("test bug: signature substring not found in CRL fixture")
+	}
+	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
+	crlPath := writeMainCRL(t, tampered)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit code %d, want 1 (bad CRL)", code)
+	}
+	if !strings.Contains(stderr.String(), "CRL signature invalid") {
+		t.Errorf("stderr should mention CRL signature failure; got:\n%s", stderr.String())
+	}
+	// The per-envelope walk must NOT have run, so no PROVEN/VIOLATED lines.
+	if strings.Contains(stdout.String(), "PROVEN") || strings.Contains(stdout.String(), "VIOLATED") {
+		t.Errorf("envelope walk should not run on bad CRL; got:\n%s", stdout.String())
 	}
 }
