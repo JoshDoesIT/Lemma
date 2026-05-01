@@ -69,6 +69,69 @@ LwIDAQAB
 	}
 }
 
+// PKCS#8 PEM derived from the same deterministic seed (bytes(range(32)))
+// the public-key fixture uses; the public key in knownPubKeyPEM is the
+// matching half of this private key.
+const knownPrivKeyPEM = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f
+-----END PRIVATE KEY-----
+`
+
+func TestLoadPrivateKeyAcceptsPKCS8Ed25519PEM(t *testing.T) {
+	priv, err := LoadPrivateKey([]byte(knownPrivKeyPEM))
+	if err != nil {
+		t.Fatalf("LoadPrivateKey: %v", err)
+	}
+	if len(priv) != 64 {
+		t.Errorf("expected 64-byte Ed25519 private key, got %d", len(priv))
+	}
+}
+
+func TestLoadPrivateKeyRejectsMalformedPEM(t *testing.T) {
+	if _, err := LoadPrivateKey([]byte("not a PEM")); err == nil {
+		t.Fatal("expected error on malformed PEM, got nil")
+	}
+}
+
+func TestLoadPrivateKeyRejectsEmptyInput(t *testing.T) {
+	if _, err := LoadPrivateKey(nil); err == nil {
+		t.Fatal("expected error on empty input, got nil")
+	}
+}
+
+func TestLoadPrivateKeyRejectsRSAKey(t *testing.T) {
+	// PKCS#8 PEM, but RSA — must be refused, only Ed25519 is supported.
+	rsaPEM := `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCxBlRBlxIE7s9q
+notrealdatabutshouldfailparsingorrsadetectionanyway==
+-----END PRIVATE KEY-----
+`
+	if _, err := LoadPrivateKey([]byte(rsaPEM)); err == nil {
+		t.Fatal("expected error on RSA private key, got nil")
+	}
+}
+
+func TestSignAndVerifyRoundTrip(t *testing.T) {
+	// Round-trip: sign with the loaded private key, verify with the
+	// loaded public key. Confirms LoadPrivateKey produces a usable key.
+	priv, err := LoadPrivateKey([]byte(knownPrivKeyPEM))
+	if err != nil {
+		t.Fatalf("LoadPrivateKey: %v", err)
+	}
+	pub, err := LoadPublicKey([]byte(knownPubKeyPEM))
+	if err != nil {
+		t.Fatalf("LoadPublicKey: %v", err)
+	}
+	hashHex := knownHashHex // 32 hex bytes = 32 raw bytes
+	sigHex := SignEntryHash(priv, hashHex)
+	if sigHex == "" {
+		t.Fatal("SignEntryHash returned empty string")
+	}
+	if !VerifyEntryHash(pub, hashHex, sigHex) {
+		t.Errorf("round-trip sign+verify failed")
+	}
+}
+
 func TestVerifyEntryHashAcceptsKnownGoodSignature(t *testing.T) {
 	pub, err := LoadPublicKey([]byte(knownPubKeyPEM))
 	if err != nil {

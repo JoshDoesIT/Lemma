@@ -181,6 +181,7 @@ def test_no_args_prints_version_line(agent_binary: Path) -> None:
     assert result.returncode == 0
     assert "lemma-agent v" in result.stdout
     assert "verify" in result.stdout
+    assert "sign" in result.stdout
 
 
 # CRL parity tests ------------------------------------------------------
@@ -344,3 +345,139 @@ def test_verify_emits_no_crl_advisory_without_crl_flag(agent_binary: Path, tmp_p
     )
     assert result.returncode == 0, result.stderr
     assert "No CRL supplied" in result.stdout
+
+
+# Sign parity oracle (Go signs, Python verifies) -----------------------
+
+
+def _normalized_event_json(uid: str) -> str:
+    """Run a raw OCSF event through Python's normalizer and return its
+    canonical JSON form. Operators must hand the agent a normalized event
+    so the resulting envelope round-trips through Pydantic's verify path."""
+    from lemma.services.ocsf_normalizer import normalize
+
+    event = normalize(_compliance_event(uid))
+    return event.model_dump_json()
+
+
+def _seed_keys_only(project_dir: Path) -> Path:
+    """Mint a Lemma producer ACTIVE key without writing any envelopes."""
+    from lemma.services import crypto as lemma_crypto
+
+    keys_dir = project_dir / ".lemma" / "keys"
+    keys_dir.mkdir(parents=True)
+    lemma_crypto.generate_keypair(producer="Lemma", key_dir=keys_dir)
+    return keys_dir
+
+
+@requires_go
+def test_agent_sign_produces_python_verifiable_envelope(agent_binary: Path, tmp_path: Path) -> None:
+    """Round-trip: Go signs, Python verifies via EvidenceLog.verify_entry."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+
+    event_json = _normalized_event_json("go-sign-1")
+    result = subprocess.run(
+        [str(agent_binary), "sign", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        input=event_json,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"sign failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    line = result.stdout.strip()
+    assert line, "sign produced empty output"
+
+    # Drop the line into Lemma's evidence directory and ask EvidenceLog
+    # to verify it.
+    evidence_dir = project / ".lemma" / "evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "today.jsonl").write_text(line + "\n")
+
+    import json as _json
+
+    env_dict = _json.loads(line)
+    log = EvidenceLog(log_dir=evidence_dir)
+    verdict = log.verify_entry(env_dict["entry_hash"])
+    assert verdict.state == EvidenceIntegrityState.PROVEN, (
+        f"expected PROVEN, got {verdict.state} ({verdict.detail})\nenvelope: {line}"
+    )
+
+
+@requires_go
+def test_agent_sign_chain_links_via_prev_hash_flag(agent_binary: Path, tmp_path: Path) -> None:
+    """Two signs in sequence, with the second's --prev-hash set to the first's
+    entry_hash, must form a valid chain that verifies end-to-end."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+
+    import json as _json
+
+    first = subprocess.run(
+        [str(agent_binary), "sign", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        input=_normalized_event_json("chain-0"),
+        capture_output=True,
+        text=True,
+    )
+    assert first.returncode == 0, first.stderr
+    first_line = first.stdout.strip()
+    first_hash = _json.loads(first_line)["entry_hash"]
+
+    second = subprocess.run(
+        [
+            str(agent_binary),
+            "sign",
+            "--keys-dir",
+            str(keys_dir),
+            "--producer",
+            "Lemma",
+            "--prev-hash",
+            first_hash,
+        ],
+        input=_normalized_event_json("chain-1"),
+        capture_output=True,
+        text=True,
+    )
+    assert second.returncode == 0, second.stderr
+    second_line = second.stdout.strip()
+    second_hash = _json.loads(second_line)["entry_hash"]
+
+    evidence_dir = project / ".lemma" / "evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "chain.jsonl").write_text(first_line + "\n" + second_line + "\n")
+
+    log = EvidenceLog(log_dir=evidence_dir)
+    for h in (first_hash, second_hash):
+        verdict = log.verify_entry(h)
+        assert verdict.state == EvidenceIntegrityState.PROVEN, (
+            f"{h}: {verdict.state} ({verdict.detail})"
+        )
+
+
+@requires_go
+def test_agent_sign_default_prev_hash_is_genesis(agent_binary: Path, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+
+    result = subprocess.run(
+        [str(agent_binary), "sign", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        input=_normalized_event_json("genesis"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    import json as _json
+
+    env = _json.loads(result.stdout.strip())
+    assert env["prev_hash"] == "0" * 64
