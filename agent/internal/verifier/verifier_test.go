@@ -315,3 +315,214 @@ func TestVerifyNoCRLsBehavesLikePreSliceG(t *testing.T) {
 		}
 	}
 }
+
+// Local lifecycle test cycles ------------------------------------------
+
+// writeMetaJSON drops a meta.json into <keysDir>/<producer>/ alongside
+// the public PEM that writeFixture already laid down. Returns nothing —
+// the caller still uses the same keysDir for verifier.Verify.
+func writeMetaJSON(t *testing.T, keysDir, producer, body string) {
+	t.Helper()
+	path := filepath.Join(keysDir, producer, "meta.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const lifecycleRevokedBefore = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "REVOKED",
+      "activated_at": "2025-12-01T00:00:00+00:00",
+      "retired_at": null,
+      "revoked_at": "2025-12-15T00:00:00+00:00",
+      "revoked_reason": "compromised",
+      "successor_key_id": ""
+    }
+  ]
+}`
+
+const lifecycleRevokedAfter = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "REVOKED",
+      "activated_at": "2025-12-01T00:00:00+00:00",
+      "retired_at": null,
+      "revoked_at": "2026-06-01T00:00:00+00:00",
+      "revoked_reason": "rotation",
+      "successor_key_id": ""
+    }
+  ]
+}`
+
+const lifecycleRevokedEqual = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "REVOKED",
+      "activated_at": "2025-12-01T00:00:00+00:00",
+      "retired_at": null,
+      "revoked_at": "2026-01-01T00:00:00+00:00",
+      "revoked_reason": "exact-instant",
+      "successor_key_id": ""
+    }
+  ]
+}`
+
+const lifecycleRetired = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "RETIRED",
+      "activated_at": "2025-12-01T00:00:00+00:00",
+      "retired_at": "2025-12-15T00:00:00+00:00",
+      "revoked_at": null,
+      "revoked_reason": "",
+      "successor_key_id": ""
+    }
+  ]
+}`
+
+func TestVerifyLocalLifecycleRevokedBeforeFlipsToViolated(t *testing.T) {
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleRevokedBefore)
+	results, err := Verify(logPath, keysDir, Options{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "VIOLATED" {
+		t.Fatalf("status %q, want VIOLATED (reason %q)", results[0].Status, results[0].Reason)
+	}
+	if !strings.Contains(results[0].Reason, "source: local lifecycle") {
+		t.Errorf("reason should name the local source; got %q", results[0].Reason)
+	}
+}
+
+func TestVerifyLocalLifecycleRevokedAfterKeepsProven(t *testing.T) {
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleRevokedAfter)
+	results, err := Verify(logPath, keysDir, Options{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "PROVEN" {
+		t.Errorf("status %q, want PROVEN — entry signed before revocation",
+			results[0].Status)
+	}
+}
+
+func TestVerifyLocalLifecycleRevokedEqualSignedAtFlipsToViolated(t *testing.T) {
+	// Python uses signed_at >= revoked_at — at-the-instant is VIOLATED.
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleRevokedEqual)
+	results, err := Verify(logPath, keysDir, Options{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "VIOLATED" {
+		t.Errorf("status %q, want VIOLATED — entry signed AT revocation instant",
+			results[0].Status)
+	}
+}
+
+func TestVerifyLocalLifecycleRetiredKeepsProven(t *testing.T) {
+	// Only REVOKED flips. RETIRED is documented but doesn't violate.
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleRetired)
+	results, err := Verify(logPath, keysDir, Options{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "PROVEN" {
+		t.Errorf("status %q, want PROVEN — RETIRED status must not flip",
+			results[0].Status)
+	}
+}
+
+func TestVerifyMissingMetaJSONIsPassThrough(t *testing.T) {
+	// No meta.json written — same behaviour as Slice F/G; regression guard.
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	results, err := Verify(logPath, keysDir, Options{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "PROVEN" {
+		t.Errorf("status %q, want PROVEN with no meta.json", results[0].Status)
+	}
+}
+
+const lifecycleEarlierThanCRL = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "REVOKED",
+      "activated_at": "2025-10-01T00:00:00+00:00",
+      "retired_at": null,
+      "revoked_at": "2025-11-01T00:00:00+00:00",
+      "revoked_reason": "local-earlier",
+      "successor_key_id": ""
+    }
+  ]
+}`
+
+func TestVerifyLocalAndCRLLocalEarlierWins(t *testing.T) {
+	// Local: 2025-11-01. CRL (crlRevokedBefore): 2025-12-01. Local wins.
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleEarlierThanCRL)
+	results, err := Verify(logPath, keysDir, Options{
+		CRLs: []*crl.List{loadCRL(t, crlRevokedBefore)},
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "VIOLATED" {
+		t.Fatalf("status %q, want VIOLATED", results[0].Status)
+	}
+	if !strings.Contains(results[0].Reason, "source: local lifecycle") {
+		t.Errorf("reason should name local lifecycle (it's earlier); got %q",
+			results[0].Reason)
+	}
+	if !strings.Contains(results[0].Reason, "local-earlier") {
+		t.Errorf("reason should carry local-source's reason text; got %q",
+			results[0].Reason)
+	}
+}
+
+func TestVerifyLocalAndCRLCRLEarlierWins(t *testing.T) {
+	// Local: 2026-01-15 (lifecycleRevokedBefore is 2025-12-15... actually
+	// that's earlier than the CRL's 2025-12-01? No, 2025-12-15 is AFTER
+	// 2025-12-01). Let me use lifecycleRevokedAfter which sits at
+	// 2026-06-01 — well after the CRL's 2025-12-01, so CRL wins.
+	// But lifecycleRevokedAfter is AFTER signed_at (2026-01-01) too, so
+	// the CRL is the only effective revocation here. Need a lifecycle that
+	// is BEFORE signed_at but AFTER the CRL date.
+	const lifecycleLaterThanCRL = `{
+  "keys": [
+    {
+      "key_id": "ed25519:56475aa75463474c",
+      "status": "REVOKED",
+      "activated_at": "2025-10-01T00:00:00+00:00",
+      "retired_at": null,
+      "revoked_at": "2025-12-20T00:00:00+00:00",
+      "revoked_reason": "local-later",
+      "successor_key_id": ""
+    }
+  ]
+}`
+	logPath, keysDir := writeFixture(t, []string{fixtureLine0})
+	writeMetaJSON(t, keysDir, fixtureProducer, lifecycleLaterThanCRL)
+	results, err := Verify(logPath, keysDir, Options{
+		CRLs: []*crl.List{loadCRL(t, crlRevokedBefore)}, // 2025-12-01
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if results[0].Status != "VIOLATED" {
+		t.Fatalf("status %q, want VIOLATED", results[0].Status)
+	}
+	if !strings.Contains(results[0].Reason, "source: CRL") {
+		t.Errorf("reason should name CRL (it's earlier); got %q", results[0].Reason)
+	}
+}

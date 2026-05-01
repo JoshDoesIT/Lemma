@@ -282,7 +282,11 @@ def test_verify_with_crl_flips_revoked_entry_to_violated(
         f"expected exit 1\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "VIOLATED" in result.stdout
-    assert "CRL" in result.stdout
+    # Python's export_crl derives the CRL from the local lifecycle, so once
+    # Slice I (#193) reads the local lifecycle the merge's "earlier wins"
+    # tie-break may name either source — what matters is the flip fired.
+    assert "revoked at" in result.stdout
+    assert "source: CRL" in result.stdout or "source: local lifecycle" in result.stdout
     # The advisory must NOT appear when --crl was supplied.
     assert "No CRL supplied" not in result.stdout
 
@@ -481,3 +485,33 @@ def test_agent_sign_default_prev_hash_is_genesis(agent_binary: Path, tmp_path: P
 
     env = _json.loads(result.stdout.strip())
     assert env["prev_hash"] == "0" * 64
+
+
+# Local lifecycle parity test (no CRL exported) ------------------------
+
+
+@requires_go
+def test_verify_with_local_lifecycle_revocation_flips_to_violated(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """Local meta.json says REVOKED with revoked_at < signed_at — agent must
+    flip to VIOLATED with source: local lifecycle, even without --crl."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    log_path = _seed_signed_log(project, count=1)
+
+    # Retroactively revoke the signing key in the local lifecycle (no CRL
+    # export — only the meta.json source is in play).
+    _retroactively_revoke_signing_key(project, "Lemma", "2020-01-01T00:00:00+00:00")
+    keys_dir = project / ".lemma" / "keys"
+
+    result = subprocess.run(
+        [str(agent_binary), "verify", str(log_path), "--keys-dir", str(keys_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, (
+        f"expected exit 1\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "VIOLATED" in result.stdout
+    assert "source: local lifecycle" in result.stdout
