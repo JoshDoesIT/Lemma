@@ -10,7 +10,7 @@ import (
 
 func TestNoArgsPrintsVersionAndSubcommandList(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(nil, &stdout, &stderr)
+	code := run(nil, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code %d, want 0", code)
 	}
@@ -25,13 +25,16 @@ func TestNoArgsPrintsVersionAndSubcommandList(t *testing.T) {
 	if !strings.Contains(out, "verify") {
 		t.Errorf("subcommands list should mention 'verify'; got:\n%s", out)
 	}
+	if !strings.Contains(out, "sign") {
+		t.Errorf("subcommands list should mention 'sign'; got:\n%s", out)
+	}
 }
 
 func TestVersionFlag(t *testing.T) {
 	for _, arg := range []string{"version", "--version", "-v"} {
 		t.Run(arg, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run([]string{arg}, &stdout, &stderr)
+			code := run([]string{arg}, bytes.NewReader(nil), &stdout, &stderr)
 			if code != 0 {
 				t.Errorf("exit code %d, want 0", code)
 			}
@@ -51,7 +54,7 @@ func TestVersionIsSemver(t *testing.T) {
 
 func TestUnknownSubcommandExitsTwo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"frobulate"}, &stdout, &stderr)
+	code := run([]string{"frobulate"}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code %d, want 2", code)
 	}
@@ -62,7 +65,7 @@ func TestUnknownSubcommandExitsTwo(t *testing.T) {
 
 func TestVerifyMissingArgsExitsTwo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify"}, &stdout, &stderr)
+	code := run([]string{"verify"}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code %d, want 2 (usage error)", code)
 	}
@@ -110,7 +113,7 @@ func writeMainFixture(t *testing.T, lines []string) (logPath, keysDir string) {
 func TestVerifySucceedsForPristineLog(t *testing.T) {
 	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
@@ -129,7 +132,7 @@ func TestVerifyExitsOneForTamperedLog(t *testing.T) {
 	}
 	logPath, keysDir := writeMainFixture(t, []string{bad})
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit code %d, want 1\nstdout:\n%s", code, stdout.String())
 	}
@@ -153,7 +156,7 @@ func writeMainCRL(t *testing.T, body string) string {
 func TestVerifyMissingCRLAdvisoryWhenNoCRLFlag(t *testing.T) {
 	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
@@ -166,7 +169,7 @@ func TestVerifyNoAdvisoryWhenCRLProvided(t *testing.T) {
 	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
 	crlPath := writeMainCRL(t, mainCRLRevokedBefore)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, bytes.NewReader(nil), &stdout, &stderr)
 	// The fixture's key is revoked before signed_at → exit 1, VIOLATED.
 	if code != 1 {
 		t.Errorf("exit code %d, want 1\nstdout:\n%s", code, stdout.String())
@@ -182,7 +185,7 @@ func TestVerifyNoAdvisoryWhenCRLProvided(t *testing.T) {
 func TestVerifyCRLFlagWithoutValueExitsTwo(t *testing.T) {
 	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl"}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl"}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit code %d, want 2 (usage)", code)
 	}
@@ -194,7 +197,7 @@ func TestVerifyMultipleCRLFlagsAccepted(t *testing.T) {
 	crl2 := writeMainCRL(t, mainCRLRevokedBefore)
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"verify", logPath, "--keys-dir", keysDir,
-		"--crl", crl1, "--crl", crl2}, &stdout, &stderr)
+		"--crl", crl1, "--crl", crl2}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit code %d, want 1 (key revoked)\nstderr:\n%s", code, stderr.String())
 	}
@@ -211,7 +214,7 @@ func TestVerifyTamperedCRLExitsOneBeforeWalkingEnvelopes(t *testing.T) {
 	logPath, keysDir := writeMainFixture(t, []string{mainFixtureLine0})
 	crlPath := writeMainCRL(t, tampered)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, &stdout, &stderr)
+	code := run([]string{"verify", logPath, "--keys-dir", keysDir, "--crl", crlPath}, bytes.NewReader(nil), &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit code %d, want 1 (bad CRL)", code)
 	}
@@ -221,5 +224,185 @@ func TestVerifyTamperedCRLExitsOneBeforeWalkingEnvelopes(t *testing.T) {
 	// The per-envelope walk must NOT have run, so no PROVEN/VIOLATED lines.
 	if strings.Contains(stdout.String(), "PROVEN") || strings.Contains(stdout.String(), "VIOLATED") {
 		t.Errorf("envelope walk should not run on bad CRL; got:\n%s", stdout.String())
+	}
+}
+
+// Sign subcommand tests --------------------------------------------------
+
+const signTestPrivPEM = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f
+-----END PRIVATE KEY-----
+`
+
+const signTestMetaJSON = `{"keys":[{"key_id":"ed25519:56475aa75463474c","status":"ACTIVE","activated_at":"2026-01-01T00:00:00Z","retired_at":null,"revoked_at":null,"revoked_reason":"","successor_key_id":""}]}`
+
+// writeSignFixture lays out a keys-dir with a real ACTIVE key the agent
+// can use to sign.
+func writeSignFixture(t *testing.T) (keysDir string) {
+	t.Helper()
+	dir := t.TempDir()
+	prodDir := filepath.Join(dir, "Lemma")
+	if err := os.MkdirAll(prodDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prodDir, "meta.json"),
+		[]byte(signTestMetaJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prodDir, mainFixtureKeyID+".private.pem"),
+		[]byte(signTestPrivPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prodDir, mainFixtureKeyID+".public.pem"),
+		[]byte(mainFixturePEM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+const signTestEvent = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-04-30T12:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"go-sign-1"}}`
+
+func TestSignFromStdinProducesValidEnvelope(t *testing.T) {
+	keysDir := writeSignFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(signTestEvent),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		t.Fatal("stdout is empty; expected one envelope JSONL line")
+	}
+	for _, want := range []string{
+		`"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000"`,
+		`"signer_key_id":"ed25519:56475aa75463474c"`,
+		`"signature":"`,
+		`"entry_hash":"`,
+		`"stage":"source"`,
+		`"stage":"storage"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\ngot: %s", want, out)
+		}
+	}
+}
+
+func TestSignFromEventFileProducesValidEnvelope(t *testing.T) {
+	keysDir := writeSignFixture(t)
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(eventPath, []byte(signTestEvent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma", "--event", eventPath},
+		bytes.NewReader(nil),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"signer_key_id"`) {
+		t.Errorf("stdout missing signer_key_id; got:\n%s", stdout.String())
+	}
+}
+
+func TestSignChainsViaPrevHashFlag(t *testing.T) {
+	keysDir := writeSignFixture(t)
+	customPrev := "deadbeef" + strings.Repeat("0", 56)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma", "--prev-hash", customPrev},
+		strings.NewReader(signTestEvent),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit code %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"prev_hash":"`+customPrev+`"`) {
+		t.Errorf("expected prev_hash %q in output; got:\n%s",
+			customPrev, stdout.String())
+	}
+}
+
+func TestSignSubcommandRoundTripsThroughVerify(t *testing.T) {
+	keysDir := writeSignFixture(t)
+	var signOut, signErr bytes.Buffer
+	signCode := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(signTestEvent),
+		&signOut, &signErr,
+	)
+	if signCode != 0 {
+		t.Fatalf("sign failed: exit %d\nstderr:\n%s", signCode, signErr.String())
+	}
+
+	logPath := filepath.Join(t.TempDir(), "log.jsonl")
+	if err := os.WriteFile(logPath, []byte(strings.TrimSpace(signOut.String())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var verifyOut, verifyErr bytes.Buffer
+	verifyCode := run(
+		[]string{"verify", logPath, "--keys-dir", keysDir},
+		bytes.NewReader(nil),
+		&verifyOut, &verifyErr,
+	)
+	if verifyCode != 0 {
+		t.Errorf("verify on Go-signed envelope failed: exit %d\nstdout:\n%s\nstderr:\n%s",
+			verifyCode, verifyOut.String(), verifyErr.String())
+	}
+	if !strings.Contains(verifyOut.String(), "1 PROVEN") {
+		t.Errorf("verify should report 1 PROVEN; got:\n%s", verifyOut.String())
+	}
+}
+
+func TestSignMissingProducerExitsTwo(t *testing.T) {
+	keysDir := writeSignFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--keys-dir", keysDir},
+		strings.NewReader(signTestEvent),
+		&stdout, &stderr,
+	)
+	if code != 2 {
+		t.Errorf("exit code %d, want 2 (usage)", code)
+	}
+}
+
+func TestSignMissingKeysDirExitsTwo(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--producer", "Lemma"},
+		strings.NewReader(signTestEvent),
+		&stdout, &stderr,
+	)
+	if code != 2 {
+		t.Errorf("exit code %d, want 2 (usage)", code)
+	}
+}
+
+func TestSignMissingActiveKeyExitsOne(t *testing.T) {
+	// Empty keys-dir → no ACTIVE key for "Lemma".
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "Lemma"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Lemma", "meta.json"),
+		[]byte(`{"keys":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"sign", "--keys-dir", dir, "--producer", "Lemma"},
+		strings.NewReader(signTestEvent),
+		&stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit code %d, want 1 (no ACTIVE key)", code)
 	}
 }

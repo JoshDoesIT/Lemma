@@ -1,35 +1,43 @@
 // Command lemma-agent is the federated Lemma Agent binary.
 //
 // In this slice the agent verifies signed evidence logs end-to-end
-// without going through Python, including CRL-driven revocation.
-// Future slices will add real install / status / sync wiring against
-// a Control Plane (tracked under #25).
+// (including CRL-driven revocation) AND signs new evidence envelopes
+// from raw OCSF events — all without going through Python. Future
+// slices will add real install / status / sync wiring against a
+// Control Plane (tracked under #25).
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/JoshDoesIT/Lemma/agent/internal/crl"
 	"github.com/JoshDoesIT/Lemma/agent/internal/crypto"
+	"github.com/JoshDoesIT/Lemma/agent/internal/keystore"
+	"github.com/JoshDoesIT/Lemma/agent/internal/signer"
 	"github.com/JoshDoesIT/Lemma/agent/internal/verifier"
 )
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify")
+		fmt.Fprintln(stdout, "subcommands: verify, sign")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
+		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -39,9 +47,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "verify":
 		return runVerify(args[1:], stdout, stderr)
+	case "sign":
+		return runSign(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify")
+		fmt.Fprintln(stderr, "subcommands: verify, sign")
 		return 2
 	}
 }
@@ -168,5 +178,143 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 	if violated > 0 {
 		return 1
 	}
+	return 0
+}
+
+func runSign(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent sign --keys-dir <dir> --producer <name> "+
+				"[--prev-hash <hex>] [--event <path>] [--source-label <s>]")
+	}
+
+	var keysDir, producer, prevHash, eventPath, sourceLabel string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent sign: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case a == "--producer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent sign: --producer requires a value")
+				return 2
+			}
+			producer = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--producer="):
+			_, producer, _ = strings.Cut(a, "=")
+		case a == "--prev-hash":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent sign: --prev-hash requires a value")
+				return 2
+			}
+			prevHash = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--prev-hash="):
+			_, prevHash, _ = strings.Cut(a, "=")
+		case a == "--event":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent sign: --event requires a value")
+				return 2
+			}
+			eventPath = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--event="):
+			_, eventPath, _ = strings.Cut(a, "=")
+		case a == "--source-label":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent sign: --source-label requires a value")
+				return 2
+			}
+			sourceLabel = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--source-label="):
+			_, sourceLabel, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent sign: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent sign: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	if keysDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent sign: --keys-dir is required")
+		usage()
+		return 2
+	}
+	if producer == "" {
+		fmt.Fprintln(stderr, "lemma-agent sign: --producer is required")
+		usage()
+		return 2
+	}
+
+	// Read event bytes from --event <path> or stdin.
+	var eventBytes []byte
+	var err error
+	if eventPath != "" {
+		eventBytes, err = os.ReadFile(eventPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent sign: read event: %v\n", err)
+			return 1
+		}
+		if sourceLabel == "" {
+			sourceLabel = eventPath
+		}
+	} else {
+		eventBytes, err = io.ReadAll(stdin)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent sign: read stdin: %v\n", err)
+			return 1
+		}
+		if sourceLabel == "" {
+			sourceLabel = "-"
+		}
+	}
+	if len(strings.TrimSpace(string(eventBytes))) == 0 {
+		fmt.Fprintln(stderr, "lemma-agent sign: event is empty")
+		return 2
+	}
+
+	// Resolve the producer's ACTIVE key.
+	keyID, err := keystore.LoadActive(keysDir, producer)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent sign: %v\n", err)
+		return 1
+	}
+	priv, err := keystore.LoadPrivateKey(keysDir, producer, keyID)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent sign: %v\n", err)
+		return 1
+	}
+
+	sourceHash := sha256.Sum256(eventBytes)
+	now := time.Now().UTC()
+	line, err := signer.Build(signer.Inputs{
+		EventJSON:         json.RawMessage(eventBytes),
+		PrevHash:          prevHash,
+		Producer:          producer,
+		KeyID:             keyID,
+		PrivateKey:        priv,
+		SourceLabel:       sourceLabel,
+		SourceContentHash: hex.EncodeToString(sourceHash[:]),
+		SourceTimestamp:   now,
+		StorageTimestamp:  now,
+		SignedAt:          now,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent sign: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, string(line))
 	return 0
 }

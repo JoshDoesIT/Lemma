@@ -1,9 +1,9 @@
 // Package crypto wraps Go's stdlib Ed25519 + PEM/PKIX primitives in the
-// shape Lemma's evidence verifier needs: load a SubjectPublicKeyInfo
-// PEM, then verify a hex-encoded signature over a hex-encoded entry hash.
+// shape Lemma's evidence verifier and signer need: load PEM public and
+// private keys, sign and verify hex-encoded signatures over hex-encoded
+// entry hashes.
 //
-// Mirrors the verify side of src/lemma/services/crypto.py — sign side is
-// not implemented here (the agent only verifies in this slice).
+// Mirrors src/lemma/services/crypto.py.
 package crypto
 
 import (
@@ -64,6 +64,45 @@ func LoadPublicKeyByID(keysDir, signerKeyID string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("public key not found for key_id %s under %s", signerKeyID, keysDir)
+}
+
+// LoadPrivateKey decodes a PKCS#8 PEM block and returns the contained
+// Ed25519 private key. Anything else (RSA, ECDSA, encrypted, raw seed
+// PEM, malformed) is rejected with a clear error rather than coerced.
+//
+// Mirrors Python's `serialization.load_pem_private_key(pem, password=None)`
+// path used by `crypto._load_private_by_key_id` in
+// `src/lemma/services/crypto.py`.
+func LoadPrivateKey(pemBytes []byte) (ed25519.PrivateKey, error) {
+	if len(pemBytes) == 0 {
+		return nil, errors.New("crypto: empty PEM input")
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("crypto: no PEM block found")
+	}
+	privAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: parse PKCS#8 private key: %w", err)
+	}
+	priv, ok := privAny.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("crypto: private key is %T, want ed25519.PrivateKey", privAny)
+	}
+	return priv, nil
+}
+
+// SignEntryHash signs the 32 raw bytes of entryHashHex with priv and
+// returns the lowercase-hex signature (128 chars). Empty string on
+// hex-decode failure — callers should validate the entry hash shape
+// before calling.
+func SignEntryHash(priv ed25519.PrivateKey, entryHashHex string) string {
+	hash, err := hex.DecodeString(entryHashHex)
+	if err != nil {
+		return ""
+	}
+	sig := ed25519.Sign(priv, hash)
+	return hex.EncodeToString(sig)
 }
 
 // VerifyEntryHash reports whether sig (hex) is a valid Ed25519 signature
