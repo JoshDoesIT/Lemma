@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -404,5 +405,305 @@ func TestSignMissingActiveKeyExitsOne(t *testing.T) {
 	)
 	if code != 1 {
 		t.Errorf("exit code %d, want 1 (no ACTIVE key)", code)
+	}
+}
+
+// Ingest subcommand tests ----------------------------------------------
+
+const ingestEvent1 = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T10:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"ingest-1"}}`
+
+const ingestEvent2 = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T11:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"ingest-2"}}`
+
+// Event timestamped on a different day so multi-day chain threading
+// can be exercised.
+const ingestEventDifferentDay = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-03T08:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"ingest-3"}}`
+
+func writeIngestFixture(t *testing.T) (keysDir, evidenceDir string) {
+	t.Helper()
+	keysDir = writeSignFixture(t)
+	evidenceDir = filepath.Join(t.TempDir(), "evidence")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return keysDir, evidenceDir
+}
+
+func writeJSONLFile(t *testing.T, lines []string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeJSONFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestIngestMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_keys_dir", []string{"ingest", "x.jsonl", "--evidence-dir", "/tmp/e", "--producer", "Lemma"}},
+		{"no_evidence_dir", []string{"ingest", "x.jsonl", "--keys-dir", "/tmp/k", "--producer", "Lemma"}},
+		{"no_producer", []string{"ingest", "x.jsonl", "--keys-dir", "/tmp/k", "--evidence-dir", "/tmp/e"}},
+		{"no_input", []string{"ingest", "--keys-dir", "/tmp/k", "--evidence-dir", "/tmp/e", "--producer", "Lemma"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit code %d, want 2", code)
+			}
+		})
+	}
+}
+
+func TestIngestSingleJSONFileWritesGenesisChainEntry(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	eventPath := writeJSONFile(t, ingestEvent1)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", eventPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 ingested") {
+		t.Errorf("stdout missing '1 ingested'; got: %s", stdout.String())
+	}
+	dayFile := filepath.Join(evidenceDir, "2026-05-02.jsonl")
+	body, err := os.ReadFile(dayFile)
+	if err != nil {
+		t.Fatalf("read day file: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], `"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000"`) {
+		t.Errorf("first entry should be genesis; got %s", lines[0])
+	}
+}
+
+func TestIngestJSONLChainsAcrossEvents(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	jsonlPath := writeJSONLFile(t, []string{ingestEvent1, ingestEvent2})
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", jsonlPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "2 ingested") {
+		t.Errorf("stdout missing '2 ingested'; got: %s", stdout.String())
+	}
+	dayFile := filepath.Join(evidenceDir, "2026-05-02.jsonl")
+	body, _ := os.ReadFile(dayFile)
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(lines))
+	}
+	// Chain: line 2's prev_hash == line 1's entry_hash.
+	var first, second map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatal(err)
+	}
+	if first["entry_hash"] != second["prev_hash"] {
+		t.Errorf("chain broken: line2 prev_hash=%v, line1 entry_hash=%v",
+			second["prev_hash"], first["entry_hash"])
+	}
+}
+
+func TestIngestDedupSkipsRepeatedUid(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	jsonlPath := writeJSONLFile(t, []string{ingestEvent1})
+	// First call: ingest.
+	var out1, err1 bytes.Buffer
+	code1 := run(
+		[]string{"ingest", jsonlPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out1, &err1,
+	)
+	if code1 != 0 {
+		t.Fatalf("first ingest exit %d", code1)
+	}
+	// Second call with the same JSONL: should skip.
+	var out2, err2 bytes.Buffer
+	code2 := run(
+		[]string{"ingest", jsonlPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out2, &err2,
+	)
+	if code2 != 0 {
+		t.Fatalf("second ingest exit %d, want 0\nstderr:\n%s", code2, err2.String())
+	}
+	if !strings.Contains(out2.String(), "0 ingested") {
+		t.Errorf("expected '0 ingested' on dedup; got: %s", out2.String())
+	}
+	if !strings.Contains(out2.String(), "1 skipped") {
+		t.Errorf("expected '1 skipped'; got: %s", out2.String())
+	}
+}
+
+func TestIngestStdinJSONLChainsAcrossEvents(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	stdinBody := ingestEvent1 + "\n" + ingestEvent2 + "\n"
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", "-", "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		strings.NewReader(stdinBody),
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "2 ingested") {
+		t.Errorf("expected '2 ingested'; got: %s", stdout.String())
+	}
+}
+
+func TestIngestMissingInputFileExitsOne(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", "/nonexistent/events.jsonl", "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (file not found)", code)
+	}
+}
+
+func TestIngestUnknownExtensionExitsTwo(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	bogusPath := filepath.Join(t.TempDir(), "events.txt")
+	if err := os.WriteFile(bogusPath, []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", bogusPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 2 {
+		t.Errorf("exit %d, want 2 (unknown extension)", code)
+	}
+}
+
+func TestIngestSpansMultipleDaysWithChainContinuity(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	jsonlPath := writeJSONLFile(t, []string{ingestEvent1, ingestEventDifferentDay})
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", jsonlPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	// Two days, two files.
+	day1Body, err := os.ReadFile(filepath.Join(evidenceDir, "2026-05-02.jsonl"))
+	if err != nil {
+		t.Fatalf("read day1: %v", err)
+	}
+	day2Body, err := os.ReadFile(filepath.Join(evidenceDir, "2026-05-03.jsonl"))
+	if err != nil {
+		t.Fatalf("read day2: %v", err)
+	}
+	day1Lines := strings.Split(strings.TrimSpace(string(day1Body)), "\n")
+	day2Lines := strings.Split(strings.TrimSpace(string(day2Body)), "\n")
+	if len(day1Lines) != 1 || len(day2Lines) != 1 {
+		t.Fatalf("expected 1 line per day, got day1=%d day2=%d",
+			len(day1Lines), len(day2Lines))
+	}
+	// day2's first entry chains off day1's last entry.
+	var first, second map[string]any
+	json.Unmarshal([]byte(day1Lines[0]), &first)
+	json.Unmarshal([]byte(day2Lines[0]), &second)
+	if first["entry_hash"] != second["prev_hash"] {
+		t.Errorf("multi-day chain broken: day2 prev_hash=%v, day1 entry_hash=%v",
+			second["prev_hash"], first["entry_hash"])
+	}
+}
+
+func TestIngestPicksUpChainFromExistingLogOnSecondCall(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	// First call: one event.
+	first := writeJSONLFile(t, []string{ingestEvent1})
+	var out1, err1 bytes.Buffer
+	if code := run(
+		[]string{"ingest", first, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out1, &err1,
+	); code != 0 {
+		t.Fatalf("first ingest exit %d", code)
+	}
+	// Capture the entry hash that's now on disk.
+	body, _ := os.ReadFile(filepath.Join(evidenceDir, "2026-05-02.jsonl"))
+	var firstEnv map[string]any
+	json.Unmarshal([]byte(strings.TrimSpace(string(body))), &firstEnv)
+	prior := firstEnv["entry_hash"].(string)
+
+	// Second call with a different uid (so dedup doesn't skip).
+	second := writeJSONLFile(t, []string{ingestEvent2})
+	var out2, err2 bytes.Buffer
+	if code := run(
+		[]string{"ingest", second, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out2, &err2,
+	); code != 0 {
+		t.Fatalf("second ingest exit %d\nstderr:\n%s", code, err2.String())
+	}
+	body, _ = os.ReadFile(filepath.Join(evidenceDir, "2026-05-02.jsonl"))
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 entries after second ingest, got %d", len(lines))
+	}
+	var secondEnv map[string]any
+	json.Unmarshal([]byte(lines[1]), &secondEnv)
+	if secondEnv["prev_hash"] != prior {
+		t.Errorf("second call should chain off prior on-disk entry: prev_hash=%v want %v",
+			secondEnv["prev_hash"], prior)
+	}
+}
+
+func TestIngestEmptyJSONLIsZeroIngestedNotError(t *testing.T) {
+	keysDir, evidenceDir := writeIngestFixture(t)
+	emptyPath := writeJSONLFile(t, []string{})
+	// writeJSONLFile writes "\n" for empty list; that's OK — counts as no events.
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"ingest", emptyPath, "--keys-dir", keysDir,
+			"--evidence-dir", evidenceDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Errorf("exit %d, want 0 for empty input", code)
+	}
+	if !strings.Contains(stdout.String(), "0 ingested") {
+		t.Errorf("expected '0 ingested'; got: %s", stdout.String())
 	}
 }

@@ -1,24 +1,28 @@
 // Command lemma-agent is the federated Lemma Agent binary.
 //
-// In this slice the agent verifies signed evidence logs end-to-end
-// (including CRL-driven revocation) AND signs new evidence envelopes
-// from raw OCSF events — all without going through Python. Future
-// slices will add real install / status / sync wiring against a
-// Control Plane (tracked under #25).
+// In this slice the agent verifies signed evidence logs (including
+// CRL- and lifecycle-driven revocation), signs single OCSF events,
+// and ingests batches of events into a Go-managed evidence log —
+// all without going through Python. Future slices will add real
+// install / status / sync wiring against a Control Plane (tracked
+// under #25).
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/JoshDoesIT/Lemma/agent/internal/crl"
 	"github.com/JoshDoesIT/Lemma/agent/internal/crypto"
+	"github.com/JoshDoesIT/Lemma/agent/internal/evidencelog"
 	"github.com/JoshDoesIT/Lemma/agent/internal/keystore"
 	"github.com/JoshDoesIT/Lemma/agent/internal/signer"
 	"github.com/JoshDoesIT/Lemma/agent/internal/verifier"
@@ -35,9 +39,10 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
+		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -49,9 +54,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runVerify(args[1:], stdout, stderr)
 	case "sign":
 		return runSign(args[1:], stdin, stdout, stderr)
+	case "ingest":
+		return runIngest(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest")
 		return 2
 	}
 }
@@ -317,4 +324,297 @@ func runSign(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, string(line))
 	return 0
+}
+
+func runIngest(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> "+
+				"--producer <name> [--source-label <s>]")
+	}
+
+	var inputPath, keysDir, evidenceDir, producer, sourceLabel string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent ingest: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case a == "--evidence-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent ingest: --evidence-dir requires a value")
+				return 2
+			}
+			evidenceDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--evidence-dir="):
+			_, evidenceDir, _ = strings.Cut(a, "=")
+		case a == "--producer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent ingest: --producer requires a value")
+				return 2
+			}
+			producer = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--producer="):
+			_, producer, _ = strings.Cut(a, "=")
+		case a == "--source-label":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent ingest: --source-label requires a value")
+				return 2
+			}
+			sourceLabel = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--source-label="):
+			_, sourceLabel, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-") && a != "-":
+			fmt.Fprintf(stderr, "lemma-agent ingest: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			if inputPath != "" {
+				fmt.Fprintln(stderr, "lemma-agent ingest: too many positional arguments")
+				usage()
+				return 2
+			}
+			inputPath = a
+		}
+	}
+	if inputPath == "" {
+		usage()
+		return 2
+	}
+	if keysDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent ingest: --keys-dir is required")
+		usage()
+		return 2
+	}
+	if evidenceDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent ingest: --evidence-dir is required")
+		usage()
+		return 2
+	}
+	if producer == "" {
+		fmt.Fprintln(stderr, "lemma-agent ingest: --producer is required")
+		usage()
+		return 2
+	}
+
+	// Read raw input bytes + format detection.
+	var rawBytes []byte
+	var isJSONL bool
+	if inputPath == "-" {
+		buf, err := io.ReadAll(stdin)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: read stdin: %v\n", err)
+			return 1
+		}
+		rawBytes = buf
+		isJSONL = true
+		if sourceLabel == "" {
+			sourceLabel = "-"
+		}
+	} else {
+		switch strings.ToLower(filepath.Ext(inputPath)) {
+		case ".jsonl":
+			isJSONL = true
+		case ".json":
+			isJSONL = false
+		default:
+			fmt.Fprintf(stderr,
+				"lemma-agent ingest: unsupported file extension %q (use .json or .jsonl)\n",
+				filepath.Ext(inputPath))
+			return 2
+		}
+		buf, err := os.ReadFile(inputPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: read %s: %v\n", inputPath, err)
+			return 1
+		}
+		rawBytes = buf
+		if sourceLabel == "" {
+			sourceLabel = inputPath
+		}
+	}
+
+	// Parse events.
+	events, err := parseEvents(rawBytes, isJSONL)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+		return 1
+	}
+
+	// Resolve key + private PEM.
+	keyID, err := keystore.LoadActive(keysDir, producer)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+		return 1
+	}
+	priv, err := keystore.LoadPrivateKey(keysDir, producer, keyID)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+		return 1
+	}
+
+	// Build the source provenance once per call (sha256 of raw input).
+	sourceContentHash := hashHex(rawBytes)
+
+	log := evidencelog.Log{Dir: evidenceDir}
+
+	// Pre-compute dedup-key sets for the days the input touches, so the
+	// loop doesn't re-read those files for every event.
+	daysTouched := map[string]string{} // YYYY-MM-DD -> file path
+	for _, ev := range events {
+		t, err := parseEventTime(ev)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+			return 1
+		}
+		path := log.FilePathForTime(t)
+		daysTouched[path] = path
+	}
+	dayPaths := make([]string, 0, len(daysTouched))
+	for _, p := range daysTouched {
+		dayPaths = append(dayPaths, p)
+	}
+	seen, err := log.DedupKeysForFiles(dayPaths)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+		return 1
+	}
+
+	// Pull the chain head once; advance in memory across the batch.
+	prevHash, err := log.LatestEntryHash()
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+		return 1
+	}
+
+	now := time.Now().UTC()
+	ingested, skipped := 0, 0
+	for _, ev := range events {
+		key, err := evidencelog.DedupKey(ev)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+			return 1
+		}
+		if _, exists := seen[key]; exists {
+			skipped++
+			continue
+		}
+		t, err := parseEventTime(ev)
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: %v\n", err)
+			return 1
+		}
+		dayPath := log.FilePathForTime(t)
+
+		line, err := signer.Build(signer.Inputs{
+			EventJSON:         ev,
+			PrevHash:          prevHash,
+			Producer:          producer,
+			KeyID:             keyID,
+			PrivateKey:        priv,
+			SourceLabel:       sourceLabel,
+			SourceContentHash: sourceContentHash,
+			SourceTimestamp:   now,
+			StorageTimestamp:  now,
+			SignedAt:          now,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: build envelope: %v\n", err)
+			return 1
+		}
+		if err := log.Append(dayPath, line); err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: append: %v\n", err)
+			return 1
+		}
+		// Advance the in-memory chain head.
+		var head struct {
+			EntryHash string `json:"entry_hash"`
+		}
+		if err := json.Unmarshal(line, &head); err != nil {
+			fmt.Fprintf(stderr, "lemma-agent ingest: parse new entry: %v\n", err)
+			return 1
+		}
+		prevHash = head.EntryHash
+		seen[key] = struct{}{}
+		ingested++
+	}
+
+	fmt.Fprintf(stdout, "%d ingested, %d skipped (duplicate).\n", ingested, skipped)
+	return 0
+}
+
+// hashHex returns lowercase-hex SHA-256 of b.
+func hashHex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// parseEvents converts the raw input bytes into a slice of event JSON
+// payloads. JSONL → one event per non-empty line; JSON → single object.
+// Empty input yields an empty slice (zero events, no error).
+func parseEvents(raw []byte, isJSONL bool) ([]json.RawMessage, error) {
+	if isJSONL {
+		var out []json.RawMessage
+		scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		lineNo := 0
+		for scanner.Scan() {
+			lineNo++
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if !json.Valid([]byte(line)) {
+				return nil, fmt.Errorf("parse JSONL line %d: invalid JSON", lineNo)
+			}
+			out = append(out, json.RawMessage(line))
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("scan JSONL: %w", err)
+		}
+		return out, nil
+	}
+	// Single JSON object.
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("parse JSON: invalid JSON")
+	}
+	return []json.RawMessage{json.RawMessage(raw)}, nil
+}
+
+// parseEventTime extracts the event's `time` field and parses it as
+// ISO-8601 (accepting both Z and +HH:MM suffixes).
+func parseEventTime(eventJSON json.RawMessage) (time.Time, error) {
+	var probe struct {
+		Time string `json:"time"`
+	}
+	if err := json.Unmarshal(eventJSON, &probe); err != nil {
+		return time.Time{}, fmt.Errorf("parse event time: %w", err)
+	}
+	if probe.Time == "" {
+		return time.Time{}, fmt.Errorf("event has no time field")
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.000000Z07:00",
+		"2006-01-02T15:04:05.999999Z07:00",
+		"2006-01-02T15:04:05Z07:00",
+		time.RFC3339Nano,
+		time.RFC3339,
+	} {
+		if t, err := time.Parse(layout, probe.Time); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse event time %q", probe.Time)
 }
