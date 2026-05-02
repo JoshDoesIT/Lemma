@@ -201,7 +201,10 @@ VIOLATED entry-hash mismatch.
 ### Forward
 
 ```bash
-./lemma-agent forward <jsonl> --to <url> [--header KEY=VALUE]... [--timeout SECONDS]
+./lemma-agent forward <jsonl> --to <url> \
+    [--header KEY=VALUE]... [--timeout SECONDS] \
+    [--mtls-cert <file>] [--mtls-key <file>] [--mtls-ca <file>] \
+    [--insecure-skip-verify]
 ```
 
 POSTs each JSONL line of `<jsonl>` to `<url>` as an individual JSON
@@ -214,6 +217,15 @@ custom routing headers. `Content-Type` is always set to
 `application/json` and cannot be overridden. `--timeout` sets a per-
 request deadline in whole seconds (default: Go's `http.Client` default).
 
+**Mutual TLS**: pass `--mtls-cert` and `--mtls-key` together to
+authenticate the agent to the Control Plane via a client certificate
+(both must point at PEM files; setting only one is a usage error). Use
+`--mtls-ca <file>` to pin a CA bundle that verifies the server cert
+(replaces the system trust store). `--insecure-skip-verify` disables
+server cert verification entirely — dev/test only; the agent prints a
+loud `WARNING` to stderr. **mTLS flags require an `https://` URL**;
+mixing them with `http://` exits 1 to prevent silent downgrade.
+
 A response in the 2xx range counts as forwarded; anything else (4xx,
 5xx, or transport error) counts as failed. Empty/blank lines in the
 input are skipped.
@@ -222,9 +234,9 @@ Output: `<N> forwarded, <M> failed.` Exit `0` only when all envelopes
 forwarded successfully; exit `1` if any failed; exit `2` on usage
 errors.
 
-**This slice is HTTP/HTTPS only**. mTLS, retry/backoff, resumable
-forwarding (tracking which envelopes were already sent), bulk POSTs,
-and the Control Plane receiver are tracked separately under #25.
+**Out of scope** for the federation arc so far: retry/backoff,
+resumable forwarding (tracking which envelopes were already sent),
+bulk POSTs, and the Control Plane receiver — all tracked under #25.
 
 ## Roadmap
 

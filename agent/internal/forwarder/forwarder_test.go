@@ -1,7 +1,14 @@
 package forwarder
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -276,4 +283,213 @@ func TestForwardPreservesEnvelopeOrderInPOSTBodies(t *testing.T) {
 			t.Errorf("POST %d order broken: got %q, want %q", i, bodies[i], want)
 		}
 	}
+}
+
+// mTLS test cycles ----------------------------------------------------
+
+// httpsTestSetup stands up an httptest.NewTLSServer (self-signed cert)
+// and writes its server cert PEM to a temp file the test can pass as
+// --mtls-ca. Returns the server, the path to the CA PEM, and a cleanup.
+func httpsTestSetup(t *testing.T, handler http.HandlerFunc) (*httptest.Server, string) {
+	t.Helper()
+	srv := httptest.NewTLSServer(handler)
+	t.Cleanup(srv.Close)
+
+	caPath := writeTempFile(t, "ca.pem", certToPEM(t, srv.Certificate()))
+	return srv, caPath
+}
+
+func writeTempFile(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func certToPEM(t *testing.T, cert *x509.Certificate) []byte {
+	t.Helper()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+}
+
+func TestForwardOverHTTPSWithCAVerifies(t *testing.T) {
+	rs := newRecordingServer(200)
+	srv, caPath := httpsTestSetup(t, rs.handler())
+
+	jsonl := makeJSONLFile(t, []string{`{"entry_hash":"a"}`})
+	res, err := Forward(jsonl, srv.URL, Options{
+		MTLSCAPath: caPath,
+	})
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if res.Forwarded != 1 {
+		t.Errorf("forwarded = %d, want 1", res.Forwarded)
+	}
+}
+
+func TestForwardOverHTTPSWithoutCARejectsSelfSigned(t *testing.T) {
+	rs := newRecordingServer(200)
+	srv := httptest.NewTLSServer(rs.handler())
+	defer srv.Close()
+
+	jsonl := makeJSONLFile(t, []string{`{"entry_hash":"a"}`})
+	res, _ := Forward(jsonl, srv.URL, Options{}) // No CA, no skip-verify.
+	if res.Failed != 1 {
+		t.Errorf("self-signed cert without CA should fail; failed=%d", res.Failed)
+	}
+}
+
+func TestForwardInsecureSkipVerifyAcceptsSelfSigned(t *testing.T) {
+	rs := newRecordingServer(200)
+	srv := httptest.NewTLSServer(rs.handler())
+	defer srv.Close()
+
+	jsonl := makeJSONLFile(t, []string{`{"entry_hash":"a"}`})
+	res, err := Forward(jsonl, srv.URL, Options{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if res.Forwarded != 1 {
+		t.Errorf("--insecure-skip-verify should accept self-signed; forwarded=%d failed=%d",
+			res.Forwarded, res.Failed)
+	}
+}
+
+func TestForwardWithClientCertAuthSucceeds(t *testing.T) {
+	// Generate an Ed25519 client keypair + self-signed certificate.
+	clientCertPEM, clientKeyPEM, clientCert := genEd25519ClientCert(t)
+	clientCertPath := writeTempFile(t, "client.crt", clientCertPEM)
+	clientKeyPath := writeTempFile(t, "client.key", clientKeyPEM)
+
+	// Stand up an httptest TLS server that requires + verifies client certs.
+	rs := newRecordingServer(200)
+	srv := httptest.NewUnstartedServer(rs.handler())
+	clientCAs := x509.NewCertPool()
+	clientCAs.AddCert(clientCert)
+	srv.TLS = &tls.Config{
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs:  clientCAs,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	caPath := writeTempFile(t, "ca.pem", certToPEM(t, srv.Certificate()))
+
+	jsonl := makeJSONLFile(t, []string{`{"entry_hash":"a"}`})
+	res, err := Forward(jsonl, srv.URL, Options{
+		MTLSCertPath: clientCertPath,
+		MTLSKeyPath:  clientKeyPath,
+		MTLSCAPath:   caPath,
+	})
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	if res.Forwarded != 1 {
+		t.Errorf("client-cert auth should succeed; forwarded=%d failed=%d",
+			res.Forwarded, res.Failed)
+	}
+}
+
+func TestForwardWithoutClientCertWhenServerRequiresFails(t *testing.T) {
+	// Server requires a client cert; agent doesn't supply one.
+	rs := newRecordingServer(200)
+	srv := httptest.NewUnstartedServer(rs.handler())
+	srv.TLS = &tls.Config{
+		ClientAuth: tls.RequireAnyClientCert,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	caPath := writeTempFile(t, "ca.pem", certToPEM(t, srv.Certificate()))
+
+	jsonl := makeJSONLFile(t, []string{`{"entry_hash":"a"}`})
+	res, _ := Forward(jsonl, srv.URL, Options{
+		MTLSCAPath: caPath, // CA only; no client cert
+	})
+	if res.Failed != 1 {
+		t.Errorf("missing client cert against require-cert server should fail; failed=%d",
+			res.Failed)
+	}
+}
+
+func TestForwardErrorsWhenOnlyMTLSCertGivenNoKey(t *testing.T) {
+	clientCertPEM, _, _ := genEd25519ClientCert(t)
+	jsonl := makeJSONLFile(t, []string{`{}`})
+	_, err := Forward(jsonl, "https://example.invalid/",
+		Options{MTLSCertPath: writeTempFile(t, "c.pem", clientCertPEM)})
+	if err == nil {
+		t.Error("expected error when --mtls-cert given without --mtls-key, got nil")
+	}
+}
+
+func TestForwardErrorsWhenOnlyMTLSKeyGivenNoCert(t *testing.T) {
+	_, clientKeyPEM, _ := genEd25519ClientCert(t)
+	jsonl := makeJSONLFile(t, []string{`{}`})
+	_, err := Forward(jsonl, "https://example.invalid/",
+		Options{MTLSKeyPath: writeTempFile(t, "k.pem", clientKeyPEM)})
+	if err == nil {
+		t.Error("expected error when --mtls-key given without --mtls-cert, got nil")
+	}
+}
+
+func TestForwardErrorsWhenMTLSFlagsGivenWithHTTPURL(t *testing.T) {
+	clientCertPEM, clientKeyPEM, _ := genEd25519ClientCert(t)
+	jsonl := makeJSONLFile(t, []string{`{}`})
+	_, err := Forward(jsonl, "http://example.invalid/", Options{
+		MTLSCertPath: writeTempFile(t, "c.pem", clientCertPEM),
+		MTLSKeyPath:  writeTempFile(t, "k.pem", clientKeyPEM),
+	})
+	if err == nil {
+		t.Error("expected error when mTLS flags given with http:// URL, got nil")
+	}
+}
+
+func TestForwardErrorsOnMissingMTLSCertFile(t *testing.T) {
+	_, err := Forward("/dev/null", "https://example.invalid/", Options{
+		MTLSCertPath: "/nonexistent/cert.pem",
+		MTLSKeyPath:  "/nonexistent/key.pem",
+	})
+	if err == nil {
+		t.Error("expected error on missing cert file, got nil")
+	}
+}
+
+// genEd25519ClientCert mints a self-signed Ed25519 keypair + cert
+// suitable as a client credential. Returns the cert PEM bytes, the
+// private key PEM bytes (PKCS#8), and the parsed *x509.Certificate.
+func genEd25519ClientCert(t *testing.T) ([]byte, []byte, *x509.Certificate) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "lemma-agent-test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM, cert
 }
