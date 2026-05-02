@@ -29,6 +29,12 @@ func TestNoArgsPrintsVersionAndSubcommandList(t *testing.T) {
 	if !strings.Contains(out, "sign") {
 		t.Errorf("subcommands list should mention 'sign'; got:\n%s", out)
 	}
+	if !strings.Contains(out, "ingest") {
+		t.Errorf("subcommands list should mention 'ingest'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "keygen") {
+		t.Errorf("subcommands list should mention 'keygen'; got:\n%s", out)
+	}
 }
 
 func TestVersionFlag(t *testing.T) {
@@ -705,5 +711,113 @@ func TestIngestEmptyJSONLIsZeroIngestedNotError(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "0 ingested") {
 		t.Errorf("expected '0 ingested'; got: %s", stdout.String())
+	}
+}
+
+// Keygen subcommand tests ---------------------------------------------
+
+func TestKeygenMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_keys_dir", []string{"keygen", "--producer", "Lemma"}},
+		{"no_producer", []string{"keygen", "--keys-dir", "/tmp/k"}},
+		{"both_missing", []string{"keygen"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit %d, want 2 (usage)\nstderr:\n%s", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestKeygenFreshMintsKeyAndPrintsKeyID(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"keygen", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Generated ed25519:") {
+		t.Errorf("stdout missing 'Generated ed25519:' line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "for producer Lemma") {
+		t.Errorf("stdout missing producer name; got:\n%s", out)
+	}
+	// Files exist on disk.
+	prodDir := filepath.Join(dir, "Lemma")
+	if _, err := os.Stat(filepath.Join(prodDir, "meta.json")); err != nil {
+		t.Errorf("meta.json missing: %v", err)
+	}
+}
+
+func TestKeygenIdempotentSecondCallReturnsSameID(t *testing.T) {
+	dir := t.TempDir()
+	var out1 bytes.Buffer
+	if code := run(
+		[]string{"keygen", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out1, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("first keygen exit %d", code)
+	}
+	var out2, err2 bytes.Buffer
+	code := run(
+		[]string{"keygen", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &out2, &err2,
+	)
+	if code != 0 {
+		t.Fatalf("second keygen exit %d\nstderr:\n%s", code, err2.String())
+	}
+	if !strings.Contains(out2.String(), "already has ACTIVE key") {
+		t.Errorf("idempotent stdout missing 'already has ACTIVE key'; got:\n%s",
+			out2.String())
+	}
+}
+
+func TestKeygenRoundTripsThroughSignAndVerify(t *testing.T) {
+	keysDir := t.TempDir()
+	// 1. Mint a fresh key via the agent.
+	var keygenOut, keygenErr bytes.Buffer
+	if code := run(
+		[]string{"keygen", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &keygenOut, &keygenErr,
+	); code != 0 {
+		t.Fatalf("keygen exit %d\nstderr:\n%s", code, keygenErr.String())
+	}
+
+	// 2. Sign an OCSF event with that key.
+	const ev = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T12:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"keygen-rt"}}`
+	var signOut, signErr bytes.Buffer
+	if code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(ev), &signOut, &signErr,
+	); code != 0 {
+		t.Fatalf("sign exit %d\nstderr:\n%s", code, signErr.String())
+	}
+
+	// 3. Write the signed envelope to a log file and verify.
+	logPath := filepath.Join(t.TempDir(), "log.jsonl")
+	if err := os.WriteFile(logPath, []byte(strings.TrimSpace(signOut.String())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var verifyOut, verifyErr bytes.Buffer
+	if code := run(
+		[]string{"verify", logPath, "--keys-dir", keysDir},
+		bytes.NewReader(nil), &verifyOut, &verifyErr,
+	); code != 0 {
+		t.Errorf("verify exit %d\nstdout:\n%s\nstderr:\n%s",
+			code, verifyOut.String(), verifyErr.String())
+	}
+	if !strings.Contains(verifyOut.String(), "1 PROVEN") {
+		t.Errorf("verify should report 1 PROVEN; got:\n%s", verifyOut.String())
 	}
 }

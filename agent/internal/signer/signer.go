@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/JoshDoesIT/Lemma/agent/internal/canonjson"
@@ -147,19 +146,22 @@ func (p provRecord) toMap() map[string]any {
 	}
 }
 
-// isoZ formats a UTC timestamp as Pydantic does in model_dump_json:
+// isoZ formats a UTC timestamp the way Pydantic's model_dump_json does
+// for datetime fields:
 //
-//	2026-04-30T12:34:56.789012Z
+//	2026-04-30T12:34:56.789012Z   when microseconds are non-zero
+//	2026-04-30T12:34:56Z          when microseconds are exactly zero
 //
-// Trailing zeros are dropped (Python uses up to microsecond precision;
-// trailing zeros suppressed). Non-UTC inputs are converted to UTC first.
+// Pydantic's behaviour is binary: either keep all six microsecond digits,
+// or drop the fractional second entirely. It does NOT trim trailing
+// zeros within a non-zero microsecond value (e.g. .348620 is kept whole,
+// not rendered as .34862). Non-UTC inputs are converted to UTC first.
 func isoZ(t time.Time) string {
 	t = t.UTC()
-	// Match Pydantic's microsecond-precision format with `Z` suffix.
-	s := t.Format("2006-01-02T15:04:05.000000")
-	// Pydantic suppresses trailing-zero microseconds: 12:34:56.000000 -> 12:34:56
-	s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
-	return s + "Z"
+	if t.Nanosecond() == 0 {
+		return t.Format("2006-01-02T15:04:05") + "Z"
+	}
+	return t.Format("2006-01-02T15:04:05.000000") + "Z"
 }
 
 func decodeWithNumber(raw json.RawMessage) (any, error) {

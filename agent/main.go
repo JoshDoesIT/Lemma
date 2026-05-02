@@ -39,10 +39,11 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
+		fmt.Fprintln(stdout, "Run `lemma-agent keygen --keys-dir <dir> --producer <name>` to mint a producer keypair.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -56,9 +57,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSign(args[1:], stdin, stdout, stderr)
 	case "ingest":
 		return runIngest(args[1:], stdin, stdout, stderr)
+	case "keygen":
+		return runKeygen(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen")
 		return 2
 	}
 }
@@ -617,4 +620,65 @@ func parseEventTime(eventJSON json.RawMessage) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("cannot parse event time %q", probe.Time)
+}
+
+func runKeygen(args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr, "usage: lemma-agent keygen --keys-dir <dir> --producer <name>")
+	}
+
+	var keysDir, producer string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keygen: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case a == "--producer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keygen: --producer requires a value")
+				return 2
+			}
+			producer = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--producer="):
+			_, producer, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent keygen: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent keygen: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	if keysDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent keygen: --keys-dir is required")
+		usage()
+		return 2
+	}
+	if producer == "" {
+		fmt.Fprintln(stderr, "lemma-agent keygen: --producer is required")
+		usage()
+		return 2
+	}
+
+	keyID, created, err := keystore.GenerateKeypair(keysDir, producer)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent keygen: %v\n", err)
+		return 1
+	}
+	if created {
+		fmt.Fprintf(stdout, "Generated %s for producer %s.\n", keyID, producer)
+	} else {
+		fmt.Fprintf(stdout, "Producer %s already has ACTIVE key %s.\n", producer, keyID)
+	}
+	return 0
 }

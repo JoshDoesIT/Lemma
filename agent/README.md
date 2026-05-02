@@ -109,6 +109,42 @@ Exit codes:
 - `1` — signing failed (missing ACTIVE key, malformed PEM, IO error)
 - `2` — usage error (missing flag, empty event)
 
+### Keygen
+
+```bash
+./lemma-agent keygen --keys-dir <dir> --producer <name>
+```
+
+Mints an Ed25519 keypair for `<name>` and writes the same on-disk
+layout Python's `lemma init` / `crypto.generate_keypair` produces:
+
+- `<dir>/<safe_producer>/<key_id>.private.pem` (PKCS#8 PEM, mode 0o600)
+- `<dir>/<safe_producer>/<key_id>.public.pem` (SubjectPublicKeyInfo PEM, mode 0o644)
+- `<dir>/<safe_producer>/meta.json` with one `ACTIVE` record
+
+`<safe_producer>` replaces `/` and ` ` with `_` so the producer name
+can't escape the keys directory. The `key_id` is
+`"ed25519:" + sha256(raw_public).hex()[:16]` — same algorithm Python
+uses, so the same key minted on either side produces the same key_id.
+
+**Idempotent**: a second call against a producer that already has an
+ACTIVE key returns its key_id without modifying any files. Output:
+
+- New: `Generated ed25519:<id> for producer <name>.`
+- Existing: `Producer <name> already has ACTIVE key ed25519:<id>.`
+
+Pair `keygen` with `ingest` and `verify` to deploy a fully self-
+sufficient Go-only agent — no Python required for the runtime path.
+**Rotation and revocation are not in this binary yet** (use Python's
+`crypto.rotate_key` / `crypto.revoke_key` for those). They'll land in
+later slices.
+
+Exit codes:
+
+- `0` — fresh keypair minted, OR existing ACTIVE key returned
+- `1` — filesystem error (mkdir, write, chmod)
+- `2` — usage error (missing flag)
+
 ### Ingest
 
 ```bash
