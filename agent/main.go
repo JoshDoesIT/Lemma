@@ -2,10 +2,11 @@
 //
 // In this slice the agent verifies signed evidence logs (including
 // CRL- and lifecycle-driven revocation), signs single OCSF events,
-// and ingests batches of events into a Go-managed evidence log —
-// all without going through Python. Future slices will add real
-// install / status / sync wiring against a Control Plane (tracked
-// under #25).
+// ingests batches of events into a Go-managed evidence log, mints
+// producer keys, and forwards signed envelopes to a Control Plane
+// URL — all without going through Python. Future slices will add
+// mTLS, the receiving Control Plane, and real install/status/sync
+// wiring (tracked under #25).
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"github.com/JoshDoesIT/Lemma/agent/internal/crl"
 	"github.com/JoshDoesIT/Lemma/agent/internal/crypto"
 	"github.com/JoshDoesIT/Lemma/agent/internal/evidencelog"
+	"github.com/JoshDoesIT/Lemma/agent/internal/forwarder"
 	"github.com/JoshDoesIT/Lemma/agent/internal/keystore"
 	"github.com/JoshDoesIT/Lemma/agent/internal/signer"
 	"github.com/JoshDoesIT/Lemma/agent/internal/verifier"
@@ -30,7 +32,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -39,11 +41,12 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, forward")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent keygen --keys-dir <dir> --producer <name>` to mint a producer keypair.")
+		fmt.Fprintln(stdout, "Run `lemma-agent forward <jsonl> --to <url>` to POST signed envelopes to a Control Plane.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -59,9 +62,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runIngest(args[1:], stdin, stdout, stderr)
 	case "keygen":
 		return runKeygen(args[1:], stdout, stderr)
+	case "forward":
+		return runForward(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, forward")
 		return 2
 	}
 }
@@ -681,4 +686,120 @@ func runKeygen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Producer %s already has ACTIVE key %s.\n", producer, keyID)
 	}
 	return 0
+}
+
+func runForward(args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent forward <jsonl> --to <url> "+
+				"[--header KEY=VALUE]... [--timeout SECONDS]")
+	}
+
+	var jsonlPath, url string
+	headers := map[string]string{}
+	var timeoutSec int
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--to":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --to requires a value")
+				return 2
+			}
+			url = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--to="):
+			_, url, _ = strings.Cut(a, "=")
+		case a == "--header":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --header requires a value")
+				return 2
+			}
+			k, v, ok := strings.Cut(args[i+1], "=")
+			if !ok || k == "" {
+				fmt.Fprintf(stderr, "lemma-agent forward: --header value %q must be KEY=VALUE\n", args[i+1])
+				return 2
+			}
+			headers[k] = v
+			i++
+		case strings.HasPrefix(a, "--header="):
+			_, val, _ := strings.Cut(a, "=")
+			k, v, ok := strings.Cut(val, "=")
+			if !ok || k == "" {
+				fmt.Fprintf(stderr, "lemma-agent forward: --header value %q must be KEY=VALUE\n", val)
+				return 2
+			}
+			headers[k] = v
+		case a == "--timeout":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --timeout requires a value")
+				return 2
+			}
+			n, err := parseTimeoutSeconds(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "lemma-agent forward: %v\n", err)
+				return 2
+			}
+			timeoutSec = n
+			i++
+		case strings.HasPrefix(a, "--timeout="):
+			_, val, _ := strings.Cut(a, "=")
+			n, err := parseTimeoutSeconds(val)
+			if err != nil {
+				fmt.Fprintf(stderr, "lemma-agent forward: %v\n", err)
+				return 2
+			}
+			timeoutSec = n
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent forward: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			if jsonlPath != "" {
+				fmt.Fprintln(stderr, "lemma-agent forward: too many positional arguments")
+				usage()
+				return 2
+			}
+			jsonlPath = a
+		}
+	}
+	if jsonlPath == "" {
+		usage()
+		return 2
+	}
+	if url == "" {
+		fmt.Fprintln(stderr, "lemma-agent forward: --to is required")
+		usage()
+		return 2
+	}
+
+	opts := forwarder.Options{Headers: headers}
+	if timeoutSec > 0 {
+		opts.Timeout = time.Duration(timeoutSec) * time.Second
+	}
+
+	res, err := forwarder.Forward(jsonlPath, url, opts)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent forward: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%d forwarded, %d failed.\n", res.Forwarded, res.Failed)
+	if res.Failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+func parseTimeoutSeconds(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("--timeout must be a non-negative integer (seconds), got %q", s)
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n == 0 && len(s) == 0 {
+		return 0, fmt.Errorf("--timeout requires a value")
+	}
+	return n, nil
 }
