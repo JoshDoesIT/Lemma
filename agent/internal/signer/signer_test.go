@@ -174,6 +174,46 @@ func TestBuildRejectsMalformedEvent(t *testing.T) {
 	}
 }
 
+func TestBuildSignedAtPreservesAllSixMicrosecondDigits(t *testing.T) {
+	// Regression guard for the trailing-zero-strip bug that broke CI on
+	// PR #195. A signed_at value with microseconds ending in 0 (e.g.
+	// 348620) must round-trip with all six digits, not be trimmed to
+	// 34862, because Pydantic always keeps all six when non-zero.
+	in := defaultInputs(t, loadFixturePriv(t))
+	in.SignedAt = time.Date(2026, 5, 2, 21, 30, 3, 348_620_000, time.UTC)
+	in.SourceTimestamp = in.SignedAt
+	in.StorageTimestamp = in.SignedAt
+	line, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	env, _ := envelope.Parse(line)
+	want := "2026-05-02T21:30:03.348620Z"
+	if env.SignedAt != want {
+		t.Errorf("SignedAt = %q, want %q (trailing zero MUST be preserved)",
+			env.SignedAt, want)
+	}
+}
+
+func TestBuildSignedAtOmitsFractionalWhenMicrosecondsAreZero(t *testing.T) {
+	// When microseconds are exactly 0, Pydantic drops the fractional
+	// second entirely (`.000000` is suppressed). isoZ matches.
+	in := defaultInputs(t, loadFixturePriv(t))
+	in.SignedAt = time.Date(2026, 5, 2, 21, 30, 3, 0, time.UTC)
+	in.SourceTimestamp = in.SignedAt
+	in.StorageTimestamp = in.SignedAt
+	line, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	env, _ := envelope.Parse(line)
+	want := "2026-05-02T21:30:03Z"
+	if env.SignedAt != want {
+		t.Errorf("SignedAt = %q, want %q (zero microseconds → no fractional)",
+			env.SignedAt, want)
+	}
+}
+
 func TestBuildSignedAtUsesZSuffixForUTC(t *testing.T) {
 	// Pydantic emits Z suffix for UTC timestamps; the agent's wire form
 	// matches so the on-disk bytes are indistinguishable from Python's.
