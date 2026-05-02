@@ -19,25 +19,34 @@ package keystore
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/JoshDoesIT/Lemma/agent/internal/crypto"
 )
 
 // LifecycleRecord mirrors src/lemma/services/crypto.py::KeyRecord on
-// the wire. Only the fields the verify+sign paths read are parsed here;
-// everything else (activated_at, retired_at, successor_key_id) is
-// ignored so future schema additions don't break the agent.
+// the wire. Field declaration order matches Python's Pydantic model so
+// `json.MarshalIndent` produces meta.json byte-compatible with what
+// `_write_lifecycle` writes.
 type LifecycleRecord struct {
-	KeyID         string     `json:"key_id"`
-	Status        string     `json:"status"`
-	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
-	RevokedReason string     `json:"revoked_reason,omitempty"`
+	KeyID          string     `json:"key_id"`
+	Status         string     `json:"status"`
+	ActivatedAt    time.Time  `json:"activated_at"`
+	RetiredAt      *time.Time `json:"retired_at"`
+	RevokedAt      *time.Time `json:"revoked_at"`
+	RevokedReason  string     `json:"revoked_reason"`
+	SuccessorKeyID string     `json:"successor_key_id"`
 }
 
 // Lifecycle is the on-disk meta.json shape.
@@ -123,4 +132,105 @@ func LoadPrivateKey(keysDir, producer, keyID string) (ed25519.PrivateKey, error)
 		return nil, errors.New("keystore: empty private key after parse")
 	}
 	return priv, nil
+}
+
+// SafeProducer mirrors Python crypto._safe_producer at line 40: replace
+// "/" → "_" and " " → "_" so producer names with slashes or spaces
+// can't escape the keys directory.
+func SafeProducer(name string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), " ", "_")
+}
+
+// GenerateKeypair mints an Ed25519 keypair for producer under keysDir,
+// or returns the existing ACTIVE key_id when one is already present
+// (idempotent — matches Python crypto.generate_keypair lines 186-211).
+//
+// Returns the resulting key_id and a `created` flag — true when a fresh
+// keypair was minted, false on the idempotent early-return path.
+func GenerateKeypair(keysDir, producer string) (keyID string, created bool, err error) {
+	producerDir := filepath.Join(keysDir, SafeProducer(producer))
+	if err := os.MkdirAll(producerDir, 0o755); err != nil {
+		return "", false, fmt.Errorf("keystore: mkdir %s: %w", producerDir, err)
+	}
+
+	lc, _, err := LoadLifecycle(keysDir, SafeProducer(producer))
+	if err != nil {
+		return "", false, err
+	}
+	for _, rec := range lc.Keys {
+		if rec.Status == "ACTIVE" {
+			return rec.KeyID, false, nil
+		}
+	}
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", false, fmt.Errorf("keystore: generate ed25519: %w", err)
+	}
+	keyID = computeKeyID(pub)
+
+	privPEM, err := encodePrivatePKCS8(priv)
+	if err != nil {
+		return "", false, err
+	}
+	pubPEM, err := encodePublicPKIX(pub)
+	if err != nil {
+		return "", false, err
+	}
+
+	privPath := filepath.Join(producerDir, keyID+".private.pem")
+	pubPath := filepath.Join(producerDir, keyID+".public.pem")
+	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
+		return "", false, fmt.Errorf("keystore: write private PEM: %w", err)
+	}
+	// Defensive: enforce 0o600 even under restrictive umask.
+	if err := os.Chmod(privPath, 0o600); err != nil {
+		return "", false, fmt.Errorf("keystore: chmod private PEM: %w", err)
+	}
+	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+		return "", false, fmt.Errorf("keystore: write public PEM: %w", err)
+	}
+
+	// Truncate to microsecond precision so the timestamp matches
+	// Pydantic's ISO 8601 output (Python uses microseconds, Go's
+	// stdlib would otherwise emit nanoseconds).
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	lc.Keys = append(lc.Keys, LifecycleRecord{
+		KeyID:       keyID,
+		Status:      "ACTIVE",
+		ActivatedAt: now,
+	})
+	metaBytes, err := json.MarshalIndent(lc, "", "  ")
+	if err != nil {
+		return "", false, fmt.Errorf("keystore: marshal meta: %w", err)
+	}
+	metaPath := filepath.Join(producerDir, "meta.json")
+	if err := os.WriteFile(metaPath, metaBytes, 0o644); err != nil {
+		return "", false, fmt.Errorf("keystore: write meta.json: %w", err)
+	}
+
+	return keyID, true, nil
+}
+
+// computeKeyID mirrors Python crypto._compute_key_id_from_public_bytes:
+// "ed25519:" + sha256(raw_public).hex()[:16].
+func computeKeyID(pub ed25519.PublicKey) string {
+	h := sha256.Sum256(pub)
+	return "ed25519:" + hex.EncodeToString(h[:])[:16]
+}
+
+func encodePrivatePKCS8(priv ed25519.PrivateKey) ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("keystore: marshal PKCS#8: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}
+
+func encodePublicPKIX(pub ed25519.PublicKey) ([]byte, error) {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return nil, fmt.Errorf("keystore: marshal PKIX: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
 }

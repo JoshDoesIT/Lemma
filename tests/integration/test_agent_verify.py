@@ -609,3 +609,109 @@ def test_agent_ingest_output_python_verifies_proven(agent_binary: Path, tmp_path
         assert verdict.state == EvidenceIntegrityState.PROVEN, (
             f"{env.entry_hash}: {verdict.state} ({verdict.detail})"
         )
+
+
+# Keygen parity test ---------------------------------------------------
+
+
+@requires_go
+def test_agent_keygen_produces_python_loadable_keypair(agent_binary: Path, tmp_path: Path) -> None:
+    """Cross-language: Go mints keys, Python loads them via crypto.read_lifecycle
+    and signs an envelope, then Go verifies the resulting log entry."""
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from lemma.services import crypto as lemma_crypto
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = project / ".lemma" / "keys"
+    keys_dir.mkdir(parents=True)
+
+    # 1. Go mints the keypair.
+    keygen = subprocess.run(
+        [str(agent_binary), "keygen", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert keygen.returncode == 0, (
+        f"keygen failed\nstdout:\n{keygen.stdout}\nstderr:\n{keygen.stderr}"
+    )
+    assert "Generated ed25519:" in keygen.stdout
+
+    # 2. Python loads the lifecycle and finds the ACTIVE key.
+    lifecycle = lemma_crypto._read_lifecycle("Lemma", keys_dir)
+    active = lifecycle.active()
+    assert active is not None, "Python could not find ACTIVE key in Go-minted lifecycle"
+    assert active.key_id.startswith("ed25519:")
+
+    # 3. Python signs an envelope using that key.
+    evidence_dir = project / ".lemma" / "evidence"
+    log = EvidenceLog(log_dir=evidence_dir, key_dir=keys_dir)
+    log.append(
+        normalize(
+            {
+                "class_uid": 2003,
+                "class_name": "Compliance Finding",
+                "category_uid": 2000,
+                "category_name": "Findings",
+                "type_uid": 200301,
+                "activity_id": 1,
+                "time": _datetime.now(UTC).isoformat(),
+                "metadata": {
+                    "version": "1.3.0",
+                    "product": {"name": "Lemma"},
+                    "uid": "keygen-cross-lang",
+                },
+            }
+        )
+    )
+
+    # 4. Go verifies the Python-signed envelope.
+    log_files = list(evidence_dir.glob("*.jsonl"))
+    assert len(log_files) == 1, f"expected 1 log file, got {log_files}"
+    verify = subprocess.run(
+        [
+            str(agent_binary),
+            "verify",
+            str(log_files[0]),
+            "--keys-dir",
+            str(keys_dir),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 0, (
+        f"verify failed\nstdout:\n{verify.stdout}\nstderr:\n{verify.stderr}"
+    )
+    assert "1 PROVEN, 0 VIOLATED" in verify.stdout
+
+
+@requires_go
+def test_agent_keygen_idempotent_does_not_clobber_existing_key(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """Second keygen call returns the same key_id without rewriting files."""
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+
+    first = subprocess.run(
+        [str(agent_binary), "keygen", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert first.returncode == 0
+    # Capture the meta.json bytes so we can confirm idempotent calls don't touch them.
+    meta_path = keys_dir / "Lemma" / "meta.json"
+    meta_before = meta_path.read_bytes()
+
+    second = subprocess.run(
+        [str(agent_binary), "keygen", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert second.returncode == 0
+    assert "already has ACTIVE key" in second.stdout
+    assert meta_path.read_bytes() == meta_before, "idempotent call mutated meta.json"
