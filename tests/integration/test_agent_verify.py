@@ -715,3 +715,143 @@ def test_agent_keygen_idempotent_does_not_clobber_existing_key(
     assert second.returncode == 0
     assert "already has ACTIVE key" in second.stdout
     assert meta_path.read_bytes() == meta_before, "idempotent call mutated meta.json"
+
+
+# Forward parity tests --------------------------------------------------
+
+
+@requires_go
+def test_agent_forward_posts_envelopes_to_python_http_server(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """End-to-end: Go signs N envelopes, forwards them to a Python HTTP
+    server, server captures bodies, asserts the agent delivered them
+    intact in order."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+    evidence_dir = project / ".lemma" / "evidence"
+
+    # Use the agent's ingest to produce a real signed JSONL.
+    jsonl_input = tmp_path / "events.jsonl"
+    jsonl_input.write_text("\n".join(_normalized_event_json(f"fwd-{i}") for i in range(3)) + "\n")
+    ingest = subprocess.run(
+        [
+            str(agent_binary),
+            "ingest",
+            str(jsonl_input),
+            "--keys-dir",
+            str(keys_dir),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--producer",
+            "Lemma",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert ingest.returncode == 0, ingest.stderr
+
+    day_files = list(evidence_dir.glob("*.jsonl"))
+    assert len(day_files) == 1
+    log_path = day_files[0]
+
+    # Stand up a Python HTTP server that records POST bodies.
+    received: list[bytes] = []
+    received_headers: list[dict[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received.append(body)
+            received_headers.append(dict(self.headers))
+            self.send_response(202)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args, **kwargs):
+            pass  # silence the default per-request log
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        result = subprocess.run(
+            [
+                str(agent_binary),
+                "forward",
+                str(log_path),
+                "--to",
+                f"http://127.0.0.1:{port}/",
+                "--header",
+                "X-Lemma-Producer=Lemma",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 0, (
+        f"forward exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "3 forwarded, 0 failed." in result.stdout
+    assert len(received) == 3, f"server received {len(received)} POSTs, expected 3"
+
+    # Bodies should be the JSONL lines in order.
+    expected_lines = log_path.read_text().strip().split("\n")
+    for i, want in enumerate(expected_lines):
+        assert received[i].decode() == want, f"POST {i} body differs from on-disk envelope"
+
+    # Custom header propagated.
+    assert received_headers[0].get("X-Lemma-Producer") == "Lemma"
+    assert received_headers[0].get("Content-Type") == "application/json"
+
+
+@requires_go
+def test_agent_forward_5xx_response_exits_one(agent_binary: Path, tmp_path: Path) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(500)
+            self.end_headers()
+
+        def log_message(self, *args, **kwargs):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        jsonl = tmp_path / "envelopes.jsonl"
+        jsonl.write_text('{"entry_hash":"a"}\n')
+        result = subprocess.run(
+            [
+                str(agent_binary),
+                "forward",
+                str(jsonl),
+                "--to",
+                f"http://127.0.0.1:{port}/",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.returncode == 1, f"exit {result.returncode}, want 1"
+    assert "0 forwarded, 1 failed." in result.stdout

@@ -198,10 +198,38 @@ log, then runs this binary against it and asserts a PROVEN verdict. Any
 canonical-JSON drift between the two implementations surfaces there as a
 VIOLATED entry-hash mismatch.
 
+### Forward
+
+```bash
+./lemma-agent forward <jsonl> --to <url> [--header KEY=VALUE]... [--timeout SECONDS]
+```
+
+POSTs each JSONL line of `<jsonl>` to `<url>` as an individual JSON
+request (Content-Type: `application/json`). The most common pairing is
+`ingest` → `forward`: ingest produces `<evidence-dir>/YYYY-MM-DD.jsonl`,
+forward delivers it to a Control Plane endpoint.
+
+`--header KEY=VALUE` is repeatable for things like `Authorization` or
+custom routing headers. `Content-Type` is always set to
+`application/json` and cannot be overridden. `--timeout` sets a per-
+request deadline in whole seconds (default: Go's `http.Client` default).
+
+A response in the 2xx range counts as forwarded; anything else (4xx,
+5xx, or transport error) counts as failed. Empty/blank lines in the
+input are skipped.
+
+Output: `<N> forwarded, <M> failed.` Exit `0` only when all envelopes
+forwarded successfully; exit `1` if any failed; exit `2` on usage
+errors.
+
+**This slice is HTTP/HTTPS only**. mTLS, retry/backoff, resumable
+forwarding (tracking which envelopes were already sent), bulk POSTs,
+and the Control Plane receiver are tracked separately under #25.
+
 ## Roadmap
 
-The full agent design — federation protocol, evidence forwarding, control
-plane wiring, deployment shapes, signing — is tracked under
+The full agent design — federation protocol (mTLS, push/pull),
+control plane aggregation, deployment shapes — is tracked under
 [#25 Federated Agent Architecture](https://github.com/JoshDoesIT/Lemma/issues/25).
-Subsequent slices on that issue layer on top of the verify primitive
+Subsequent slices on that issue layer on top of the primitives
 shipped here.

@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +37,9 @@ func TestNoArgsPrintsVersionAndSubcommandList(t *testing.T) {
 	}
 	if !strings.Contains(out, "keygen") {
 		t.Errorf("subcommands list should mention 'keygen'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "forward") {
+		t.Errorf("subcommands list should mention 'forward'; got:\n%s", out)
 	}
 }
 
@@ -819,5 +825,173 @@ func TestKeygenRoundTripsThroughSignAndVerify(t *testing.T) {
 	}
 	if !strings.Contains(verifyOut.String(), "1 PROVEN") {
 		t.Errorf("verify should report 1 PROVEN; got:\n%s", verifyOut.String())
+	}
+}
+
+// Forward subcommand tests --------------------------------------------
+
+func TestForwardMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_input", []string{"forward", "--to", "http://localhost"}},
+		{"no_to", []string{"forward", "/tmp/x.jsonl"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit %d, want 2 (usage)", code)
+			}
+		})
+	}
+}
+
+func TestForwardSuccessReportsAllForwarded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	jsonl := filepath.Join(t.TempDir(), "envelopes.jsonl")
+	body := `{"entry_hash":"a"}` + "\n" + `{"entry_hash":"b"}` + "\n"
+	if err := os.WriteFile(jsonl, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", srv.URL},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "2 forwarded, 0 failed.") {
+		t.Errorf("stdout missing summary; got:\n%s", stdout.String())
+	}
+}
+
+func TestForwardAnyFailureExitsOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	jsonl := filepath.Join(t.TempDir(), "envelopes.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{"entry_hash":"a"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", srv.URL},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (any failure)", code)
+	}
+	if !strings.Contains(stdout.String(), "0 forwarded, 1 failed.") {
+		t.Errorf("stdout missing summary; got:\n%s", stdout.String())
+	}
+}
+
+func TestForwardHeaderFlagPropagatesToRequest(t *testing.T) {
+	gotAuth := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	jsonl := filepath.Join(t.TempDir(), "envelopes.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{"entry_hash":"a"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", srv.URL,
+			"--header", "Authorization=Bearer xyz"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d\nstderr:\n%s", code, stderr.String())
+	}
+	if gotAuth != "Bearer xyz" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer xyz")
+	}
+}
+
+func TestForwardMissingFileExitsOne(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", "/nonexistent.jsonl", "--to", "http://localhost"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (missing file)", code)
+	}
+}
+
+func TestForwardBadHeaderFlagExitsTwo(t *testing.T) {
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", "http://localhost",
+			"--header", "noEqualsSign"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 2 {
+		t.Errorf("exit %d, want 2 (bad --header)", code)
+	}
+}
+
+func TestForwardEndToEndAgentSignThenForwardThenServerSeesEnvelope(t *testing.T) {
+	// The agent signs an envelope with `sign`, then forwards the resulting
+	// JSONL line with `forward`. The httptest server captures the body and
+	// asserts it matches the sign output byte-for-byte (operationally:
+	// "what the agent ingests ends up at the Control Plane intact").
+	keysDir := writeSignFixture(t)
+
+	var signOut, signErr bytes.Buffer
+	if code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(signTestEvent),
+		&signOut, &signErr,
+	); code != 0 {
+		t.Fatalf("sign exit %d\nstderr:\n%s", code, signErr.String())
+	}
+	envelopeLine := strings.TrimSpace(signOut.String())
+
+	var receivedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = body
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	logPath := filepath.Join(t.TempDir(), "log.jsonl")
+	if err := os.WriteFile(logPath, []byte(envelopeLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fwdOut, fwdErr bytes.Buffer
+	code := run(
+		[]string{"forward", logPath, "--to", srv.URL},
+		bytes.NewReader(nil), &fwdOut, &fwdErr,
+	)
+	if code != 0 {
+		t.Fatalf("forward exit %d\nstderr:\n%s", code, fwdErr.String())
+	}
+	if string(receivedBody) != envelopeLine {
+		t.Errorf("server received body differs from envelope:\n got:  %s\n want: %s",
+			receivedBody, envelopeLine)
 	}
 }
