@@ -32,7 +32,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -46,7 +46,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent keygen --keys-dir <dir> --producer <name>` to mint a producer keypair.")
-		fmt.Fprintln(stdout, "Run `lemma-agent forward <jsonl> --to <url>` to POST signed envelopes to a Control Plane.")
+		fmt.Fprintln(stdout, "Run `lemma-agent forward <jsonl> --to <url> [--mtls-cert <f>] [--mtls-key <f>] [--mtls-ca <f>]` to POST signed envelopes to a Control Plane (HTTP or HTTPS+mTLS).")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -692,10 +692,14 @@ func runForward(args []string, stdout, stderr io.Writer) int {
 	usage := func() {
 		fmt.Fprintln(stderr,
 			"usage: lemma-agent forward <jsonl> --to <url> "+
-				"[--header KEY=VALUE]... [--timeout SECONDS]")
+				"[--header KEY=VALUE]... [--timeout SECONDS] "+
+				"[--mtls-cert <file>] [--mtls-key <file>] [--mtls-ca <file>] "+
+				"[--insecure-skip-verify]")
 	}
 
 	var jsonlPath, url string
+	var mtlsCert, mtlsKey, mtlsCA string
+	var insecureSkipVerify bool
 	headers := map[string]string{}
 	var timeoutSec int
 	for i := 0; i < len(args); i++ {
@@ -750,6 +754,35 @@ func runForward(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			timeoutSec = n
+		case a == "--mtls-cert":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --mtls-cert requires a value")
+				return 2
+			}
+			mtlsCert = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--mtls-cert="):
+			_, mtlsCert, _ = strings.Cut(a, "=")
+		case a == "--mtls-key":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --mtls-key requires a value")
+				return 2
+			}
+			mtlsKey = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--mtls-key="):
+			_, mtlsKey, _ = strings.Cut(a, "=")
+		case a == "--mtls-ca":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent forward: --mtls-ca requires a value")
+				return 2
+			}
+			mtlsCA = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--mtls-ca="):
+			_, mtlsCA, _ = strings.Cut(a, "=")
+		case a == "--insecure-skip-verify":
+			insecureSkipVerify = true
 		case strings.HasPrefix(a, "-"):
 			fmt.Fprintf(stderr, "lemma-agent forward: unknown flag %q\n", a)
 			usage()
@@ -773,7 +806,19 @@ func runForward(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	opts := forwarder.Options{Headers: headers}
+	if insecureSkipVerify {
+		fmt.Fprintln(stderr,
+			"lemma-agent forward: WARNING: --insecure-skip-verify disables server "+
+				"certificate verification — use only against test infrastructure.")
+	}
+
+	opts := forwarder.Options{
+		Headers:            headers,
+		MTLSCertPath:       mtlsCert,
+		MTLSKeyPath:        mtlsKey,
+		MTLSCAPath:         mtlsCA,
+		InsecureSkipVerify: insecureSkipVerify,
+	}
 	if timeoutSec > 0 {
 		opts.Timeout = time.Duration(timeoutSec) * time.Second
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -993,5 +994,117 @@ func TestForwardEndToEndAgentSignThenForwardThenServerSeesEnvelope(t *testing.T)
 	if string(receivedBody) != envelopeLine {
 		t.Errorf("server received body differs from envelope:\n got:  %s\n want: %s",
 			receivedBody, envelopeLine)
+	}
+}
+
+// Forward mTLS CLI tests ----------------------------------------------
+
+func TestForwardOnlyMTLSCertExitsOne(t *testing.T) {
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", "https://example.invalid/",
+			"--mtls-cert", "/tmp/c.pem"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (cert without key)", code)
+	}
+	if !strings.Contains(stderr.String(), "--mtls-cert and --mtls-key must be set together") {
+		t.Errorf("stderr should explain the requirement; got:\n%s", stderr.String())
+	}
+}
+
+func TestForwardMTLSWithHTTPURLExitsOne(t *testing.T) {
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", "http://example.invalid/",
+			"--insecure-skip-verify"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (mTLS flag with http://)", code)
+	}
+	if !strings.Contains(stderr.String(), "https://") {
+		t.Errorf("stderr should mention https requirement; got:\n%s", stderr.String())
+	}
+}
+
+func TestForwardInsecureSkipVerifyEmitsWarningToStderr(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{"entry_hash":"a"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", srv.URL, "--insecure-skip-verify"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "WARNING") {
+		t.Errorf("stderr should carry a WARNING about --insecure-skip-verify; got:\n%s",
+			stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 forwarded, 0 failed.") {
+		t.Errorf("stdout should report success; got:\n%s", stdout.String())
+	}
+}
+
+func TestForwardOverHTTPSWithCAFlagSucceeds(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(caPath, caPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{"entry_hash":"a"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", srv.URL, "--mtls-ca", caPath},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 forwarded, 0 failed.") {
+		t.Errorf("stdout should report success; got:\n%s", stdout.String())
+	}
+}
+
+func TestForwardMissingMTLSCertFileExitsOne(t *testing.T) {
+	jsonl := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(jsonl, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"forward", jsonl, "--to", "https://example.invalid/",
+			"--mtls-cert", "/nonexistent/c.pem", "--mtls-key", "/nonexistent/k.pem"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (missing cert/key files)", code)
 	}
 }
