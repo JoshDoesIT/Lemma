@@ -109,6 +109,42 @@ Exit codes:
 - `1` — signing failed (missing ACTIVE key, malformed PEM, IO error)
 - `2` — usage error (missing flag, empty event)
 
+### Ingest
+
+```bash
+./lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name> [--source-label <s>]
+```
+
+Reads OCSF events from `<input>` (a `.json` file with a single object,
+a `.jsonl` file with one object per line, or `-` for stdin in JSONL
+form), signs each under the producer's ACTIVE key, and appends the
+resulting envelopes to `<evidence-dir>/<YYYY-MM-DD>.jsonl` files. The
+date is derived from each event's `time` field, so events spanning
+multiple days land in multiple files. The chain hash flows across the
+batch and across calls — second invocations pick up `prev_hash` from
+the latest entry already on disk.
+
+Dedup is **per-day** and matches Python's `lemma evidence ingest`: an
+event whose `metadata.uid` (or, fallback, content hash) is already
+present in the day's file is skipped. Re-ingesting the same input
+produces `0 ingested, N skipped (duplicate).`
+
+Source-stage provenance is built once per call: `actor =
+"lemma-agent-ingest:<label>"`, `content_hash = sha256(raw input
+bytes)`. The `--source-label` overrides the default (input file path,
+or `-` for stdin).
+
+Exit codes:
+
+- `0` — all events processed (including the all-deduped case)
+- `1` — read failure, parse error, missing ACTIVE key, or signing
+  failure
+- `2` — usage error (missing flag, unsupported file extension)
+
+**Same OCSF pre-normalization caveat as `sign`**: the input event
+must already be in the form Pydantic's OCSF models would emit, or
+the resulting envelope won't verify on the Python side.
+
 Run `./lemma-agent` (no arguments) for a one-line summary of the version
 and available subcommands.
 

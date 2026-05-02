@@ -515,3 +515,97 @@ def test_verify_with_local_lifecycle_revocation_flips_to_violated(
     )
     assert "VIOLATED" in result.stdout
     assert "source: local lifecycle" in result.stdout
+
+
+# Ingest parity tests --------------------------------------------------
+
+
+@requires_go
+def test_agent_ingest_round_trips_through_verify(agent_binary: Path, tmp_path: Path) -> None:
+    """End-to-end: Go ingest → Go verify on the same binary."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+    evidence_dir = project / ".lemma" / "evidence"
+
+    # Pre-normalize 3 events via Python so Pydantic defaults are baked in
+    # (the agent's ingest doesn't do OCSF Pydantic-grade validation).
+    jsonl_path = tmp_path / "events.jsonl"
+    lines = [_normalized_event_json(f"ingest-rt-{i}") for i in range(3)]
+    jsonl_path.write_text("\n".join(lines) + "\n")
+
+    ingest = subprocess.run(
+        [
+            str(agent_binary),
+            "ingest",
+            str(jsonl_path),
+            "--keys-dir",
+            str(keys_dir),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--producer",
+            "Lemma",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert ingest.returncode == 0, (
+        f"ingest failed\nstdout:\n{ingest.stdout}\nstderr:\n{ingest.stderr}"
+    )
+    assert "3 ingested" in ingest.stdout
+
+    # Find the day file the agent wrote.
+    day_files = list(evidence_dir.glob("*.jsonl"))
+    assert len(day_files) == 1, f"expected 1 day file, got {day_files}"
+
+    verify = subprocess.run(
+        [str(agent_binary), "verify", str(day_files[0]), "--keys-dir", str(keys_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 0, (
+        f"verify failed\nstdout:\n{verify.stdout}\nstderr:\n{verify.stderr}"
+    )
+    assert "3 PROVEN, 0 VIOLATED" in verify.stdout
+
+
+@requires_go
+def test_agent_ingest_output_python_verifies_proven(agent_binary: Path, tmp_path: Path) -> None:
+    """Cross-language: Go ingest → Python's EvidenceLog.verify_entry."""
+    from lemma.models.signed_evidence import EvidenceIntegrityState
+    from lemma.services.evidence_log import EvidenceLog
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = _seed_keys_only(project)
+    evidence_dir = project / ".lemma" / "evidence"
+
+    jsonl_path = tmp_path / "events.jsonl"
+    lines = [_normalized_event_json(f"ingest-cross-{i}") for i in range(2)]
+    jsonl_path.write_text("\n".join(lines) + "\n")
+
+    ingest = subprocess.run(
+        [
+            str(agent_binary),
+            "ingest",
+            str(jsonl_path),
+            "--keys-dir",
+            str(keys_dir),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--producer",
+            "Lemma",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert ingest.returncode == 0, ingest.stderr
+
+    log = EvidenceLog(log_dir=evidence_dir)
+    envelopes = log.read_envelopes()
+    assert len(envelopes) == 2
+    for env in envelopes:
+        verdict = log.verify_entry(env.entry_hash)
+        assert verdict.state == EvidenceIntegrityState.PROVEN, (
+            f"{env.entry_hash}: {verdict.state} ({verdict.detail})"
+        )
