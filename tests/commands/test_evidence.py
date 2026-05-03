@@ -1543,3 +1543,95 @@ class TestEvidenceRebuildReuse:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["evidence", "rebuild-reuse"])
         assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------
+# `lemma evidence collect --config` (Refs #116)
+# ---------------------------------------------------------------------
+
+
+class TestCollectFromConfigFile:
+    def test_collect_loads_config_file_and_runs_connector(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Pointing `--config` at a `lemma_connector_config.yaml` runs
+        the connector with the values from the file. No CLI flags."""
+        from typer.testing import CliRunner
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        cfg = tmp_path / "lemma_connector_config.yaml"
+        cfg.write_text("connector: github\nconfig:\n  repo: octocat/Hello-World\n")
+
+        result = CliRunner().invoke(app, ["evidence", "collect", "--config", str(cfg)])
+        assert result.exit_code == 0, result.stdout
+        # GitHub stub connector emits at least one event.
+        assert "ingested" in result.stdout
+
+    def test_collect_config_overrides_can_use_env_vars(self, tmp_path: Path, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        monkeypatch.setenv("AGENT_REPO", "envvar/repo")
+
+        cfg = tmp_path / "lemma_connector_config.yaml"
+        cfg.write_text("connector: github\nconfig:\n  repo: ${AGENT_REPO}\n")
+
+        result = CliRunner().invoke(app, ["evidence", "collect", "--config", str(cfg)])
+        assert result.exit_code == 0, result.stdout
+
+    def test_collect_config_disabled_exits_zero_without_running(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`enabled: false` skips the run cleanly — useful when an
+        operator wants to disable a connector temporarily without
+        deleting its config."""
+        from typer.testing import CliRunner
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        cfg = tmp_path / "lemma_connector_config.yaml"
+        cfg.write_text("connector: github\nenabled: false\nconfig:\n  repo: foo/bar\n")
+
+        result = CliRunner().invoke(app, ["evidence", "collect", "--config", str(cfg)])
+        assert result.exit_code == 0
+        assert "disabled" in result.stdout.lower()
+
+    def test_collect_config_file_missing_exits_one(self, tmp_path: Path, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        result = CliRunner().invoke(
+            app, ["evidence", "collect", "--config", str(tmp_path / "missing.yaml")]
+        )
+        assert result.exit_code == 1
+
+    def test_collect_legacy_positional_flag_form_still_works(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Backward compat: passing the connector name + per-connector
+        flags (no --config) keeps working unchanged."""
+        from typer.testing import CliRunner
+
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+        result = CliRunner().invoke(
+            app, ["evidence", "collect", "github", "--repo", "octocat/Hello-World"]
+        )
+        assert result.exit_code == 0, result.stdout

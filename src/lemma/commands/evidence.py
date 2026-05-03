@@ -565,9 +565,9 @@ def revoke_key_command(
 def _first_party_connector(
     name: str,
     *,
-    repo: str | None,
-    domain: str | None,
-    region: str | None,
+    repo: str | None = None,
+    domain: str | None = None,
+    region: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -601,13 +601,35 @@ def _first_party_connector(
     raise ValueError(msg)
 
 
+def _connector_from_config_dict(name: str, config: dict) -> Connector:
+    """Construct a first-party connector from a config dict.
+
+    Mirrors ``_first_party_connector`` but takes a single dict instead
+    of named options — for the ``--config`` code path. Any keys the
+    underlying connector doesn't recognise are passed through verbatim;
+    the connector itself is the source of truth on what it accepts.
+    """
+    return _first_party_connector(
+        name,
+        repo=config.get("repo"),
+        domain=config.get("domain"),
+        region=config.get("region"),
+    )
+
+
 @evidence_app.command(
     name="collect",
-    help="Run a first-party connector and append its output to the evidence log.",
+    help=(
+        "Run a first-party connector and append its output to the evidence log. "
+        "Pass a connector name + per-connector flags, OR --config path/to/"
+        "lemma_connector_config.yaml to drive everything from a config file (Refs #116)."
+    ),
 )
 def collect_command(
     connector_name: str = typer.Argument(
-        help="First-party connector name (e.g. 'github', 'okta', 'aws')",
+        default="",
+        help="First-party connector name (e.g. 'github', 'okta', 'aws'). "
+        "Optional when --config is set.",
     ),
     repo: str = typer.Option("", "--repo", help="Repository in owner/name form (github connector)"),
     domain: str = typer.Option(
@@ -616,18 +638,60 @@ def collect_command(
     region: str = typer.Option(
         "", "--region", help="AWS region (aws connector; defaults to us-east-1)"
     ),
+    config: str = typer.Option(
+        "",
+        "--config",
+        help=(
+            "Path to a lemma_connector_config.yaml. When set, the connector + "
+            "its config are loaded from the file and CLI flags are ignored."
+        ),
+    ),
 ) -> None:
     project_dir = _require_lemma_project()
-    try:
-        connector = _first_party_connector(
-            connector_name,
-            repo=repo or None,
-            domain=domain or None,
-            region=region or None,
-        )
-    except ValueError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+
+    # --config wins when set: load the file, validate, interpolate
+    # ${ENV_VAR}s, then construct the connector from the resulting
+    # config dict. CLI flags are ignored in this mode (--config is
+    # the source of truth so an operator can't accidentally mix
+    # file-declared and CLI-declared values).
+    if config:
+        from lemma.services.connector_config import load_connector_config
+
+        try:
+            cfg = load_connector_config(Path(config))
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        if not cfg.enabled:
+            console.print(
+                f"[yellow]Connector '{cfg.connector}' is disabled in config; skipping.[/yellow]"
+            )
+            return
+
+        try:
+            connector = _connector_from_config_dict(cfg.connector, cfg.config)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        if not connector_name:
+            console.print(
+                "[red]Error:[/red] either pass a connector name "
+                "(e.g. `lemma evidence collect github --repo o/r`) "
+                "or `--config path/to/lemma_connector_config.yaml`."
+            )
+            raise typer.Exit(code=1)
+        try:
+            connector = _first_party_connector(
+                connector_name,
+                repo=repo or None,
+                domain=domain or None,
+                region=region or None,
+            )
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
 
     evidence_log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
     try:
