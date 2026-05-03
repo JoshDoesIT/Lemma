@@ -568,6 +568,9 @@ def _first_party_connector(
     repo: str | None = None,
     domain: str | None = None,
     region: str | None = None,
+    base_url: str | None = None,
+    email: str | None = None,
+    jql: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -596,7 +599,21 @@ def _first_party_connector(
 
         return AWSConnector(region=region or "us-east-1")
 
-    known = ["github", "okta", "aws"]
+    if name == "jira":
+        from lemma.sdk.connectors.jira import JiraConnector
+
+        if not base_url:
+            msg = "The jira connector requires base_url=https://<your-org>.atlassian.net."
+            raise ValueError(msg)
+        if not email:
+            msg = "The jira connector requires email (used with the API token for HTTP Basic auth)."
+            raise ValueError(msg)
+        kwargs: dict = {"base_url": base_url, "email": email}
+        if jql:
+            kwargs["jql"] = jql
+        return JiraConnector(**kwargs)
+
+    known = ["github", "okta", "aws", "jira"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -614,6 +631,9 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         repo=config.get("repo"),
         domain=config.get("domain"),
         region=config.get("region"),
+        base_url=config.get("base_url"),
+        email=config.get("email"),
+        jql=config.get("jql"),
     )
 
 
