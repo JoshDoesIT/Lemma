@@ -337,3 +337,99 @@ def test_agent_sync_offline_force_overwrites_non_empty_dir(tmp_path: Path, monke
     second = runner.invoke(app, ["agent", "sync", "--offline", "--output", str(out), "--force"])
     assert second.exit_code == 0, second.stdout
     assert not (out / "stray.txt").exists()
+
+
+# Evaluate subcommand tests ----------------------------------------------
+
+
+def test_agent_evaluate_requires_lemma_project(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["agent", "evaluate", "--output", str(tmp_path / "out.jsonl")])
+    assert result.exit_code == 1
+    assert "Not a Lemma project" in result.stdout
+
+
+def test_agent_evaluate_writes_signed_envelopes_for_each_control(tmp_path: Path, monkeypatch):
+    """End-to-end: load an indexed framework, run check, and emit one
+    signed OCSF Compliance Finding envelope per control. The resulting
+    JSONL is what `lemma-agent forward` would post to the Control Plane."""
+    import json as _json
+
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.framework import add_bundled_framework
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+
+    # Seed a framework so `check` has something to evaluate.
+    add_bundled_framework("nist-800-53", project_dir=tmp_path)
+
+    out = tmp_path / "evaluate.jsonl"
+    result = runner.invoke(app, ["agent", "evaluate", "--output", str(out)])
+    assert result.exit_code == 0, result.stdout
+    assert out.is_file()
+    lines = [line for line in out.read_text().splitlines() if line.strip()]
+    assert len(lines) > 0, "expected at least one signed envelope"
+
+    # Each line is a valid signed envelope.
+    for line in lines:
+        env = _json.loads(line)
+        assert env["entry_hash"]
+        assert env["signature"]
+        compliance = env["event"]["metadata"]["compliance"]
+        assert compliance["control"]
+        assert compliance["standards"]
+        assert compliance["status"] in {"Pass", "Fail"}
+
+    # The agent's evidence log can verify what we wrote (round-trip).
+    log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
+    envelopes = log.read_envelopes()
+    assert len(envelopes) >= len(lines)
+
+
+def test_agent_evaluate_framework_filter_limits_emitted_findings(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services.framework import add_bundled_framework
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    add_bundled_framework("nist-800-53", project_dir=tmp_path)
+
+    out = tmp_path / "evaluate.jsonl"
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "evaluate",
+            "--framework",
+            "nist-800-53",
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    lines = [line for line in out.read_text().splitlines() if line.strip()]
+    assert len(lines) > 0
+
+
+def test_agent_evaluate_unknown_framework_exits_one(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "evaluate",
+            "--framework",
+            "does-not-exist",
+            "--output",
+            str(tmp_path / "x.jsonl"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Error" in result.stdout

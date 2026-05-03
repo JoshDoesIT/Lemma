@@ -264,3 +264,88 @@ def test_graph_json_output_writes_payload(tmp_path: Path) -> None:
     payload = json.loads(out.read_text())
     assert "envelope_count" in payload
     assert "producers" in payload
+
+
+# Compliance subcommand tests -------------------------------------------
+
+
+def test_compliance_requires_evidence_dir(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    result = runner.invoke(app, ["control-plane", "compliance"])
+    assert result.exit_code != 0
+
+
+def test_compliance_empty_dir_prints_no_findings_message(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    ev = tmp_path / "ev"
+    ev.mkdir()
+    result = runner.invoke(app, ["control-plane", "compliance", "--evidence-dir", str(ev)])
+    assert result.exit_code == 0
+    assert "No compliance findings" in result.stdout
+
+
+def test_compliance_output_writes_json_payload(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    ev = tmp_path / "ev"
+    ev.mkdir()
+    out = tmp_path / "rollup.json"
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "compliance",
+            "--evidence-dir",
+            str(ev),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    for k in ("findings_total", "controls_total", "controls"):
+        assert k in payload
+
+
+def test_compliance_table_output_lists_findings(tmp_path: Path) -> None:
+    """Render path: when findings exist, the table shows framework /
+    control / verdicts / producers."""
+    from lemma.cli import app
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    ev = tmp_path / "ev"
+    target = ev / "Lemma"
+    target.mkdir(parents=True)
+
+    log = EvidenceLog(log_dir=tmp_path / "agent-side")
+    event = {
+        "class_uid": 2003,
+        "class_name": "Compliance Finding",
+        "category_uid": 2000,
+        "category_name": "Findings",
+        "type_uid": 200301,
+        "activity_id": 1,
+        "time": "2026-05-03T12:00:00+00:00",
+        "metadata": {
+            "version": "1.3.0",
+            "product": {"name": "Lemma"},
+            "uid": "table-1",
+            "compliance": {
+                "control": "AC-2",
+                "standards": ["NIST 800-53"],
+                "status": "Pass",
+            },
+        },
+    }
+    log.append(normalize(event))
+    envs = log.read_envelopes()
+    (target / "2026-05-03.jsonl").write_text(envs[0].model_dump_json() + "\n")
+
+    result = runner.invoke(app, ["control-plane", "compliance", "--evidence-dir", str(ev)])
+    assert result.exit_code == 0, result.stdout
+    assert "AC-2" in result.stdout
+    assert "NIST 800-53" in result.stdout
+    assert "1 findings" in result.stdout

@@ -25,6 +25,7 @@ from rich.table import Table
 from lemma.services.control_plane import (
     aggregate,
     build_topology,
+    compliance_rollup,
     make_handler_class,
     render_topology_dot,
 )
@@ -81,6 +82,14 @@ def serve_command(
         "--bind",
         help="Bind address. Default 127.0.0.1; pass 0.0.0.0 to expose on all interfaces.",
     ),
+    project_dir: str = typer.Option(
+        "",
+        "--project-dir",
+        help=(
+            "Lemma project root to serve as policy. When set, agents can "
+            "GET /v1/policy to pull the project's frameworks/controls/scopes."
+        ),
+    ),
 ) -> None:
     if (cert and not key) or (key and not cert):
         console.print("[red]Error:[/red] --cert and --key must be set together (both or neither).")
@@ -97,7 +106,11 @@ def serve_command(
     evidence_path.mkdir(parents=True, exist_ok=True)
     keys_path.mkdir(parents=True, exist_ok=True)
 
-    handler_cls = make_handler_class(evidence_dir=evidence_path, keys_dir=keys_path)
+    handler_cls = make_handler_class(
+        evidence_dir=evidence_path,
+        keys_dir=keys_path,
+        project_dir=Path(project_dir) if project_dir else None,
+    )
     server = ThreadingHTTPServer((bind, port), handler_cls)
 
     if cert:
@@ -265,3 +278,68 @@ def graph_command(
         # `print` (not console.print) to avoid Rich's wrapping/escaping —
         # the DOT output needs to be byte-stable for Graphviz to parse.
         print(body, end="")
+
+
+@control_plane_app.command(
+    name="compliance",
+    help=(
+        "Render the compliance-state rollup keyed by (framework, control_id) "
+        "across every producer's persisted findings — the unified compliance "
+        "graph layer of the Control Plane (Refs #25)."
+    ),
+)
+def compliance_command(
+    evidence_dir: str = typer.Option(
+        ...,
+        "--evidence-dir",
+        help="Directory the receiver writes <producer>/<YYYY-MM-DD>.jsonl files to.",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write the rollup as JSON to PATH instead of printing a table.",
+    ),
+) -> None:
+    rollup = compliance_rollup(Path(evidence_dir))
+
+    if output:
+        payload = {
+            "findings_total": rollup.findings_total,
+            "controls_total": rollup.controls_total,
+            "controls": [
+                {
+                    "framework": c.framework,
+                    "control_id": c.control_id,
+                    "verdicts": dict(c.verdicts),
+                    "producers": sorted(c.producers),
+                }
+                for c in rollup.controls
+            ],
+        }
+        Path(output).write_text(json.dumps(payload, indent=2) + "\n")
+        console.print(f"[green]Wrote[/green] compliance rollup to {output}")
+        return
+
+    if rollup.controls_total == 0:
+        console.print(
+            "[yellow]No compliance findings found under[/yellow] "
+            f"{evidence_dir}\n"
+            "Pair `lemma agent evaluate` with `lemma-agent forward` to "
+            "populate the receiver's evidence with signed findings."
+        )
+        return
+
+    table = Table(title=f"Lemma Compliance Rollup — {evidence_dir}")
+    table.add_column("Framework", style="bold")
+    table.add_column("Control")
+    table.add_column("Verdicts")
+    table.add_column("Producers", style="dim")
+    for c in rollup.controls:
+        verdicts = ", ".join(f"{k}={v}" for k, v in sorted(c.verdicts.items()))
+        producers = ", ".join(sorted(c.producers))
+        table.add_row(c.framework, c.control_id, verdicts, producers)
+    console.print(table)
+    console.print(
+        f"[bold]Total:[/bold] {rollup.findings_total} findings "
+        f"across {rollup.controls_total} controls"
+    )

@@ -36,7 +36,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.9.0"
+const Version = "1.0.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -45,7 +45,7 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve, pull-policy")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
@@ -75,9 +75,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runForward(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdin, stdout, stderr)
+	case "pull-policy":
+		return runPullPolicy(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve, pull-policy")
 		return 2
 	}
 }
@@ -1148,6 +1150,99 @@ func runServe(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	return 0
+}
+
+func runPullPolicy(args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent pull-policy --from <url> [--output <path>] [--timeout SECONDS]")
+	}
+
+	var from, output string
+	timeoutSec := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--from":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent pull-policy: --from requires a value")
+				return 2
+			}
+			from = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--from="):
+			_, from, _ = strings.Cut(a, "=")
+		case a == "--output":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent pull-policy: --output requires a value")
+				return 2
+			}
+			output = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--output="):
+			_, output, _ = strings.Cut(a, "=")
+		case a == "--timeout":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent pull-policy: --timeout requires a value")
+				return 2
+			}
+			n, err := parseTimeoutSeconds(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "lemma-agent pull-policy: %v\n", err)
+				return 2
+			}
+			timeoutSec = n
+			i++
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent pull-policy: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent pull-policy: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	if from == "" {
+		fmt.Fprintln(stderr, "lemma-agent pull-policy: --from is required")
+		usage()
+		return 2
+	}
+
+	url := strings.TrimRight(from, "/") + "/v1/policy"
+	client := &http.Client{}
+	if timeoutSec > 0 {
+		client.Timeout = time.Duration(timeoutSec) * time.Second
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent pull-policy: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent pull-policy: %v\n", err)
+		return 1
+	}
+	if resp.StatusCode != 200 {
+		fmt.Fprintf(stderr, "lemma-agent pull-policy: HTTP %d from %s\n", resp.StatusCode, url)
+		return 1
+	}
+
+	if output == "" {
+		stdout.Write(body)
+		if len(body) == 0 || body[len(body)-1] != '\n' {
+			fmt.Fprintln(stdout)
+		}
+		return 0
+	}
+	if err := os.WriteFile(output, body, 0o644); err != nil {
+		fmt.Fprintf(stderr, "lemma-agent pull-policy: write %s: %v\n", output, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Pulled policy bundle from %s to %s\n", url, output)
 	return 0
 }
 

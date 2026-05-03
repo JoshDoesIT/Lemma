@@ -670,3 +670,256 @@ def test_render_topology_dot_empty_topology_renders_root_only(tmp_path: Path) ->
     assert dot.rstrip().endswith("}")
     assert "envelope:" not in dot
     assert "producer:" not in dot
+
+
+# Compliance-state layer tests ------------------------------------------
+
+
+def _compliance_finding_event(uid: str, *, control: str, framework: str, status: str) -> dict:
+    """OCSF 2003 Compliance Finding with the compliance.control,
+    compliance.standards, and compliance.status fields populated.
+
+    Mirrors what `lemma agent evaluate` emits when it turns a
+    `compliance_check.check` result into a signable OCSF event.
+    """
+    return {
+        "class_uid": 2003,
+        "class_name": "Compliance Finding",
+        "category_uid": 2000,
+        "category_name": "Findings",
+        "type_uid": 200301,
+        "activity_id": 1,
+        "time": datetime.now(UTC).isoformat(),
+        "metadata": {
+            "version": "1.3.0",
+            "product": {"name": "Lemma"},
+            "uid": uid,
+            "compliance": {
+                "control": control,
+                "standards": [framework],
+                "status": status,
+            },
+        },
+    }
+
+
+def test_compliance_rollup_groups_findings_by_control(tmp_path: Path) -> None:
+    """The compliance-state layer extracts (framework, control_id, status)
+    triples from each envelope's OCSF event and rolls up counts."""
+    from lemma.services.control_plane import compliance_rollup
+
+    keys_dir = tmp_path / "keys"
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+
+    # One agent reports two findings for the same control (Pass + Fail),
+    # plus one for a different control. Receiver layout: per-producer dir.
+    log = EvidenceLog(log_dir=tmp_path / "agent-side", key_dir=keys_dir)
+    log.append(
+        normalize(
+            _compliance_finding_event("f1", control="AC-2", framework="NIST 800-53", status="Pass")
+        )
+    )
+    log.append(
+        normalize(
+            _compliance_finding_event("f2", control="AC-2", framework="NIST 800-53", status="Fail")
+        )
+    )
+    log.append(
+        normalize(
+            _compliance_finding_event("f3", control="SC-7", framework="NIST 800-53", status="Pass")
+        )
+    )
+    target = cp_evidence / "Lemma"
+    target.mkdir()
+    envs = log.read_envelopes()
+    target.joinpath("2026-05-03.jsonl").write_text(
+        "\n".join(env.model_dump_json() for env in envs) + "\n"
+    )
+
+    rollup = compliance_rollup(cp_evidence)
+
+    assert rollup.controls_total == 2  # two distinct (framework, control) keys
+    assert rollup.findings_total == 3
+    by_key = {(c.framework, c.control_id): c for c in rollup.controls}
+    ac2 = by_key[("NIST 800-53", "AC-2")]
+    assert ac2.verdicts == {"Pass": 1, "Fail": 1}
+    assert ac2.producers == {"Lemma"}
+    sc7 = by_key[("NIST 800-53", "SC-7")]
+    assert sc7.verdicts == {"Pass": 1}
+
+
+def test_compliance_rollup_ignores_envelopes_without_compliance_block(tmp_path: Path) -> None:
+    """Envelopes whose OCSF event has no `compliance` field are
+    silently skipped — the rollup only surfaces findings, not generic
+    events that happen to be in the evidence directory."""
+    from lemma.services.control_plane import compliance_rollup
+
+    keys_dir = tmp_path / "keys"
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+
+    log = EvidenceLog(log_dir=tmp_path / "agent-side", key_dir=keys_dir)
+    # No compliance block on this one (the existing _compliance_event
+    # helper at the top of this file produces a bare OCSF event).
+    log.append(normalize(_compliance_event("plain-1")))
+    log.append(
+        normalize(
+            _compliance_finding_event(
+                "with-compliance", control="AC-2", framework="NIST 800-53", status="Pass"
+            )
+        )
+    )
+    target = cp_evidence / "Lemma"
+    target.mkdir()
+    envs = log.read_envelopes()
+    target.joinpath("2026-05-03.jsonl").write_text(
+        "\n".join(env.model_dump_json() for env in envs) + "\n"
+    )
+
+    rollup = compliance_rollup(cp_evidence)
+    assert rollup.findings_total == 1
+    assert rollup.controls_total == 1
+
+
+def test_compliance_rollup_aggregates_across_producers(tmp_path: Path) -> None:
+    """Two producers, same (framework, control) → producers set has
+    both names; verdicts add up across producers."""
+    from lemma.services import crypto as lemma_crypto
+    from lemma.services.control_plane import compliance_rollup
+
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    cp_evidence = tmp_path / "cp-evidence"
+
+    for producer in ("Lemma", "Okta"):
+        lemma_crypto.generate_keypair(producer=producer, key_dir=keys_dir)
+        log = EvidenceLog(log_dir=tmp_path / f"agent-{producer}", key_dir=keys_dir)
+        evt = _compliance_finding_event(
+            f"{producer}-f1",
+            control="AC-2",
+            framework="NIST 800-53",
+            status="Pass",
+        )
+        evt["metadata"]["product"]["name"] = producer
+        log.append(normalize(evt))
+        envs = log.read_envelopes()
+        target = cp_evidence / producer
+        target.mkdir(parents=True)
+        target.joinpath("2026-05-03.jsonl").write_text(envs[0].model_dump_json() + "\n")
+
+    rollup = compliance_rollup(cp_evidence)
+    assert rollup.controls_total == 1
+    only = rollup.controls[0]
+    assert only.framework == "NIST 800-53"
+    assert only.control_id == "AC-2"
+    assert only.verdicts == {"Pass": 2}
+    assert only.producers == {"Lemma", "Okta"}
+
+
+def test_compliance_rollup_empty_returns_zero(tmp_path: Path) -> None:
+    from lemma.services.control_plane import compliance_rollup
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    rollup = compliance_rollup(cp_evidence)
+    assert rollup.controls_total == 0
+    assert rollup.findings_total == 0
+    assert rollup.controls == []
+
+
+# Policy push tests -----------------------------------------------------
+
+
+def test_policy_bundle_empty_project_returns_empty_lists(tmp_path: Path) -> None:
+    from lemma.services.control_plane import policy_bundle
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    bundle = policy_bundle(project)
+    assert bundle["frameworks"] == []
+    assert bundle["controls"] == []
+    assert bundle["scopes"] == []
+    assert bundle["mappings"] == []
+    assert "policy_hash" in bundle
+
+
+def test_policy_bundle_collects_yaml_and_json_artifacts(tmp_path: Path) -> None:
+    from lemma.services.control_plane import policy_bundle
+
+    project = tmp_path / "proj"
+    (project / ".lemma" / "frameworks").mkdir(parents=True)
+    (project / ".lemma" / "scopes").mkdir(parents=True)
+    (project / ".lemma" / "frameworks" / "nist.yaml").write_text("name: NIST 800-53\n")
+    (project / ".lemma" / "scopes" / "prod.yaml").write_text("name: prod\n")
+    # Non-yaml/json files are ignored.
+    (project / ".lemma" / "frameworks" / "README.md").write_text("notes")
+
+    bundle = policy_bundle(project)
+    assert len(bundle["frameworks"]) == 1
+    assert bundle["frameworks"][0]["path"] == "nist.yaml"
+    assert "NIST 800-53" in bundle["frameworks"][0]["content"]
+    assert len(bundle["scopes"]) == 1
+
+
+def test_policy_bundle_hash_is_stable_across_calls(tmp_path: Path) -> None:
+    from lemma.services.control_plane import policy_bundle
+
+    project = tmp_path / "proj"
+    (project / ".lemma" / "frameworks").mkdir(parents=True)
+    (project / ".lemma" / "frameworks" / "nist.yaml").write_text("name: NIST\n")
+
+    h1 = policy_bundle(project)["policy_hash"]
+    h2 = policy_bundle(project)["policy_hash"]
+    assert h1 == h2
+
+    # Mutating a file changes the hash.
+    (project / ".lemma" / "frameworks" / "nist.yaml").write_text("name: NIST 800-53\n")
+    h3 = policy_bundle(project)["policy_hash"]
+    assert h3 != h1
+
+
+def test_policy_endpoint_returns_404_when_no_project_dir_configured(tmp_path: Path) -> None:
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_keys = tmp_path / "cp-keys"
+    cp_keys.mkdir()
+    cp_evidence.mkdir()
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys)
+    server, port = _start_server(handler)
+    try:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/policy", timeout=5)
+            raise AssertionError("expected HTTPError")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+            body = json.loads(exc.read())
+            assert "policy push not configured" in body["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_policy_endpoint_returns_bundle_when_project_dir_configured(tmp_path: Path) -> None:
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_keys = tmp_path / "cp-keys"
+    cp_evidence.mkdir()
+    cp_keys.mkdir()
+
+    project = tmp_path / "proj"
+    (project / ".lemma" / "frameworks").mkdir(parents=True)
+    (project / ".lemma" / "frameworks" / "nist.yaml").write_text("name: NIST 800-53\n")
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys, project_dir=project)
+    server, port = _start_server(handler)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/policy", timeout=5) as resp:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert len(body["frameworks"]) == 1
+    assert body["frameworks"][0]["path"] == "nist.yaml"
+    assert "policy_hash" in body

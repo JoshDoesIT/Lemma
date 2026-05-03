@@ -1575,3 +1575,60 @@ func TestServeMetricsEndpointReturnsPrometheusFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestPullPolicyMissingFromExitsTwo(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"pull-policy"}, bytes.NewReader(nil), &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit %d, want 2 (usage)\nstderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestPullPolicyFetchesBundleFromControlPlane(t *testing.T) {
+	bundle := `{"frameworks":[{"path":"nist.yaml","content":"name: NIST"}],"controls":[],"scopes":[],"mappings":[],"policy_hash":"abc"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/policy" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(bundle))
+	}))
+	defer srv.Close()
+
+	out := filepath.Join(t.TempDir(), "policy.json")
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"pull-policy", "--from", srv.URL, "--output", out},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != bundle {
+		t.Errorf("body mismatch\ngot:  %s\nwant: %s", body, bundle)
+	}
+	if !strings.Contains(stdout.String(), "Pulled policy bundle") {
+		t.Errorf("stdout missing 'Pulled policy bundle'; got:\n%s", stdout.String())
+	}
+}
+
+func TestPullPolicyServerError404ExitsOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"pull-policy", "--from", srv.URL},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (server returned 404)", code)
+	}
+}
