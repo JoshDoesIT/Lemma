@@ -507,3 +507,292 @@ func TestGenerateKeypairUsesSafeProducerForOnDiskName(t *testing.T) {
 		t.Errorf("private PEM not at sanitised path: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RotateKey
+// ---------------------------------------------------------------------------
+
+func TestRotateKeyErrorsWhenNoActiveRecord(t *testing.T) {
+	dir := t.TempDir()
+	// Producer directory exists but has no ACTIVE record (only REVOKED).
+	prodDir := filepath.Join(dir, "Lemma")
+	if err := os.MkdirAll(prodDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prodDir, "meta.json"),
+		[]byte(metaNoActive), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RotateKey(dir, "Lemma"); err == nil {
+		t.Fatal("RotateKey on lifecycle without ACTIVE record should error")
+	}
+}
+
+func TestRotateKeyErrorsWhenProducerUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := RotateKey(dir, "Unknown"); err == nil {
+		t.Fatal("RotateKey on missing producer should error")
+	}
+}
+
+func TestRotateKeyMintsNewKeyAndRetiresOld(t *testing.T) {
+	dir := t.TempDir()
+	old, _, err := GenerateKeypair(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newID, err := RotateKey(dir, "Lemma")
+	if err != nil {
+		t.Fatalf("RotateKey: %v", err)
+	}
+	if newID == old {
+		t.Fatal("RotateKey returned the same key_id as the old ACTIVE")
+	}
+	if !strings.HasPrefix(newID, "ed25519:") {
+		t.Errorf("new key_id %q missing ed25519: prefix", newID)
+	}
+
+	// Lifecycle should show: old → RETIRED+successor, new → ACTIVE.
+	lc, ok, err := LoadLifecycle(dir, "Lemma")
+	if err != nil || !ok {
+		t.Fatalf("LoadLifecycle: ok=%v err=%v", ok, err)
+	}
+	if len(lc.Keys) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(lc.Keys))
+	}
+
+	var oldRec, newRec *LifecycleRecord
+	for i := range lc.Keys {
+		switch lc.Keys[i].KeyID {
+		case old:
+			oldRec = &lc.Keys[i]
+		case newID:
+			newRec = &lc.Keys[i]
+		}
+	}
+	if oldRec == nil || newRec == nil {
+		t.Fatalf("missing records in lifecycle: old=%v new=%v", oldRec, newRec)
+	}
+	if oldRec.Status != "RETIRED" {
+		t.Errorf("old record status=%q, want RETIRED", oldRec.Status)
+	}
+	if oldRec.RetiredAt == nil {
+		t.Error("old record retired_at is nil")
+	}
+	if oldRec.SuccessorKeyID != newID {
+		t.Errorf("old.successor_key_id=%q, want %q", oldRec.SuccessorKeyID, newID)
+	}
+	if newRec.Status != "ACTIVE" {
+		t.Errorf("new record status=%q, want ACTIVE", newRec.Status)
+	}
+	if newRec.ActivatedAt.IsZero() {
+		t.Error("new record activated_at is zero")
+	}
+}
+
+func TestRotateKeyAfterRotateLoadActiveReturnsNew(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := GenerateKeypair(dir, "Lemma"); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := RotateKey(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadActive(dir, "Lemma")
+	if err != nil {
+		t.Fatalf("LoadActive after rotate: %v", err)
+	}
+	if got != newID {
+		t.Errorf("LoadActive=%q, RotateKey returned %q", got, newID)
+	}
+}
+
+func TestRotateKeyProducesUsableNewKey(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := GenerateKeypair(dir, "Lemma"); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := RotateKey(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, err := LoadPrivateKey(dir, "Lemma", newID)
+	if err != nil {
+		t.Fatalf("LoadPrivateKey: %v", err)
+	}
+	hashHex := "70199efb59c00012139c6498d6d6c387e901d77e81ecc39b4b76a4d2b4e8bc42"
+	sigHex := crypto.SignEntryHash(priv, hashHex)
+	pubBytes, _ := os.ReadFile(filepath.Join(dir, "Lemma", newID+".public.pem"))
+	pub, err := crypto.LoadPublicKey(pubBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crypto.VerifyEntryHash(pub, hashHex, sigHex) {
+		t.Error("rotated keypair fails sign+verify round-trip")
+	}
+}
+
+func TestRotateKeyChainsAcrossMultipleRotations(t *testing.T) {
+	dir := t.TempDir()
+	first, _, _ := GenerateKeypair(dir, "Lemma")
+	second, err := RotateKey(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := RotateKey(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || second == third || first == third {
+		t.Fatalf("keys should all differ: %q %q %q", first, second, third)
+	}
+	got, _ := LoadActive(dir, "Lemma")
+	if got != third {
+		t.Errorf("LoadActive after two rotations=%q, want %q", got, third)
+	}
+	lc, _, _ := LoadLifecycle(dir, "Lemma")
+	if len(lc.Keys) != 3 {
+		t.Fatalf("expected 3 lifecycle records after two rotations, got %d", len(lc.Keys))
+	}
+}
+
+func TestRotateKeyUsesSafeProducerForOnDiskName(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := GenerateKeypair(dir, "Foo Bar/Producer"); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := RotateKey(dir, "Foo Bar/Producer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeDir := filepath.Join(dir, "Foo_Bar_Producer")
+	if _, err := os.Stat(filepath.Join(safeDir, newID+".private.pem")); err != nil {
+		t.Errorf("rotated private PEM not at sanitised path: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RevokeKey
+// ---------------------------------------------------------------------------
+
+func TestRevokeKeyErrorsOnEmptyReason(t *testing.T) {
+	dir := t.TempDir()
+	keyID, _, err := GenerateKeypair(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RevokeKey(dir, "Lemma", keyID, ""); err == nil {
+		t.Error("RevokeKey with empty reason should error")
+	}
+}
+
+func TestRevokeKeyErrorsWhenKeyIDNotFound(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := GenerateKeypair(dir, "Lemma"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RevokeKey(dir, "Lemma", "ed25519:doesnotexist", "leaked"); err == nil {
+		t.Error("RevokeKey on unknown key_id should error")
+	}
+}
+
+func TestRevokeKeyErrorsWhenProducerMissing(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := RevokeKey(dir, "Unknown", "ed25519:abc", "leaked"); err == nil {
+		t.Error("RevokeKey on missing producer should error")
+	}
+}
+
+func TestRevokeKeyMarksRecordAsRevoked(t *testing.T) {
+	dir := t.TempDir()
+	keyID, _, err := GenerateKeypair(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := RevokeKey(dir, "Lemma", keyID, "key compromise")
+	if err != nil {
+		t.Fatalf("RevokeKey: %v", err)
+	}
+	if rec.Status != "REVOKED" {
+		t.Errorf("returned record status=%q, want REVOKED", rec.Status)
+	}
+	if rec.RevokedReason != "key compromise" {
+		t.Errorf("returned record reason=%q, want %q", rec.RevokedReason, "key compromise")
+	}
+	if rec.RevokedAt == nil {
+		t.Error("returned record revoked_at is nil")
+	}
+}
+
+func TestRevokeKeyPersistsToMetaJSON(t *testing.T) {
+	dir := t.TempDir()
+	keyID, _, err := GenerateKeypair(dir, "Lemma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RevokeKey(dir, "Lemma", keyID, "leaked"); err != nil {
+		t.Fatal(err)
+	}
+	lc, ok, err := LoadLifecycle(dir, "Lemma")
+	if err != nil || !ok {
+		t.Fatalf("LoadLifecycle: ok=%v err=%v", ok, err)
+	}
+	if len(lc.Keys) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(lc.Keys))
+	}
+	if lc.Keys[0].Status != "REVOKED" {
+		t.Errorf("persisted status=%q, want REVOKED", lc.Keys[0].Status)
+	}
+	if lc.Keys[0].RevokedReason != "leaked" {
+		t.Errorf("persisted reason=%q, want %q", lc.Keys[0].RevokedReason, "leaked")
+	}
+}
+
+func TestRevokeKeyIntegratesWithRevokedAt(t *testing.T) {
+	dir := t.TempDir()
+	keyID, _, _ := GenerateKeypair(dir, "Lemma")
+	if _, err := RevokeKey(dir, "Lemma", keyID, "leaked"); err != nil {
+		t.Fatal(err)
+	}
+	lc, _, _ := LoadLifecycle(dir, "Lemma")
+	at, reason, ok := lc.RevokedAt(keyID)
+	if !ok {
+		t.Fatal("RevokedAt did not flag the revoked key")
+	}
+	if reason != "leaked" {
+		t.Errorf("RevokedAt reason=%q, want leaked", reason)
+	}
+	if at.IsZero() {
+		t.Error("RevokedAt timestamp is zero")
+	}
+}
+
+func TestRevokeKeyOnRetiredRecordWorks(t *testing.T) {
+	dir := t.TempDir()
+	old, _, _ := GenerateKeypair(dir, "Lemma")
+	if _, err := RotateKey(dir, "Lemma"); err != nil {
+		t.Fatal(err)
+	}
+	// Now revoke the RETIRED key (the original).
+	rec, err := RevokeKey(dir, "Lemma", old, "post-retirement compromise")
+	if err != nil {
+		t.Fatalf("RevokeKey on RETIRED: %v", err)
+	}
+	if rec.Status != "REVOKED" {
+		t.Errorf("status=%q, want REVOKED", rec.Status)
+	}
+	// The new ACTIVE key should still be ACTIVE.
+	if _, err := LoadActive(dir, "Lemma"); err != nil {
+		t.Errorf("LoadActive should still find the post-rotate ACTIVE key: %v", err)
+	}
+}
+
+func TestRevokeKeyUsesSafeProducerForOnDiskName(t *testing.T) {
+	dir := t.TempDir()
+	keyID, _, _ := GenerateKeypair(dir, "Foo Bar/Producer")
+	if _, err := RevokeKey(dir, "Foo Bar/Producer", keyID, "leaked"); err != nil {
+		t.Fatalf("RevokeKey on space/slash producer: %v", err)
+	}
+}

@@ -32,7 +32,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -41,7 +41,7 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, forward")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
@@ -62,11 +62,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runIngest(args[1:], stdin, stdout, stderr)
 	case "keygen":
 		return runKeygen(args[1:], stdout, stderr)
+	case "keyrotate":
+		return runKeyrotate(args[1:], stdout, stderr)
+	case "keyrevoke":
+		return runKeyrevoke(args[1:], stdout, stderr)
 	case "forward":
 		return runForward(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, forward")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward")
 		return 2
 	}
 }
@@ -685,6 +689,149 @@ func runKeygen(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "Producer %s already has ACTIVE key %s.\n", producer, keyID)
 	}
+	return 0
+}
+
+func runKeyrotate(args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent keyrotate --keys-dir <dir> --producer <name>")
+	}
+
+	var keysDir, producer string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrotate: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case a == "--producer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrotate: --producer requires a value")
+				return 2
+			}
+			producer = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--producer="):
+			_, producer, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent keyrotate: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent keyrotate: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	if keysDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent keyrotate: --keys-dir is required")
+		usage()
+		return 2
+	}
+	if producer == "" {
+		fmt.Fprintln(stderr, "lemma-agent keyrotate: --producer is required")
+		usage()
+		return 2
+	}
+
+	// Capture the prior ACTIVE key_id for the diagnostic — losing it
+	// would force operators to diff lifecycle records by hand.
+	old, err := keystore.LoadActive(keysDir, producer)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent keyrotate: %v\n", err)
+		return 1
+	}
+	newID, err := keystore.RotateKey(keysDir, producer)
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent keyrotate: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Rotated %s: %s retired, %s now ACTIVE.\n", producer, old, newID)
+	return 0
+}
+
+func runKeyrevoke(args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent keyrevoke --keys-dir <dir> --producer <name> "+
+				"--key-id <id> --reason <text>")
+	}
+
+	var keysDir, producer, keyID, reason string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrevoke: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case a == "--producer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrevoke: --producer requires a value")
+				return 2
+			}
+			producer = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--producer="):
+			_, producer, _ = strings.Cut(a, "=")
+		case a == "--key-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrevoke: --key-id requires a value")
+				return 2
+			}
+			keyID = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--key-id="):
+			_, keyID, _ = strings.Cut(a, "=")
+		case a == "--reason":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent keyrevoke: --reason requires a value")
+				return 2
+			}
+			reason = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--reason="):
+			_, reason, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent keyrevoke: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent keyrevoke: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	for _, missing := range []struct{ name, val string }{
+		{"--keys-dir", keysDir},
+		{"--producer", producer},
+		{"--key-id", keyID},
+		{"--reason", reason},
+	} {
+		if missing.val == "" {
+			fmt.Fprintf(stderr, "lemma-agent keyrevoke: %s is required\n", missing.name)
+			usage()
+			return 2
+		}
+	}
+
+	if _, err := keystore.RevokeKey(keysDir, producer, keyID, reason); err != nil {
+		fmt.Fprintf(stderr, "lemma-agent keyrevoke: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Revoked %s for producer %s: %s\n", keyID, producer, reason)
 	return 0
 }
 

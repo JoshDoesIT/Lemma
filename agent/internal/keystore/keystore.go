@@ -169,26 +169,8 @@ func GenerateKeypair(keysDir, producer string) (keyID string, created bool, err 
 	}
 	keyID = computeKeyID(pub)
 
-	privPEM, err := encodePrivatePKCS8(priv)
-	if err != nil {
+	if err := writeKeypairFiles(producerDir, keyID, priv, pub); err != nil {
 		return "", false, err
-	}
-	pubPEM, err := encodePublicPKIX(pub)
-	if err != nil {
-		return "", false, err
-	}
-
-	privPath := filepath.Join(producerDir, keyID+".private.pem")
-	pubPath := filepath.Join(producerDir, keyID+".public.pem")
-	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
-		return "", false, fmt.Errorf("keystore: write private PEM: %w", err)
-	}
-	// Defensive: enforce 0o600 even under restrictive umask.
-	if err := os.Chmod(privPath, 0o600); err != nil {
-		return "", false, fmt.Errorf("keystore: chmod private PEM: %w", err)
-	}
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
-		return "", false, fmt.Errorf("keystore: write public PEM: %w", err)
 	}
 
 	// Truncate to microsecond precision so the timestamp matches
@@ -200,15 +182,9 @@ func GenerateKeypair(keysDir, producer string) (keyID string, created bool, err 
 		Status:      "ACTIVE",
 		ActivatedAt: now,
 	})
-	metaBytes, err := json.MarshalIndent(lc, "", "  ")
-	if err != nil {
-		return "", false, fmt.Errorf("keystore: marshal meta: %w", err)
+	if err := writeMeta(producerDir, lc); err != nil {
+		return "", false, err
 	}
-	metaPath := filepath.Join(producerDir, "meta.json")
-	if err := os.WriteFile(metaPath, metaBytes, 0o644); err != nil {
-		return "", false, fmt.Errorf("keystore: write meta.json: %w", err)
-	}
-
 	return keyID, true, nil
 }
 
@@ -217,6 +193,135 @@ func GenerateKeypair(keysDir, producer string) (keyID string, created bool, err 
 func computeKeyID(pub ed25519.PublicKey) string {
 	h := sha256.Sum256(pub)
 	return "ed25519:" + hex.EncodeToString(h[:])[:16]
+}
+
+// RotateKey retires the producer's current ACTIVE key and mints a fresh
+// one. Returns the new ACTIVE key_id. Mirrors Python crypto.rotate_key
+// (src/lemma/services/crypto.py:298-327): the prior ACTIVE record gets
+// status=RETIRED + retired_at + successor_key_id; a new record is
+// appended with status=ACTIVE + activated_at. Errors when no ACTIVE
+// record exists (nothing to rotate from).
+func RotateKey(keysDir, producer string) (string, error) {
+	producerDir := filepath.Join(keysDir, SafeProducer(producer))
+	lc, ok, err := LoadLifecycle(keysDir, SafeProducer(producer))
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("keystore: no lifecycle on file for producer %q in %s",
+			producer, keysDir)
+	}
+
+	activeIdx := -1
+	for i, rec := range lc.Keys {
+		if rec.Status == "ACTIVE" {
+			activeIdx = i
+			break
+		}
+	}
+	if activeIdx == -1 {
+		return "", fmt.Errorf("keystore: no ACTIVE key on file for producer %q in %s — nothing to rotate",
+			producer, keysDir)
+	}
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("keystore: generate ed25519: %w", err)
+	}
+	newID := computeKeyID(pub)
+
+	if err := writeKeypairFiles(producerDir, newID, priv, pub); err != nil {
+		return "", err
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	lc.Keys[activeIdx].Status = "RETIRED"
+	lc.Keys[activeIdx].RetiredAt = &now
+	lc.Keys[activeIdx].SuccessorKeyID = newID
+	lc.Keys = append(lc.Keys, LifecycleRecord{
+		KeyID:       newID,
+		Status:      "ACTIVE",
+		ActivatedAt: now,
+	})
+	if err := writeMeta(producerDir, lc); err != nil {
+		return "", err
+	}
+	return newID, nil
+}
+
+// RevokeKey marks a specific key_id as REVOKED with the supplied reason
+// and a current timestamp. Mirrors Python crypto.revoke_key
+// (src/lemma/services/crypto.py:439-456). Errors on empty reason,
+// missing producer, or unknown key_id.
+func RevokeKey(keysDir, producer, keyID, reason string) (LifecycleRecord, error) {
+	if reason == "" {
+		return LifecycleRecord{}, errors.New("keystore: revoke_key requires a non-empty reason")
+	}
+	producerDir := filepath.Join(keysDir, SafeProducer(producer))
+	lc, ok, err := LoadLifecycle(keysDir, SafeProducer(producer))
+	if err != nil {
+		return LifecycleRecord{}, err
+	}
+	if !ok {
+		return LifecycleRecord{}, fmt.Errorf("keystore: no lifecycle on file for producer %q in %s",
+			producer, keysDir)
+	}
+
+	idx := -1
+	for i, rec := range lc.Keys {
+		if rec.KeyID == keyID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return LifecycleRecord{}, fmt.Errorf("keystore: key %q not found in lifecycle for producer %q",
+			keyID, producer)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	lc.Keys[idx].Status = "REVOKED"
+	lc.Keys[idx].RevokedAt = &now
+	lc.Keys[idx].RevokedReason = reason
+	if err := writeMeta(producerDir, lc); err != nil {
+		return LifecycleRecord{}, err
+	}
+	return lc.Keys[idx], nil
+}
+
+func writeKeypairFiles(producerDir, keyID string, priv ed25519.PrivateKey, pub ed25519.PublicKey) error {
+	privPEM, err := encodePrivatePKCS8(priv)
+	if err != nil {
+		return err
+	}
+	pubPEM, err := encodePublicPKIX(pub)
+	if err != nil {
+		return err
+	}
+	privPath := filepath.Join(producerDir, keyID+".private.pem")
+	pubPath := filepath.Join(producerDir, keyID+".public.pem")
+	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
+		return fmt.Errorf("keystore: write private PEM: %w", err)
+	}
+	if err := os.Chmod(privPath, 0o600); err != nil {
+		return fmt.Errorf("keystore: chmod private PEM: %w", err)
+	}
+	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+		return fmt.Errorf("keystore: write public PEM: %w", err)
+	}
+	return nil
+}
+
+func writeMeta(producerDir string, lc Lifecycle) error {
+	metaBytes, err := json.MarshalIndent(lc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("keystore: marshal meta: %w", err)
+	}
+	metaPath := filepath.Join(producerDir, "meta.json")
+	if err := os.WriteFile(metaPath, metaBytes, 0o644); err != nil {
+		return fmt.Errorf("keystore: write meta.json: %w", err)
+	}
+	return nil
 }
 
 func encodePrivatePKCS8(priv ed25519.PrivateKey) ([]byte, error) {
