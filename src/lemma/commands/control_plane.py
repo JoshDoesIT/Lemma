@@ -22,7 +22,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from lemma.services.control_plane import aggregate, make_handler_class
+from lemma.services.control_plane import (
+    aggregate,
+    build_topology,
+    make_handler_class,
+    render_topology_dot,
+)
 
 console = Console()
 
@@ -198,3 +203,65 @@ def aggregate_command(
         f"across {state.producer_count} producers"
         + (f" ({state.parse_errors} parse errors)" if state.parse_errors else "")
     )
+
+
+@control_plane_app.command(
+    name="graph",
+    help=(
+        "Render the federation topology as Graphviz DOT or JSON — every "
+        "producer's envelope chain in one view. Pair with `serve` and "
+        "`aggregate` for the full Control Plane operator workflow."
+    ),
+)
+def graph_command(
+    evidence_dir: str = typer.Option(
+        ...,
+        "--evidence-dir",
+        help="Directory the receiver writes <producer>/<YYYY-MM-DD>.jsonl files to.",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write the rendered graph to PATH instead of stdout.",
+    ),
+    fmt: str = typer.Option(
+        "dot",
+        "--format",
+        help="Output format: dot (Graphviz) or json.",
+    ),
+) -> None:
+    if fmt not in {"dot", "json"}:
+        console.print(f"[red]Error:[/red] unknown --format {fmt!r}; valid: dot, json.")
+        raise typer.Exit(code=1)
+
+    topology = build_topology(Path(evidence_dir))
+
+    if fmt == "dot":
+        body = render_topology_dot(topology)
+    else:
+        payload = {
+            "envelope_count": topology.envelope_count,
+            "producers": [
+                {
+                    "producer": p.producer,
+                    "chain": [
+                        {
+                            "entry_hash": e.entry_hash,
+                            "prev_hash": e.prev_hash,
+                            "signed_at": e.signed_at.isoformat(),
+                        }
+                        for e in p.chain
+                    ],
+                }
+                for p in topology.producers
+            ],
+        }
+        body = json.dumps(payload, indent=2) + "\n"
+
+    if output:
+        Path(output).write_text(body)
+        console.print(f"[green]Wrote[/green] {fmt} topology graph to {output}")
+    else:
+        # `print` (not console.print) to avoid Rich's wrapping/escaping —
+        # the DOT output needs to be byte-stable for Graphviz to parse.
+        print(body, end="")

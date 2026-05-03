@@ -331,6 +331,109 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+@dataclass
+class TopologyEnvelope:
+    """One node in a producer's chain — minimum data needed to render a
+    topology graph without re-parsing the full envelope."""
+
+    entry_hash: str
+    prev_hash: str
+    signed_at: datetime
+
+
+@dataclass
+class TopologyProducer:
+    """One producer's stream as seen by the receiver."""
+
+    producer: str
+    chain: list[TopologyEnvelope] = field(default_factory=list)
+
+
+@dataclass
+class Topology:
+    """Federation topology view: every producer's envelope chain that
+    has been persisted by the receiver. The DOT renderer turns this
+    into a Graphviz digraph for at-a-glance federation inspection."""
+
+    producers: list[TopologyProducer] = field(default_factory=list)
+    envelope_count: int = 0
+
+
+def build_topology(evidence_dir: Path) -> Topology:
+    """Walk a Control Plane evidence directory and emit a topology view.
+
+    Per-producer chains are sorted by ``signed_at`` so a Graphviz
+    render shows lineage left-to-right. Read-only — does not modify
+    the evidence directory. Malformed lines are silently skipped (the
+    aggregation rollup already surfaces a parse_errors count for that
+    case; the topology view is for shape, not integrity).
+    """
+    evidence_dir = Path(evidence_dir)
+    if not evidence_dir.exists():
+        return Topology()
+
+    producers: list[TopologyProducer] = []
+    total = 0
+    for producer_dir in sorted(p for p in evidence_dir.iterdir() if p.is_dir()):
+        chain: list[TopologyEnvelope] = []
+        for day_file in sorted(producer_dir.glob("*.jsonl")):
+            with day_file.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        env = SignedEvidence.model_validate_json(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    chain.append(
+                        TopologyEnvelope(
+                            entry_hash=env.entry_hash,
+                            prev_hash=env.prev_hash,
+                            signed_at=env.signed_at,
+                        )
+                    )
+        if not chain:
+            continue
+        chain.sort(key=lambda e: e.signed_at)
+        producers.append(TopologyProducer(producer=producer_dir.name, chain=chain))
+        total += len(chain)
+
+    return Topology(producers=producers, envelope_count=total)
+
+
+def render_topology_dot(topology: Topology) -> str:
+    """Render a Graphviz DOT digraph from a Topology.
+
+    Layout: one node per producer, one node per envelope. Edges run
+    producer → first-envelope and envelope_i → envelope_i+1, mirroring
+    the ``prev_hash`` chain. Hashes are truncated to 12 chars in labels
+    to keep the rendered output legible — the graph captures lineage,
+    not raw bytes.
+    """
+    lines = ["digraph LemmaControlPlane {"]
+    lines.append('  rankdir="LR";')
+    lines.append('  node [shape=box, fontname="monospace"];')
+    for producer in topology.producers:
+        producer_id = f"producer:{producer.producer}"
+        lines.append(
+            f'  "{producer_id}" [label="{producer.producer}\\n'
+            f'({len(producer.chain)} envelopes)", style=filled, fillcolor=lightblue];'
+        )
+        prev_node: str | None = None
+        for env in producer.chain:
+            envelope_id = f"envelope:{env.entry_hash}"
+            short = env.entry_hash[:12]
+            lines.append(f'  "{envelope_id}" [label="{short}\\n{env.signed_at.isoformat()}"];')
+            if prev_node is None:
+                lines.append(f'  "{producer_id}" -> "{envelope_id}";')
+            else:
+                lines.append(f'  "{prev_node}" -> "{envelope_id}";')
+            prev_node = envelope_id
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
 def _health_snapshot(evidence_dir: Path, keys_dir: Path, started_at: datetime) -> dict:
     evidence_count = 0
     if evidence_dir.exists():

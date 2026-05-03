@@ -543,3 +543,130 @@ def test_metrics_evidence_total_reflects_disk_state(tmp_path: Path) -> None:
     assert "control_plane_evidence_total 3" in body, (
         f"expected disk-derived count of 3; got:\n{body}"
     )
+
+
+# Topology graph tests --------------------------------------------------
+
+
+def test_topology_empty_evidence_dir_has_just_root_node(tmp_path: Path) -> None:
+    from lemma.services.control_plane import build_topology
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    topo = build_topology(cp_evidence)
+
+    assert topo.producers == []
+    assert topo.envelope_count == 0
+
+
+def test_topology_walks_per_producer_chains(tmp_path: Path) -> None:
+    """The topology graph captures the per-producer envelope chain so a
+    Graphviz render shows producer → e1 → e2 → e3 lineage."""
+    from lemma.services.control_plane import build_topology
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    keys_dir = cp_evidence.parent / "keys"
+
+    # Sign three envelopes locally and copy them under the producer dir.
+    log = EvidenceLog(log_dir=tmp_path / "agent-evidence", key_dir=keys_dir)
+    for i in range(3):
+        log.append(normalize(_compliance_event(f"chain-{i}")))
+    envs = log.read_envelopes()
+    target = cp_evidence / "Lemma"
+    target.mkdir()
+    day = envs[0].signed_at.strftime("%Y-%m-%d")
+    (target / f"{day}.jsonl").write_text("\n".join(env.model_dump_json() for env in envs) + "\n")
+
+    topo = build_topology(cp_evidence)
+    assert len(topo.producers) == 1
+    p = topo.producers[0]
+    assert p.producer == "Lemma"
+    assert len(p.chain) == 3
+    # chain entries carry both prev_hash and entry_hash so the renderer
+    # can draw the genesis link.
+    assert p.chain[0].prev_hash == "0" * 64
+    assert p.chain[0].entry_hash == envs[0].entry_hash
+    assert p.chain[1].prev_hash == envs[0].entry_hash
+    assert p.chain[1].entry_hash == envs[1].entry_hash
+    assert p.chain[2].prev_hash == envs[1].entry_hash
+    assert p.chain[2].entry_hash == envs[2].entry_hash
+    assert topo.envelope_count == 3
+
+
+def test_topology_two_producers_separate_chains(tmp_path: Path) -> None:
+    from lemma.services import crypto as lemma_crypto
+    from lemma.services.control_plane import build_topology
+
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    for producer in ("Lemma", "Okta"):
+        lemma_crypto.generate_keypair(producer=producer, key_dir=keys_dir)
+
+    cp_evidence = tmp_path / "cp-evidence"
+    for producer in ("Lemma", "Okta"):
+        log = EvidenceLog(log_dir=tmp_path / f"agent-{producer}", key_dir=keys_dir)
+        evt = _compliance_event(f"{producer}-1")
+        evt["metadata"]["product"]["name"] = producer
+        log.append(normalize(evt))
+        envs = log.read_envelopes()
+        target = cp_evidence / producer
+        target.mkdir(parents=True)
+        day = envs[0].signed_at.strftime("%Y-%m-%d")
+        (target / f"{day}.jsonl").write_text(envs[0].model_dump_json() + "\n")
+
+    topo = build_topology(cp_evidence)
+    by_name = {p.producer: p for p in topo.producers}
+    assert set(by_name) == {"Lemma", "Okta"}
+    assert len(by_name["Lemma"].chain) == 1
+    assert len(by_name["Okta"].chain) == 1
+    assert topo.envelope_count == 2
+
+
+def test_render_topology_dot_outputs_valid_graphviz(tmp_path: Path) -> None:
+    """The DOT renderer emits a well-formed digraph with one node per
+    producer and one node per envelope, plus edges along the chain."""
+    from lemma.services.control_plane import build_topology, render_topology_dot
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    keys_dir = cp_evidence.parent / "keys"
+    log = EvidenceLog(log_dir=tmp_path / "agent-evidence", key_dir=keys_dir)
+    log.append(normalize(_compliance_event("dot-1")))
+    log.append(normalize(_compliance_event("dot-2")))
+    envs = log.read_envelopes()
+    target = cp_evidence / "Lemma"
+    target.mkdir()
+    day = envs[0].signed_at.strftime("%Y-%m-%d")
+    (target / f"{day}.jsonl").write_text("\n".join(env.model_dump_json() for env in envs) + "\n")
+
+    topo = build_topology(cp_evidence)
+    dot = render_topology_dot(topo)
+
+    # Must be a valid digraph header + matching close.
+    assert dot.startswith("digraph LemmaControlPlane {")
+    assert dot.rstrip().endswith("}")
+    # Producer node + label.
+    assert '"producer:Lemma"' in dot
+    assert 'label="Lemma' in dot
+    # Edges from producer to first envelope, then envelope-to-envelope.
+    assert '"producer:Lemma" -> "envelope:' in dot
+    assert dot.count('"envelope:') >= 2  # one node + one edge mention each
+    # Both entry hashes are referenced.
+    for env in envs:
+        # The DOT escapes hashes with shorter prefixes, so just check
+        # the first 12 chars surface somewhere.
+        assert env.entry_hash[:12] in dot
+
+
+def test_render_topology_dot_empty_topology_renders_root_only(tmp_path: Path) -> None:
+    from lemma.services.control_plane import build_topology, render_topology_dot
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    topo = build_topology(cp_evidence)
+    dot = render_topology_dot(topo)
+    assert dot.startswith("digraph LemmaControlPlane {")
+    assert dot.rstrip().endswith("}")
+    assert "envelope:" not in dot
+    assert "producer:" not in dot

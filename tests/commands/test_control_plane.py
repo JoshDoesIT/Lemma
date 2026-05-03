@@ -205,3 +205,62 @@ def test_aggregate_output_writes_json_payload(tmp_path: Path) -> None:
     payload = json.loads(out.read_text())
     for key in ("total_envelopes", "producer_count", "parse_errors", "producers"):
         assert key in payload
+
+
+# Graph subcommand tests ------------------------------------------------
+
+
+def test_graph_requires_evidence_dir(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    result = runner.invoke(app, ["control-plane", "graph"])
+    assert result.exit_code != 0
+
+
+def test_graph_rejects_unknown_format(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    ev = tmp_path / "ev"
+    ev.mkdir()
+    result = runner.invoke(
+        app,
+        ["control-plane", "graph", "--evidence-dir", str(ev), "--format", "wat"],
+    )
+    assert result.exit_code == 1
+    assert "format" in result.stdout.lower()
+
+
+def test_graph_default_dot_to_stdout(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    ev = tmp_path / "ev"
+    ev.mkdir()
+    result = runner.invoke(app, ["control-plane", "graph", "--evidence-dir", str(ev)])
+    assert result.exit_code == 0, result.stdout
+    assert "digraph LemmaControlPlane" in result.stdout
+    assert "}" in result.stdout
+
+
+def test_graph_json_output_writes_payload(tmp_path: Path) -> None:
+    from lemma.cli import app
+
+    ev = tmp_path / "ev"
+    ev.mkdir()
+    out = tmp_path / "topo.json"
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "graph",
+            "--evidence-dir",
+            str(ev),
+            "--output",
+            str(out),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    assert "envelope_count" in payload
+    assert "producers" in payload
