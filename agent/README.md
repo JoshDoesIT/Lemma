@@ -133,16 +133,64 @@ ACTIVE key returns its key_id without modifying any files. Output:
 - New: `Generated ed25519:<id> for producer <name>.`
 - Existing: `Producer <name> already has ACTIVE key ed25519:<id>.`
 
-Pair `keygen` with `ingest` and `verify` to deploy a fully self-
-sufficient Go-only agent — no Python required for the runtime path.
-**Rotation and revocation are not in this binary yet** (use Python's
-`crypto.rotate_key` / `crypto.revoke_key` for those). They'll land in
-later slices.
+Pair `keygen` with `ingest`, `verify`, `keyrotate`, and `keyrevoke` to
+deploy a fully self-sufficient Go-only agent — no Python required for
+the runtime path or for key lifecycle management.
 
 Exit codes:
 
 - `0` — fresh keypair minted, OR existing ACTIVE key returned
 - `1` — filesystem error (mkdir, write, chmod)
+- `2` — usage error (missing flag)
+
+### Keyrotate
+
+```bash
+./lemma-agent keyrotate --keys-dir <dir> --producer <name>
+```
+
+Retires the producer's current ACTIVE key and mints a fresh one. The
+prior ACTIVE record is updated in-place to `status: RETIRED`,
+`retired_at: <now>`, and `successor_key_id: <new_key_id>`; a new record
+is appended with `status: ACTIVE`. Mirrors Python's `crypto.rotate_key`
+on the wire — the same `_safe_producer` rule applies, the new
+keypair uses the same PKCS#8 + PKIX PEM formats keygen writes, and
+timestamps are truncated to microsecond precision so meta.json
+round-trips cleanly through Pydantic.
+
+Output: `Rotated <producer>: <old_key_id> retired, <new_key_id> now ACTIVE.`
+
+Exit codes:
+
+- `0` — rotation completed
+- `1` — no ACTIVE key on file for `<producer>` (nothing to rotate from),
+  or filesystem error
+- `2` — usage error (missing flag)
+
+### Keyrevoke
+
+```bash
+./lemma-agent keyrevoke --keys-dir <dir> --producer <name> --key-id <id> --reason <text>
+```
+
+Marks `<id>` in the producer's lifecycle as `status: REVOKED` with
+`revoked_at: <now>` and `revoked_reason: <text>`. Mirrors Python's
+`crypto.revoke_key`. Works on ACTIVE, RETIRED, or already-REVOKED
+records (the latter just refreshes the timestamp + reason). `--reason`
+must be non-empty.
+
+Revocation is **forward-looking** — the verifier flips a future
+envelope to VIOLATED only when its `signed_at >= revoked_at`. Envelopes
+already signed before the revocation timestamp continue to verify
+PROVEN, matching Python's `EvidenceLog.verify_entry` semantics.
+
+Output: `Revoked <key_id> for producer <name>: <reason>`
+
+Exit codes:
+
+- `0` — revocation persisted
+- `1` — empty `--reason`, missing producer, unknown `<key_id>`, or
+  filesystem error
 - `2` — usage error (missing flag)
 
 ### Ingest

@@ -829,6 +829,245 @@ func TestKeygenRoundTripsThroughSignAndVerify(t *testing.T) {
 	}
 }
 
+// Keyrotate subcommand tests --------------------------------------------
+
+func TestKeyrotateMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_keys_dir", []string{"keyrotate", "--producer", "Lemma"}},
+		{"no_producer", []string{"keyrotate", "--keys-dir", "/tmp/k"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit %d, want 2 (usage)\nstderr:\n%s", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestKeyrotateWithoutPriorActiveExitsOne(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"keyrotate", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1 (no ACTIVE key)\nstderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestKeyrotatePrintsOldAndNewKeyIDs(t *testing.T) {
+	dir := t.TempDir()
+	// Bootstrap with a keygen.
+	var bootOut bytes.Buffer
+	if code := run(
+		[]string{"keygen", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bootOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("bootstrap keygen exit %d", code)
+	}
+
+	var rotOut, rotErr bytes.Buffer
+	code := run(
+		[]string{"keyrotate", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &rotOut, &rotErr,
+	)
+	if code != 0 {
+		t.Fatalf("keyrotate exit %d\nstderr:\n%s", code, rotErr.String())
+	}
+	out := rotOut.String()
+	if !strings.Contains(out, "Rotated Lemma:") {
+		t.Errorf("stdout missing 'Rotated Lemma:'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "retired") || !strings.Contains(out, "now ACTIVE") {
+		t.Errorf("stdout missing retired/now ACTIVE markers; got:\n%s", out)
+	}
+}
+
+func TestKeyrotateRoundTripsThroughSignAndVerify(t *testing.T) {
+	keysDir := t.TempDir()
+	if code := run(
+		[]string{"keygen", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bytes.Buffer{}, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keygen exit %d", code)
+	}
+	if code := run(
+		[]string{"keyrotate", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bytes.Buffer{}, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keyrotate exit %d", code)
+	}
+
+	const ev = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T12:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"rotate-rt"}}`
+	var signOut bytes.Buffer
+	if code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(ev), &signOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("sign-after-rotate exit %d", code)
+	}
+
+	logPath := filepath.Join(t.TempDir(), "log.jsonl")
+	if err := os.WriteFile(logPath, []byte(strings.TrimSpace(signOut.String())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var verifyOut bytes.Buffer
+	if code := run(
+		[]string{"verify", logPath, "--keys-dir", keysDir},
+		bytes.NewReader(nil), &verifyOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Errorf("verify after rotate exit %d\nstdout:\n%s", code, verifyOut.String())
+	}
+	if !strings.Contains(verifyOut.String(), "1 PROVEN") {
+		t.Errorf("verify should report 1 PROVEN; got:\n%s", verifyOut.String())
+	}
+}
+
+// Keyrevoke subcommand tests --------------------------------------------
+
+func TestKeyrevokeMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_keys_dir", []string{"keyrevoke", "--producer", "P", "--key-id", "K", "--reason", "R"}},
+		{"no_producer", []string{"keyrevoke", "--keys-dir", "/tmp/k", "--key-id", "K", "--reason", "R"}},
+		{"no_key_id", []string{"keyrevoke", "--keys-dir", "/tmp/k", "--producer", "P", "--reason", "R"}},
+		{"no_reason", []string{"keyrevoke", "--keys-dir", "/tmp/k", "--producer", "P", "--key-id", "K"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit %d, want 2\nstderr:\n%s", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestKeyrevokeUnknownKeyExitsOne(t *testing.T) {
+	dir := t.TempDir()
+	if code := run(
+		[]string{"keygen", "--keys-dir", dir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bytes.Buffer{}, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("bootstrap keygen exit %d", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(
+		[]string{"keyrevoke", "--keys-dir", dir, "--producer", "Lemma",
+			"--key-id", "ed25519:doesnotexist", "--reason", "leaked"},
+		bytes.NewReader(nil), &stdout, &stderr,
+	)
+	if code != 1 {
+		t.Errorf("exit %d, want 1\nstderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestKeyrevokeFlipsLifecycleAndBreaksSign(t *testing.T) {
+	keysDir := t.TempDir()
+	// Bootstrap key.
+	var bootOut bytes.Buffer
+	if code := run(
+		[]string{"keygen", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bootOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keygen exit %d", code)
+	}
+	keyID := strings.TrimSuffix(
+		strings.TrimPrefix(strings.TrimSpace(bootOut.String()), "Generated "),
+		" for producer Lemma.",
+	)
+
+	// Revoke the only ACTIVE key.
+	var revOut, revErr bytes.Buffer
+	if code := run(
+		[]string{"keyrevoke", "--keys-dir", keysDir, "--producer", "Lemma",
+			"--key-id", keyID, "--reason", "key compromise"},
+		bytes.NewReader(nil), &revOut, &revErr,
+	); code != 0 {
+		t.Fatalf("keyrevoke exit %d\nstderr:\n%s", code, revErr.String())
+	}
+	if !strings.Contains(revOut.String(), "Revoked "+keyID) {
+		t.Errorf("revoke stdout missing 'Revoked %s'; got:\n%s", keyID, revOut.String())
+	}
+
+	// Lifecycle now shows REVOKED.
+	metaBytes, err := os.ReadFile(filepath.Join(keysDir, "Lemma", "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metaBytes), `"status": "REVOKED"`) {
+		t.Errorf("meta.json should record REVOKED status; got:\n%s", string(metaBytes))
+	}
+	if !strings.Contains(string(metaBytes), `"revoked_reason": "key compromise"`) {
+		t.Errorf("meta.json should record revoked_reason; got:\n%s", string(metaBytes))
+	}
+
+	// With no ACTIVE record left, sign exits 1.
+	const ev = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T12:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"revoke-rt"}}`
+	var signOut, signErr bytes.Buffer
+	if code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(ev), &signOut, &signErr,
+	); code != 1 {
+		t.Errorf("sign after revoke exit %d, want 1\nstdout:\n%s\nstderr:\n%s",
+			code, signOut.String(), signErr.String())
+	}
+}
+
+func TestKeyrevokeAfterRotateLeavesActiveKeyUsable(t *testing.T) {
+	keysDir := t.TempDir()
+	var bootOut bytes.Buffer
+	if code := run(
+		[]string{"keygen", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bootOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keygen exit %d", code)
+	}
+	oldKeyID := strings.TrimSuffix(
+		strings.TrimPrefix(strings.TrimSpace(bootOut.String()), "Generated "),
+		" for producer Lemma.",
+	)
+
+	if code := run(
+		[]string{"keyrotate", "--keys-dir", keysDir, "--producer", "Lemma"},
+		bytes.NewReader(nil), &bytes.Buffer{}, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keyrotate exit %d", code)
+	}
+
+	// Revoke the now-RETIRED original key.
+	if code := run(
+		[]string{"keyrevoke", "--keys-dir", keysDir, "--producer", "Lemma",
+			"--key-id", oldKeyID, "--reason", "post-retirement compromise"},
+		bytes.NewReader(nil), &bytes.Buffer{}, &bytes.Buffer{},
+	); code != 0 {
+		t.Fatalf("keyrevoke on retired key exit %d", code)
+	}
+
+	// Sign with the still-ACTIVE rotated key should still succeed.
+	const ev = `{"class_uid":2003,"class_name":"Compliance Finding","category_uid":2000,"category_name":"Findings","type_uid":200301,"activity_id":1,"time":"2026-05-02T12:00:00Z","metadata":{"version":"1.3.0","product":{"name":"Lemma"},"uid":"post-rotate"}}`
+	var signOut bytes.Buffer
+	if code := run(
+		[]string{"sign", "--keys-dir", keysDir, "--producer", "Lemma"},
+		strings.NewReader(ev), &signOut, &bytes.Buffer{},
+	); code != 0 {
+		t.Errorf("sign with ACTIVE rotated key exit %d", code)
+	}
+	if signOut.Len() == 0 {
+		t.Error("sign produced no envelope")
+	}
+}
+
 // Forward subcommand tests --------------------------------------------
 
 func TestForwardMissingFlagsExitsTwo(t *testing.T) {

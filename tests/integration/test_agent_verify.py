@@ -855,3 +855,199 @@ def test_agent_forward_5xx_response_exits_one(agent_binary: Path, tmp_path: Path
 
     assert result.returncode == 1, f"exit {result.returncode}, want 1"
     assert "0 forwarded, 1 failed." in result.stdout
+
+
+# Keyrotate / keyrevoke parity tests -----------------------------------
+
+
+@requires_go
+def test_agent_keyrotate_python_sees_retired_and_new_active(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """Cross-language: Go rotates the producer's ACTIVE key, Python's
+    crypto.read_lifecycle reads back the retired→new ACTIVE chain
+    (status flip, retired_at populated, successor_key_id populated),
+    and the new ACTIVE key signs an envelope that Go verifies."""
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from lemma.services import crypto as lemma_crypto
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = project / ".lemma" / "keys"
+    keys_dir.mkdir(parents=True)
+
+    # 1. Go bootstraps the keypair.
+    keygen = subprocess.run(
+        [str(agent_binary), "keygen", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert keygen.returncode == 0, keygen.stderr
+    old_key_id = (
+        keygen.stdout.strip().removeprefix("Generated ").removesuffix(" for producer Lemma.")
+    )
+
+    # 2. Go rotates.
+    rotate = subprocess.run(
+        [str(agent_binary), "keyrotate", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert rotate.returncode == 0, f"keyrotate failed:\n{rotate.stderr}"
+    assert "Rotated Lemma:" in rotate.stdout
+
+    # 3. Python reads the lifecycle and sees both records.
+    lifecycle = lemma_crypto._read_lifecycle("Lemma", keys_dir)
+    assert len(lifecycle.keys) == 2, (
+        f"expected 2 lifecycle records after rotate, got {len(lifecycle.keys)}"
+    )
+    old = next(r for r in lifecycle.keys if r.key_id == old_key_id)
+    new = next(r for r in lifecycle.keys if r.key_id != old_key_id)
+    assert old.status.value == "RETIRED"
+    assert old.retired_at is not None
+    assert old.successor_key_id == new.key_id
+    assert new.status.value == "ACTIVE"
+    assert lifecycle.active() is not None
+    assert lifecycle.active().key_id == new.key_id
+
+    # 4. Python signs with the rotated ACTIVE key.
+    log = EvidenceLog(
+        log_dir=project / ".lemma" / "evidence",
+        key_dir=keys_dir,
+    )
+    log.append(
+        normalize(
+            {
+                "class_uid": 2003,
+                "class_name": "Compliance Finding",
+                "category_uid": 2000,
+                "category_name": "Findings",
+                "type_uid": 200301,
+                "activity_id": 1,
+                "time": _datetime.now(UTC).isoformat(),
+                "metadata": {
+                    "version": "1.3.0",
+                    "product": {"name": "Lemma"},
+                    "uid": "rotate-cross-lang",
+                },
+            }
+        )
+    )
+
+    # 5. Go verifies the Python-signed envelope.
+    log_files = list((project / ".lemma" / "evidence").glob("*.jsonl"))
+    assert len(log_files) == 1
+    verify = subprocess.run(
+        [str(agent_binary), "verify", str(log_files[0]), "--keys-dir", str(keys_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+    assert "1 PROVEN, 0 VIOLATED" in verify.stdout
+
+
+@requires_go
+def test_agent_keyrevoke_python_sees_revoked_status_and_reason(
+    agent_binary: Path, tmp_path: Path
+) -> None:
+    """Cross-language: Go revokes a key, Python reads back the REVOKED
+    status, revoked_at timestamp, and revoked_reason. Then Go's
+    `verify --keys-dir` flips a freshly-signed envelope to VIOLATED via
+    the local lifecycle merge (#193 path)."""
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from lemma.services import crypto as lemma_crypto
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.ocsf_normalizer import normalize
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    keys_dir = project / ".lemma" / "keys"
+    keys_dir.mkdir(parents=True)
+
+    # 1. Bootstrap.
+    keygen = subprocess.run(
+        [str(agent_binary), "keygen", "--keys-dir", str(keys_dir), "--producer", "Lemma"],
+        capture_output=True,
+        text=True,
+    )
+    assert keygen.returncode == 0
+    key_id = keygen.stdout.strip().removeprefix("Generated ").removesuffix(" for producer Lemma.")
+
+    # 2. Sign one envelope BEFORE revocation.
+    evidence_dir = project / ".lemma" / "evidence"
+    log = EvidenceLog(log_dir=evidence_dir, key_dir=keys_dir)
+    log.append(
+        normalize(
+            {
+                "class_uid": 2003,
+                "class_name": "Compliance Finding",
+                "category_uid": 2000,
+                "category_name": "Findings",
+                "type_uid": 200301,
+                "activity_id": 1,
+                "time": _datetime.now(UTC).isoformat(),
+                "metadata": {
+                    "version": "1.3.0",
+                    "product": {"name": "Lemma"},
+                    "uid": "revoke-cross-lang",
+                },
+            }
+        )
+    )
+    log_file = next(evidence_dir.glob("*.jsonl"))
+
+    # 3. Go revokes.
+    revoke = subprocess.run(
+        [
+            str(agent_binary),
+            "keyrevoke",
+            "--keys-dir",
+            str(keys_dir),
+            "--producer",
+            "Lemma",
+            "--key-id",
+            key_id,
+            "--reason",
+            "key compromise",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert revoke.returncode == 0, f"keyrevoke failed:\n{revoke.stderr}"
+    assert f"Revoked {key_id}" in revoke.stdout
+
+    # 4. Python reads back the REVOKED record.
+    lifecycle = lemma_crypto._read_lifecycle("Lemma", keys_dir)
+    rec = next(r for r in lifecycle.keys if r.key_id == key_id)
+    assert rec.status.value == "REVOKED"
+    assert rec.revoked_at is not None
+    assert rec.revoked_reason == "key compromise"
+
+    # 5. Backdate the local lifecycle revoked_at so it precedes the
+    #    pre-revocation envelope's signed_at — exercises the local
+    #    lifecycle merge in the verifier (#193): signed_at >= revoked_at
+    #    flips PROVEN → VIOLATED.
+    meta_path = keys_dir / "Lemma" / "meta.json"
+    import json
+
+    meta = json.loads(meta_path.read_text())
+    for r in meta["keys"]:
+        if r["key_id"] == key_id:
+            r["revoked_at"] = "2020-01-01T00:00:00Z"
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    verify = subprocess.run(
+        [str(agent_binary), "verify", str(log_file), "--keys-dir", str(keys_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 1, (
+        f"verify after backdated revoke should exit 1\nstdout:\n{verify.stdout}"
+    )
+    assert "VIOLATED" in verify.stdout
