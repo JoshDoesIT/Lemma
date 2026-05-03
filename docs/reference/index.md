@@ -2126,3 +2126,23 @@ Walks every `<evidence-dir>/<producer>/*.jsonl` file and emits a per-producer su
 Malformed lines are counted as `parse_errors` but do not abort the rollup so a corrupt day file surfaces in the report without hiding the rest of the unified view.
 
 Pair with `serve` for a complete operator workflow: `serve` accepts forwarded evidence and persists it; `aggregate` lets the operator inspect what's been received and how many agents are reporting in.
+
+### `lemma control-plane graph`
+
+Render the federation topology as a Graphviz DOT graph (or JSON) — every producer's envelope chain in one view.
+
+```bash
+lemma control-plane graph --evidence-dir <dir> [--output PATH] [--format dot|json]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--evidence-dir` | Yes | Directory the receiver wrote `<producer>/<YYYY-MM-DD>.jsonl` files to. |
+| `--output` | No | Write the rendered graph to PATH. Without this flag the graph prints to stdout. |
+| `--format` | No | Output format: `dot` (default, Graphviz) or `json`. |
+
+**DOT output** is a `digraph LemmaControlPlane { ... }` left-to-right layout with one node per producer (label: producer name + envelope count) and one node per envelope (label: 12-char `entry_hash` prefix + ISO 8601 `signed_at`). Edges run producer → first-envelope, then envelope → next envelope along the chain — the same `prev_hash` linkage the verifier uses. Render with `dot -Tsvg topology.dot -o topology.svg` for an at-a-glance federation map.
+
+**JSON output** mirrors the DOT structure (`{envelope_count, producers: [{producer, chain: [{entry_hash, prev_hash, signed_at}]}]}`) for downstream tooling.
+
+This is a partial close on the "Unified graph across multi-cloud + on-prem" task: it gives operators a single rendered view of the federation topology, but does not yet weave per-producer findings into Lemma's core `ComplianceGraph` keyed by `(framework, control_id)` (a separate slice).
