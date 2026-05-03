@@ -1500,3 +1500,78 @@ func TestServeUnknownPathReturns404(t *testing.T) {
 		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestServeMetricsEndpointReturnsPrometheusFormat(t *testing.T) {
+	evidenceDir := t.TempDir()
+	keysDir := t.TempDir()
+	// Plant one envelope so the counter is non-zero.
+	if err := os.WriteFile(filepath.Join(evidenceDir, "2026-05-03.jsonl"),
+		[]byte(`{"signed_at":"2026-05-03T12:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(keysDir, "Lemma"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "Lemma", "meta.json"),
+		[]byte(`{"keys":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(
+			[]string{"serve", "--port", strconv.Itoa(port),
+				"--evidence-dir", evidenceDir, "--keys-dir", keysDir},
+			stdinR, &stdout, &stderr,
+		)
+	}()
+	defer func() {
+		stdinW.Close()
+		<-done
+	}()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", port)
+	deadline := time.Now().Add(3 * time.Second)
+	var resp *http.Response
+	var err error
+	for time.Now().Before(deadline) {
+		resp, err = http.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("metrics endpoint never came up: %v\nstderr:\n%s", err, stderr.String())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("status %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type=%q, want text/plain*", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	out := string(body)
+	for _, want := range []string{
+		"# HELP lemma_agent_uptime_seconds",
+		"# TYPE lemma_agent_uptime_seconds gauge",
+		"lemma_agent_uptime_seconds ",
+		"# HELP lemma_agent_evidence_total",
+		"# TYPE lemma_agent_evidence_total counter",
+		"lemma_agent_evidence_total 1",
+		"# HELP lemma_agent_producers",
+		"lemma_agent_producers 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in /metrics body:\n%s", want, out)
+		}
+	}
+}

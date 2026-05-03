@@ -413,3 +413,133 @@ def test_aggregate_per_producer_day_file_count(tmp_path: Path) -> None:
     assert by_name["Lemma"].day_file_count == 2
     assert by_name["Lemma"].envelope_count == 2
     assert by_name["Lemma"].first_signed_at < by_name["Lemma"].last_signed_at
+
+
+# Metrics endpoint tests ------------------------------------------------
+
+
+def test_metrics_endpoint_returns_prometheus_text_format(tmp_path: Path) -> None:
+    """`GET /metrics` returns Prometheus exposition format with the
+    standard `# HELP` / `# TYPE` headers and at least the
+    receiver-state counters."""
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    cp_keys = tmp_path / "cp-keys"
+    cp_keys.mkdir()
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys)
+    server, port = _start_server(handler)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            assert resp.status == 200
+            ct = resp.headers.get("Content-Type", "")
+            # Prometheus exposition uses text/plain; charset=utf-8.
+            assert ct.startswith("text/plain")
+            body = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Required metric names + the HELP / TYPE preamble for at least one.
+    for marker in (
+        "# HELP control_plane_uptime_seconds",
+        "# TYPE control_plane_uptime_seconds gauge",
+        "control_plane_uptime_seconds ",
+        "# HELP control_plane_evidence_total",
+        "# TYPE control_plane_evidence_total counter",
+        "control_plane_evidence_total ",
+        "# HELP control_plane_producers",
+        "control_plane_producers ",
+    ):
+        assert marker in body, f"missing {marker!r} in /metrics body:\n{body}"
+
+
+def test_metrics_increments_envelope_counter_with_producer_and_verdict_labels(
+    tmp_path: Path,
+) -> None:
+    """Posting envelopes ticks the per-producer-per-verdict counter so
+    a Prometheus scraper can break down receive volume by source and
+    outcome."""
+    project = tmp_path / "agent-side"
+    project.mkdir()
+    envelope = _produce_signed_envelope(project)
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_keys = project / ".lemma" / "keys"
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys)
+    server, port = _start_server(handler)
+    try:
+        # Pre-condition: counter series is absent (or zero).
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            before = resp.read().decode()
+        series = 'control_plane_envelopes_received_total{producer="Lemma",verdict="PROVEN"}'
+        assert series not in before or f"{series} 0" in before
+
+        # POST one envelope; verdict will be PROVEN.
+        status, _ = _post_json(f"http://127.0.0.1:{port}/v1/evidence", envelope)
+        assert status == 200
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            after = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert 'control_plane_envelopes_received_total{producer="Lemma",verdict="PROVEN"} 1' in after, (
+        f"expected counter to tick to 1\nafter:\n{after}"
+    )
+
+
+def test_metrics_counts_violated_envelopes_under_separate_label(tmp_path: Path) -> None:
+    """A tampered-signature envelope ticks the verdict='VIOLATED'
+    series, not 'PROVEN'."""
+    project = tmp_path / "agent-side"
+    project.mkdir()
+    envelope = _produce_signed_envelope(project)
+    # Flip a hex char in the signature.
+    sig = envelope["signature"]
+    envelope["signature"] = ("0" if sig[0] != "0" else "1") + sig[1:]
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_keys = project / ".lemma" / "keys"
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys)
+    server, port = _start_server(handler)
+    try:
+        status, _ = _post_json(f"http://127.0.0.1:{port}/v1/evidence", envelope)
+        assert status == 422
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            body = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert (
+        'control_plane_envelopes_received_total{producer="Lemma",verdict="VIOLATED"} 1' in body
+        or 'control_plane_envelopes_received_total{producer="Lemma",verdict="DEGRADED"} 1' in body
+    ), f"VIOLATED/DEGRADED counter did not tick:\n{body}"
+
+
+def test_metrics_evidence_total_reflects_disk_state(tmp_path: Path) -> None:
+    """`control_plane_evidence_total` is derived from disk (so it
+    survives restarts) — distinct from the live in-memory counters."""
+    cp_evidence = tmp_path / "cp-evidence"
+    (cp_evidence / "Lemma").mkdir(parents=True)
+    (cp_evidence / "Lemma" / "2026-05-03.jsonl").write_text('{"a":1}\n{"b":2}\n{"c":3}\n')
+
+    cp_keys = tmp_path / "cp-keys"
+    cp_keys.mkdir()
+
+    handler = make_handler_class(evidence_dir=cp_evidence, keys_dir=cp_keys)
+    server, port = _start_server(handler)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as resp:
+            body = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "control_plane_evidence_total 3" in body, (
+        f"expected disk-derived count of 3; got:\n{body}"
+    )

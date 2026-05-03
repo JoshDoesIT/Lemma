@@ -294,8 +294,8 @@ bulk POSTs, and the Control Plane receiver — all tracked under #25.
 ./lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]
 ```
 
-Runs an in-process HTTP server bound to `127.0.0.1:<N>` exposing one
-endpoint:
+Runs an in-process HTTP server bound to `127.0.0.1:<N>` exposing two
+endpoints:
 
 - `GET /health` returns a JSON snapshot of the agent's observable
   state derived from disk:
@@ -316,15 +316,34 @@ file in `<evidence-dir>`. `last_signed_at` is the latest envelope's
 is the number of subdirectories under `<keys-dir>` that contain a
 `meta.json`; bare directories don't count.
 
-This is the endpoint `lemma agent status --endpoint http://host:port`
+- `GET /metrics` returns the same state in Prometheus exposition
+  format (`text/plain; version=0.0.4`):
+
+  ```
+  # HELP lemma_agent_uptime_seconds Process uptime in seconds.
+  # TYPE lemma_agent_uptime_seconds gauge
+  lemma_agent_uptime_seconds 16500
+  # HELP lemma_agent_evidence_total Total signed envelopes on disk.
+  # TYPE lemma_agent_evidence_total counter
+  lemma_agent_evidence_total 17
+  # HELP lemma_agent_producers Number of producers with keys on file.
+  # TYPE lemma_agent_producers gauge
+  lemma_agent_producers 2
+  ```
+
+  This satisfies #25's "Prometheus-style federation" task: a Prometheus
+  scraper polling `<host>:<port>/metrics` gets the federation-relevant
+  signals without bespoke instrumentation.
+
+`/health` is what `lemma agent status --endpoint http://host:port`
 queries. The server runs in the foreground and shuts down cleanly when
 stdin EOFs (or on `SIGTERM` in production).
 
-**Out of scope**: TLS termination on the health endpoint, additional
-endpoints (`/metrics`, `/ready`, `/livez`), bearer-token auth on
-`/health` — `serve` is bound to `127.0.0.1` so only co-located
-processes (the K8s kubelet, the systemd unit, an SSH-tunneled `status`
-call) can reach it.
+**Out of scope**: TLS termination on the endpoints, `/ready` /
+`/livez` separation, bearer-token auth — `serve` is bound to
+`127.0.0.1` so only co-located processes (the K8s kubelet, the
+systemd unit, an SSH-tunneled `status` call, a Prometheus sidecar)
+can reach it.
 
 ### Install (Python wrapper)
 
