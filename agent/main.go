@@ -36,7 +36,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.8.0"
+const Version = "0.9.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -51,7 +51,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent keygen --keys-dir <dir> --producer <name>` to mint a producer keypair.")
 		fmt.Fprintln(stdout, "Run `lemma-agent forward <jsonl> --to <url> [--mtls-cert <f>] [--mtls-key <f>] [--mtls-ca <f>]` to POST signed envelopes to a Control Plane (HTTP or HTTPS+mTLS).")
-		fmt.Fprintln(stdout, "Run `lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]` to expose a /health endpoint for `lemma agent status`.")
+		fmt.Fprintln(stdout, "Run `lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]` to expose /health and /metrics for `lemma agent status` and Prometheus.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -1092,6 +1092,28 @@ func runServe(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(snap)
 	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		snap, err := health.Snapshot(health.SnapshotInput{
+			Version:     Version,
+			EvidenceDir: evidenceDir,
+			KeysDir:     keysDir,
+			StartedAt:   startedAt,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		fmt.Fprintln(w, "# HELP lemma_agent_uptime_seconds Process uptime in seconds.")
+		fmt.Fprintln(w, "# TYPE lemma_agent_uptime_seconds gauge")
+		fmt.Fprintf(w, "lemma_agent_uptime_seconds %d\n", snap.UptimeSeconds)
+		fmt.Fprintln(w, "# HELP lemma_agent_evidence_total Total signed envelopes on disk.")
+		fmt.Fprintln(w, "# TYPE lemma_agent_evidence_total counter")
+		fmt.Fprintf(w, "lemma_agent_evidence_total %d\n", snap.EvidenceCount)
+		fmt.Fprintln(w, "# HELP lemma_agent_producers Number of producers with keys on file.")
+		fmt.Fprintln(w, "# TYPE lemma_agent_producers gauge")
+		fmt.Fprintf(w, "lemma_agent_producers %d\n", snap.ProducerCount)
+	})
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -1100,7 +1122,8 @@ func runServe(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
-	fmt.Fprintf(stdout, "lemma-agent serve listening on http://127.0.0.1:%d/health\n",
+	fmt.Fprintf(stdout,
+		"lemma-agent serve listening on http://127.0.0.1:%d (endpoints: /health, /metrics)\n",
 		listener.Addr().(*net.TCPAddr).Port)
 
 	// Treat stdin EOF as the shutdown signal — operators send a SIGTERM

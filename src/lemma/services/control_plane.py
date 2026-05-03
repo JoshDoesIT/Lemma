@@ -53,6 +53,11 @@ def make_handler_class(
     keys_dir = Path(keys_dir)
     server_started = started_at or datetime.now(UTC)
     write_lock = threading.Lock()
+    # In-memory tick counters for /metrics. Keyed by (producer, verdict).
+    # Survives the lifetime of the server process — restarts reset to
+    # zero, by design (the disk-derived metric carries the durable
+    # counterpart).
+    receive_counters: dict[tuple[str, str], int] = {}
 
     class Handler(BaseHTTPRequestHandler):
         # Silence the default access log; operators wanting structured
@@ -68,9 +73,24 @@ def make_handler_class(
             self.end_headers()
             self.wfile.write(payload)
 
+        def _send_text(self, status: int, body: str, content_type: str) -> None:
+            payload = body.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def do_GET(self) -> None:
             if self.path == "/health":
                 self._send_json(200, _health_snapshot(evidence_dir, keys_dir, server_started))
+                return
+            if self.path == "/metrics":
+                self._send_text(
+                    200,
+                    _render_metrics(evidence_dir, keys_dir, server_started, receive_counters),
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )
                 return
             self._send_json(404, {"error": f"unknown path {self.path}"})
 
@@ -94,6 +114,10 @@ def make_handler_class(
             with write_lock:
                 verdict, reason = _persist_and_verify(
                     envelope, evidence_dir=evidence_dir, keys_dir=keys_dir
+                )
+                producer = _producer_of(envelope.event)
+                receive_counters[(producer, verdict)] = (
+                    receive_counters.get((producer, verdict), 0) + 1
                 )
 
             body: dict = {
@@ -245,6 +269,66 @@ def aggregate(evidence_dir: Path) -> AggregatedState:
         last_signed_at=overall_last,
         producers=summaries,
     )
+
+
+def _render_metrics(
+    evidence_dir: Path,
+    keys_dir: Path,
+    started_at: datetime,
+    receive_counters: dict[tuple[str, str], int],
+) -> str:
+    """Render Prometheus exposition format for the receiver's metrics.
+
+    Three series:
+
+    - ``control_plane_uptime_seconds`` (gauge) — process uptime.
+    - ``control_plane_evidence_total`` (counter) — disk-derived total
+      across all producers; survives restarts.
+    - ``control_plane_producers`` (gauge) — number of producer
+      subdirectories with persisted evidence.
+    - ``control_plane_envelopes_received_total{producer,verdict}``
+      (counter) — in-memory tick per POST, broken down by producer
+      label and verdict label (PROVEN/VIOLATED/DEGRADED). Resets at
+      process restart; pair with the disk-derived total for full
+      observability.
+    """
+    snapshot = _health_snapshot(evidence_dir, keys_dir, started_at)
+    lines: list[str] = []
+
+    lines.append("# HELP control_plane_uptime_seconds Process uptime in seconds.")
+    lines.append("# TYPE control_plane_uptime_seconds gauge")
+    lines.append(f"control_plane_uptime_seconds {snapshot['uptime_seconds']}")
+
+    lines.append(
+        "# HELP control_plane_evidence_total "
+        "Total signed envelopes persisted across all producers (disk-derived)."
+    )
+    lines.append("# TYPE control_plane_evidence_total counter")
+    lines.append(f"control_plane_evidence_total {snapshot['evidence_count']}")
+
+    lines.append("# HELP control_plane_producers Number of producers with persisted evidence.")
+    lines.append("# TYPE control_plane_producers gauge")
+    lines.append(f"control_plane_producers {snapshot['producer_count']}")
+
+    lines.append(
+        "# HELP control_plane_envelopes_received_total "
+        "Total POSTs accepted, labeled by producer and verification verdict. "
+        "Resets at process restart."
+    )
+    lines.append("# TYPE control_plane_envelopes_received_total counter")
+    for (producer, verdict), count in sorted(receive_counters.items()):
+        lines.append(
+            f'control_plane_envelopes_received_total{{producer="{_escape_label(producer)}",'
+            f'verdict="{_escape_label(verdict)}"}} {count}'
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _escape_label(value: str) -> str:
+    """Escape a Prometheus label value per the exposition spec
+    (backslash, double-quote, newline)."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _health_snapshot(evidence_dir: Path, keys_dir: Path, started_at: datetime) -> dict:
