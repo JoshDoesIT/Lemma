@@ -2070,3 +2070,39 @@ lemma agent sync --offline --output <PATH> [--no-ai] [--force]
 | `--force` | No | Overwrite a non-empty `--output` directory. |
 
 **Why this surface ships ahead of the binary.** The eventual federated-online `lemma agent sync` will reuse the same `audit_bundle.build_bundle` primitive on the agent side. Operators can script against `lemma agent sync --offline` today knowing their scripts won't need to change when online sync lands. See `lemma evidence bundle` for the full bundle layout.
+
+---
+
+## `lemma control-plane`
+
+The Control Plane is the receiving end of `lemma-agent forward`. It accepts signed evidence envelopes via HTTP, verifies them against the producer's public key, and persists them to a per-producer day file. With `lemma-agent` on the producing side and `lemma control-plane` on the receiving side, an operator has the full federation loop in one tool.
+
+### `lemma control-plane serve`
+
+Run the Control Plane HTTP receiver.
+
+```bash
+lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
+    [--bind ADDR] [--cert FILE --key FILE] [--client-ca FILE]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--port` | Yes | TCP port to bind. |
+| `--evidence-dir` | Yes | Directory under which the receiver writes `<producer>/<YYYY-MM-DD>.jsonl` files. Created if absent. |
+| `--keys-dir` | Yes | Producer public-keys directory (subdirectories named after each producer; each holds `<key_id>.public.pem` and `meta.json`). Created if absent. |
+| `--bind` | No | Bind address. Default `127.0.0.1`; pass `0.0.0.0` to expose on all interfaces. |
+| `--cert` | No | PEM server certificate (enables HTTPS). Pair with `--key`. |
+| `--key` | No | PEM server private key. Pair with `--cert`. |
+| `--client-ca` | No | PEM CA bundle that signs client certs — when set, the receiver requires mTLS. Requires `--cert` / `--key`. |
+
+**Endpoints**:
+
+- `POST /v1/evidence` — body is a single signed envelope (one line of `lemma-agent forward`'s output). The receiver appends it to `<evidence-dir>/<producer>/<signed_at_date>.jsonl` and runs a full chain + signature verification. Returns `200 {"verdict":"PROVEN","entry_hash":"..."}` on success, `422 {"verdict":"VIOLATED","reason":"..."}` (or `DEGRADED`) when verification fails, `400` on malformed JSON.
+- `GET /health` — JSON snapshot mirroring the agent's `/health` shape (`evidence_count`, `producer_count`, `started_at`, `uptime_seconds`).
+
+**Per-producer chain isolation**: each producer gets its own evidence subdirectory. An envelope's chain (`prev_hash` → prior `entry_hash`) is verified against that producer's day files only — cross-producer corruption is impossible by construction.
+
+**Persistence-then-verify**: envelopes are appended to disk before verification runs, so a failed verification still leaves the suspicious envelope on disk for forensic review. Operators wanting a quarantine workflow can periodically scan and segregate VIOLATED envelopes; the receiver doesn't auto-delete.
+
+**Out of scope** (deferred to later #25 slices): per-agent rate limiting / backpressure, aggregation across ≥ 2 agents into a unified compliance graph, the policy-push direction (Control Plane → Agent), retry-friendly bulk ingestion, durable shutdown semantics. The receiver is intentionally minimal in v1 — it's the missing federation surface, not a fully-featured Control Plane.

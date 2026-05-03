@@ -20,6 +20,7 @@ from lemma.commands.agent import agent_app
 from lemma.commands.ai import ai_app
 from lemma.commands.check import check_command
 from lemma.commands.connector import connector_app
+from lemma.commands.control_plane import control_plane_app
 from lemma.commands.evidence import evidence_app
 from lemma.commands.framework import framework_app
 from lemma.commands.graph import graph_app
@@ -69,6 +70,11 @@ app.add_typer(resource_app, name="resource", help="Manage declared infrastructur
 app.add_typer(person_app, name="person", help="Manage person-as-code definitions")
 app.add_typer(risk_app, name="risk", help="Manage risk-as-code definitions")
 app.add_typer(agent_app, name="agent", help="Federated agent commands (#25 Slice C scaffold)")
+app.add_typer(
+    control_plane_app,
+    name="control-plane",
+    help="Federated Control Plane (receive, persist, verify forwarded evidence)",
+)
 
 
 if __name__ == "__main__":
