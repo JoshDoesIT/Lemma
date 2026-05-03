@@ -10,15 +10,19 @@ and policy push are tracked under #25 as separate slices.
 
 from __future__ import annotations
 
+import json
 import signal
 import ssl
+from dataclasses import asdict
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
-from lemma.services.control_plane import make_handler_class
+from lemma.services.control_plane import aggregate, make_handler_class
 
 console = Console()
 
@@ -129,3 +133,68 @@ def serve_command(
         server.serve_forever()
     finally:
         server.server_close()
+
+
+def _isoformat(dt: datetime | None) -> str:
+    return dt.isoformat() if dt is not None else ""
+
+
+@control_plane_app.command(
+    name="aggregate",
+    help=(
+        "Summarise persisted evidence across all producers (the unified "
+        "compliance view). Pair with `serve` to inspect what's been received."
+    ),
+)
+def aggregate_command(
+    evidence_dir: str = typer.Option(
+        ...,
+        "--evidence-dir",
+        help="Directory the receiver writes <producer>/<YYYY-MM-DD>.jsonl files to.",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write the rollup as JSON to PATH instead of printing a table.",
+    ),
+) -> None:
+    state = aggregate(Path(evidence_dir))
+
+    if output:
+        # Convert dataclasses to JSON-friendly dicts; datetimes become
+        # ISO 8601 strings so a downstream consumer can parse them
+        # without bespoke decoders.
+        payload = asdict(state)
+        for key in ("first_signed_at", "last_signed_at"):
+            payload[key] = _isoformat(payload[key])
+        for prod in payload["producers"]:
+            for key in ("first_signed_at", "last_signed_at"):
+                prod[key] = _isoformat(prod[key])
+        Path(output).write_text(json.dumps(payload, indent=2) + "\n")
+        console.print(f"[green]Wrote[/green] aggregated rollup to {output}")
+        return
+
+    if state.producer_count == 0:
+        console.print(f"[yellow]No producer evidence found under[/yellow] {evidence_dir}")
+        return
+
+    table = Table(title=f"Lemma Control Plane — {evidence_dir}")
+    table.add_column("Producer", style="bold")
+    table.add_column("Envelopes", justify="right")
+    table.add_column("Day files", justify="right")
+    table.add_column("First signed", style="dim")
+    table.add_column("Last signed", style="dim")
+    for p in state.producers:
+        table.add_row(
+            p.producer,
+            str(p.envelope_count),
+            str(p.day_file_count),
+            _isoformat(p.first_signed_at),
+            _isoformat(p.last_signed_at),
+        )
+    console.print(table)
+    console.print(
+        f"[bold]Total:[/bold] {state.total_envelopes} envelopes "
+        f"across {state.producer_count} producers"
+        + (f" ({state.parse_errors} parse errors)" if state.parse_errors else "")
+    )

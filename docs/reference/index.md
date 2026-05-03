@@ -2105,4 +2105,23 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 
 **Persistence-then-verify**: envelopes are appended to disk before verification runs, so a failed verification still leaves the suspicious envelope on disk for forensic review. Operators wanting a quarantine workflow can periodically scan and segregate VIOLATED envelopes; the receiver doesn't auto-delete.
 
-**Out of scope** (deferred to later #25 slices): per-agent rate limiting / backpressure, aggregation across ≥ 2 agents into a unified compliance graph, the policy-push direction (Control Plane → Agent), retry-friendly bulk ingestion, durable shutdown semantics. The receiver is intentionally minimal in v1 — it's the missing federation surface, not a fully-featured Control Plane.
+**Out of scope** (deferred to later #25 slices): per-agent rate limiting / backpressure, the policy-push direction (Control Plane → Agent), retry-friendly bulk ingestion, durable shutdown semantics. The receiver is intentionally minimal in v1 — it's the missing federation surface, not a fully-featured Control Plane.
+
+### `lemma control-plane aggregate`
+
+Summarise persisted evidence across all producers — the unified compliance view called out by the AC on #25.
+
+```bash
+lemma control-plane aggregate --evidence-dir <dir> [--output PATH]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--evidence-dir` | Yes | Directory the receiver wrote `<producer>/<YYYY-MM-DD>.jsonl` files to. |
+| `--output` | No | Write the rollup as JSON to PATH. Without this flag the rollup prints as a table. |
+
+Walks every `<evidence-dir>/<producer>/*.jsonl` file and emits a per-producer summary: envelope count, day-file count, first/last `signed_at`, and the latest `entry_hash` per producer; plus totals (envelope count, producer count, parse-error count, overall first/last signed_at). Read-only — the directory is not modified.
+
+Malformed lines are counted as `parse_errors` but do not abort the rollup so a corrupt day file surfaces in the report without hiding the rest of the unified view.
+
+Pair with `serve` for a complete operator workflow: `serve` accepts forwarded evidence and persists it; `aggregate` lets the operator inspect what's been received and how many agents are reporting in.
