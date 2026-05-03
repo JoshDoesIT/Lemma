@@ -744,17 +744,33 @@ Run a first-party connector and append its OCSF output to the signed evidence lo
 
 ```bash
 lemma evidence collect <CONNECTOR> [OPTIONS]
+lemma evidence collect --config path/to/lemma_connector_config.yaml
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `CONNECTOR` | Yes | First-party connector name. Currently: `github`, `okta`, `aws`. |
+| `CONNECTOR` | When `--config` is not set | First-party connector name. Currently: `github`, `okta`, `aws`. |
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `--repo` | For `github` | Repository in `owner/name` form |
-| `--domain` | For `okta` | Okta domain, e.g. `your-org.okta.com` |
-| `--region` | For `aws` | AWS region (defaults to `us-east-1`) |
+| `--repo` | For `github` (when `--config` is not set) | Repository in `owner/name` form |
+| `--domain` | For `okta` (when `--config` is not set) | Okta domain, e.g. `your-org.okta.com` |
+| `--region` | For `aws` (when `--config` is not set) | AWS region (defaults to `us-east-1`) |
+| `--config` | No | Path to a `lemma_connector_config.yaml`. When set, the connector + its config are loaded from the file and CLI flags are ignored (Refs #116). |
+
+**Config-file mode** (`lemma_connector_config.yaml`):
+
+```yaml
+producer: Lemma          # optional; defaults to project producer
+enabled: true            # optional; default true
+schedule: '0 */6 * * *'  # optional; cron-like, scheduler-side
+connector: github        # required; first-party connector name
+config:                  # required; passed to the connector factory
+  repo: octocat/Hello-World
+  token: ${LEMMA_GITHUB_TOKEN}
+```
+
+`${ENV_VAR}` references in string values are interpolated at load time from the environment; an unset env var raises a clean error rather than silently substituting an empty string. `enabled: false` skips the run cleanly (useful for temporarily disabling a connector without deleting its config). The config schema is strict — typo'd top-level keys are rejected with a clear message naming the offending key.
 
 **First-party connectors**
 
