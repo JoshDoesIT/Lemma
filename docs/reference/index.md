@@ -2054,6 +2054,22 @@ lemma agent status --endpoint http://host:port [--timeout SECONDS]
 
 Performs `GET <endpoint>/health` and prints a human-readable snapshot. Exits 1 if the endpoint is unreachable, returns non-2xx, or returns non-JSON. Pair with `lemma-agent serve` running on the target host.
 
+### `lemma agent evaluate`
+
+Run the project's compliance check locally and emit one signed OCSF Compliance Finding envelope per control. The signed envelopes are written to the project's `.lemma/evidence/` log; pair with `lemma-agent forward` to push them to a Control Plane.
+
+```bash
+lemma agent evaluate [--output PATH] [--framework NAME] [--min-confidence N]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--output` | No | Append the signed envelopes to PATH (a JSONL file) in addition to writing them to the project's evidence log. |
+| `--framework` | No | Restrict evaluation to a single framework short name (e.g. `nist-800-53`). |
+| `--min-confidence` | No | Minimum SATISFIES edge confidence to count toward PASSED. Default 0.0. |
+
+Each emitted event carries `metadata.compliance.{control, standards, status}` so the receiver's `lemma control-plane compliance` rollup can group findings by `(framework, control_id)` across producers (closes the "Evaluates local controls against scope-as-code" task on #25).
+
 ### `lemma agent sync`
 
 Sync compliance state. `--offline` is fully wired today (thin wrapper over `lemma evidence bundle`); online federation is tracked under #25.
@@ -2083,7 +2099,7 @@ Run the Control Plane HTTP receiver.
 
 ```bash
 lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
-    [--bind ADDR] [--cert FILE --key FILE] [--client-ca FILE]
+    [--bind ADDR] [--cert FILE --key FILE] [--client-ca FILE] [--project-dir DIR]
 ```
 
 | Option | Required | Description |
@@ -2095,6 +2111,7 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 | `--cert` | No | PEM server certificate (enables HTTPS). Pair with `--key`. |
 | `--key` | No | PEM server private key. Pair with `--cert`. |
 | `--client-ca` | No | PEM CA bundle that signs client certs — when set, the receiver requires mTLS. Requires `--cert` / `--key`. |
+| `--project-dir` | No | Lemma project root to serve as policy. When set, agents can `GET /v1/policy` to pull the project's frameworks/controls/scopes (Control Plane → Agent policy push). |
 
 **Endpoints**:
 
@@ -2145,4 +2162,25 @@ lemma control-plane graph --evidence-dir <dir> [--output PATH] [--format dot|jso
 
 **JSON output** mirrors the DOT structure (`{envelope_count, producers: [{producer, chain: [{entry_hash, prev_hash, signed_at}]}]}`) for downstream tooling.
 
-This is a partial close on the "Unified graph across multi-cloud + on-prem" task: it gives operators a single rendered view of the federation topology, but does not yet weave per-producer findings into Lemma's core `ComplianceGraph` keyed by `(framework, control_id)` (a separate slice).
+This is the federation-topology view of the "Unified graph across multi-cloud + on-prem" task. The compliance-state view (rollup keyed by `(framework, control_id)`) is provided by `lemma control-plane compliance` below.
+
+### `lemma control-plane compliance`
+
+Render the compliance-state rollup keyed by `(framework, control_id)` across every producer's persisted findings. Closes the "Unified graph across multi-cloud + on-prem" task on #25 by weaving per-producer findings into a single cross-environment view.
+
+```bash
+lemma control-plane compliance --evidence-dir <dir> [--output PATH]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--evidence-dir` | Yes | Directory the receiver wrote `<producer>/<YYYY-MM-DD>.jsonl` files to. |
+| `--output` | No | Write the rollup as JSON to PATH instead of printing a table. |
+
+Walks every persisted envelope, extracts `metadata.compliance.{control, standards, status}` from each OCSF event, and aggregates by `(framework, control_id)`. The table output shows framework / control / verdicts (per-status counts) / producers (which agents reported on this control). Envelopes without a `compliance` block are silently skipped.
+
+Pair with `lemma agent evaluate` on the producer side: each evaluate run emits one signed envelope per control, the agent's `forward` pushes them, the Control Plane's `serve` persists them, and `compliance` aggregates the unified state.
+
+### `lemma control-plane policy` endpoint
+
+When `lemma control-plane serve` is started with `--project-dir <dir>`, it exposes `GET /v1/policy` returning a JSON bundle of the project's frameworks/controls/scopes/mappings (each as `{path, content}`) plus a `policy_hash` for change detection. Agents pull with `lemma-agent pull-policy --from <url>`. Closes the "Control Plane → Agent policy push" task on #25.

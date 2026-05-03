@@ -37,11 +37,66 @@ from lemma.services.evidence_log import EvidenceLog, _producer_of
 _MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB cap on a single envelope
 
 
+def policy_bundle(project_dir: Path) -> dict:
+    """Build a JSON-serialisable policy bundle for an agent to pull.
+
+    Closes the "Control Plane → Agent policy push" task on #25 by
+    giving the receiver something concrete to hand back when an agent
+    asks "what should I evaluate against?" The bundle is the project's
+    framework / control / scope / control-mapping definitions —
+    everything an agent needs to run a local compliance evaluation.
+
+    Read-only over the project directory. Returns ``{"frameworks": [],
+    "controls": [], "scopes": [], "mappings": [], "policy_hash": ...}``
+    when the project has nothing on disk yet (a freshly-init'd project),
+    so the agent can pull a non-error response and re-poll later.
+
+    The ``policy_hash`` is a SHA-256 over the canonical JSON of the
+    bundle's content (excluding the hash itself) so an agent can
+    short-circuit a pull when the upstream hasn't changed.
+    """
+    import hashlib
+
+    project_dir = Path(project_dir)
+    bundle: dict[str, list | str] = {
+        "frameworks": [],
+        "controls": [],
+        "scopes": [],
+        "mappings": [],
+    }
+
+    for kind, dir_name in (
+        ("frameworks", "frameworks"),
+        ("controls", "controls"),
+        ("scopes", "scopes"),
+        ("mappings", "mappings"),
+    ):
+        source_dir = project_dir / ".lemma" / dir_name
+        if not source_dir.is_dir():
+            continue
+        for path in sorted(source_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix not in {".yaml", ".yml", ".json"}:
+                continue
+            bundle[kind].append(  # type: ignore[union-attr]
+                {
+                    "path": str(path.relative_to(source_dir)),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+            )
+
+    canonical = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode()
+    bundle["policy_hash"] = hashlib.sha256(canonical).hexdigest()
+    return bundle
+
+
 def make_handler_class(
     *,
     evidence_dir: Path,
     keys_dir: Path,
     started_at: datetime | None = None,
+    project_dir: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build a BaseHTTPRequestHandler subclass closed over the
     receiver's evidence + keys directories.
@@ -52,6 +107,7 @@ def make_handler_class(
     evidence_dir = Path(evidence_dir)
     keys_dir = Path(keys_dir)
     server_started = started_at or datetime.now(UTC)
+    policy_project = Path(project_dir) if project_dir else None
     write_lock = threading.Lock()
     # In-memory tick counters for /metrics. Keyed by (producer, verdict).
     # Survives the lifetime of the server process — restarts reset to
@@ -91,6 +147,21 @@ def make_handler_class(
                     _render_metrics(evidence_dir, keys_dir, server_started, receive_counters),
                     "text/plain; version=0.0.4; charset=utf-8",
                 )
+                return
+            if self.path == "/v1/policy":
+                if policy_project is None:
+                    self._send_json(
+                        404,
+                        {
+                            "error": (
+                                "policy push not configured; "
+                                "start `lemma control-plane serve` with "
+                                "--project-dir to enable /v1/policy."
+                            )
+                        },
+                    )
+                    return
+                self._send_json(200, policy_bundle(policy_project))
                 return
             self._send_json(404, {"error": f"unknown path {self.path}"})
 
@@ -432,6 +503,101 @@ def render_topology_dot(topology: Topology) -> str:
             prev_node = envelope_id
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+@dataclass
+class ControlRollup:
+    """Per-control rollup across all producers — the compliance-state
+    layer of the unified graph (Refs #25 "Unified graph across
+    multi-cloud + on-prem")."""
+
+    framework: str
+    control_id: str
+    verdicts: dict[str, int] = field(default_factory=dict)
+    producers: set[str] = field(default_factory=set)
+
+
+@dataclass
+class ComplianceRollup:
+    """Top-level result of :func:`compliance_rollup`. Surfaces the
+    cross-producer compliance state keyed by ``(framework, control_id)``."""
+
+    findings_total: int
+    controls_total: int
+    controls: list[ControlRollup] = field(default_factory=list)
+
+
+def compliance_rollup(evidence_dir: Path) -> ComplianceRollup:
+    """Build a per-control rollup from persisted compliance findings.
+
+    Walks every ``<evidence-dir>/<producer>/*.jsonl`` file, parses each
+    envelope's OCSF event, and aggregates findings keyed by
+    ``(framework, control_id)``. Only envelopes whose event carries a
+    ``metadata.compliance`` block (with ``control``, ``standards``, and
+    ``status`` fields) contribute — other events are silently skipped.
+
+    The expected shape mirrors what ``lemma agent evaluate`` emits:
+
+    .. code-block:: json
+
+        {"metadata": {"compliance": {
+            "control": "AC-2",
+            "standards": ["NIST 800-53"],
+            "status": "Pass"
+        }}}
+
+    Read-only — does not modify the evidence directory.
+    """
+    evidence_dir = Path(evidence_dir)
+    if not evidence_dir.exists():
+        return ComplianceRollup(findings_total=0, controls_total=0)
+
+    keyed: dict[tuple[str, str], ControlRollup] = {}
+    findings_total = 0
+
+    for producer_dir in sorted(p for p in evidence_dir.iterdir() if p.is_dir()):
+        for day_file in sorted(producer_dir.glob("*.jsonl")):
+            with day_file.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        envelope = SignedEvidence.model_validate_json(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    metadata = envelope.event.metadata
+                    if not isinstance(metadata, dict):
+                        continue
+                    compliance = metadata.get("compliance")
+                    if not isinstance(compliance, dict):
+                        continue
+                    control_id = compliance.get("control")
+                    standards = compliance.get("standards")
+                    status = compliance.get("status")
+                    if not control_id or not standards or not status:
+                        continue
+                    # Multi-framework findings (an event tagged for both
+                    # NIST 800-53 and ISO 27001) emit one ControlRollup
+                    # per (framework, control_id) pair.
+                    for framework in standards:
+                        if not framework:
+                            continue
+                        key = (framework, control_id)
+                        rollup = keyed.get(key)
+                        if rollup is None:
+                            rollup = ControlRollup(framework=framework, control_id=control_id)
+                            keyed[key] = rollup
+                        rollup.verdicts[status] = rollup.verdicts.get(status, 0) + 1
+                        rollup.producers.add(producer_dir.name)
+                    findings_total += 1
+
+    controls = [keyed[k] for k in sorted(keyed)]
+    return ComplianceRollup(
+        findings_total=findings_total,
+        controls_total=len(controls),
+        controls=controls,
+    )
 
 
 def _health_snapshot(evidence_dir: Path, keys_dir: Path, started_at: datetime) -> dict:

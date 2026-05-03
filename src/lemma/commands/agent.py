@@ -311,6 +311,97 @@ def sync_command(
     )
 
 
+@agent_app.command(
+    name="evaluate",
+    help=(
+        "Evaluate the project's controls against scope-as-code, then emit "
+        "one signed OCSF Compliance Finding envelope per control to "
+        "<evidence-dir>/<YYYY-MM-DD>.jsonl (Refs #25). Pair with "
+        "`lemma-agent forward` to push the findings to a Control Plane."
+    ),
+)
+def evaluate_command(
+    output: str = typer.Option(
+        "",
+        "--output",
+        help=(
+            "Append the resulting signed envelopes to PATH (a JSONL file) "
+            "in addition to writing them to the project's evidence log."
+        ),
+    ),
+    framework: str = typer.Option(
+        "",
+        "--framework",
+        help="Restrict evaluation to a single framework short name.",
+    ),
+    min_confidence: float = typer.Option(
+        0.0,
+        "--min-confidence",
+        help="Minimum SATISFIES edge confidence to count toward PASSED.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    # Importing inline keeps the agent CLI lazy — `lemma agent --help`
+    # doesn't need to import the graph + compliance_check stack.
+    from lemma.services.compliance_check import check
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.knowledge_graph import ComplianceGraph
+    from lemma.services.ocsf_normalizer import normalize
+
+    graph = ComplianceGraph.load(project_dir / ".lemma" / "graph.json")
+    try:
+        result = check(
+            graph,
+            framework=framework or None,
+            min_confidence=min_confidence,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    written: list[str] = []
+
+    for outcome in result.outcomes:
+        ocsf_status = "Pass" if outcome.status.value == "PASSED" else "Fail"
+        event = normalize(
+            {
+                "class_uid": 2003,
+                "class_name": "Compliance Finding",
+                "category_uid": 2000,
+                "category_name": "Findings",
+                "type_uid": 200301,
+                "activity_id": 1,
+                "time": datetime.now(UTC).isoformat(),
+                "metadata": {
+                    "version": "1.3.0",
+                    "product": {"name": "Lemma"},
+                    # entry uid: framework + short_id + status, so
+                    # re-running evaluate dedups on today's day-file.
+                    "uid": f"{outcome.framework}:{outcome.short_id}:{ocsf_status}",
+                    "compliance": {
+                        "control": outcome.short_id,
+                        "standards": [outcome.framework],
+                        "status": ocsf_status,
+                    },
+                },
+            }
+        )
+        if log.append(event):
+            envelopes = log.read_envelopes()
+            written.append(envelopes[-1].model_dump_json())
+
+    if output:
+        Path(output).write_text("\n".join(written) + ("\n" if written else ""))
+
+    console.print(
+        f"[green]Evaluated[/green] {result.total} controls "
+        f"({result.passed} passed, {result.failed} failed); "
+        f"signed {len(written)} new envelope(s)."
+    )
+
+
 # Keep `stat` referenced so static checkers don't strip the import on
 # platforms where the launcher chmod path is the sole consumer.
 _ = stat
