@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNoArgsPrintsVersionAndSubcommandList(t *testing.T) {
@@ -1345,5 +1349,154 @@ func TestForwardMissingMTLSCertFileExitsOne(t *testing.T) {
 	)
 	if code != 1 {
 		t.Errorf("exit %d, want 1 (missing cert/key files)", code)
+	}
+}
+
+// Serve subcommand tests --------------------------------------------
+
+func TestServeMissingFlagsExitsTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no_evidence_dir", []string{"serve", "--port", "0"}},
+		{"no_port", []string{"serve", "--evidence-dir", "/tmp/e"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, bytes.NewReader(nil), &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("exit %d, want 2 (usage)\nstderr:\n%s", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestServeHealthEndpointReturnsJSONShape(t *testing.T) {
+	evidenceDir := t.TempDir()
+	keysDir := t.TempDir()
+	// Plant one envelope so the count + last_signed_at are non-zero.
+	if err := os.WriteFile(filepath.Join(evidenceDir, "2026-05-02.jsonl"),
+		[]byte(`{"signed_at":"2026-05-02T12:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(keysDir, "Lemma"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "Lemma", "meta.json"),
+		[]byte(`{"keys":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pick a port by binding to :0, capture it, close, then pass to the agent.
+	// The agent re-opens the port — there's a small TOCTOU window but the test
+	// is single-threaded and this is the standard Go test pattern.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Run the agent in a goroutine; cancel via stdin EOF (the agent treats a
+	// closed stdin as a quit signal). Capture output for diagnostic.
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(
+			[]string{"serve",
+				"--port", strconv.Itoa(port),
+				"--evidence-dir", evidenceDir,
+				"--keys-dir", keysDir,
+			},
+			stdinR, &stdout, &stderr,
+		)
+	}()
+	defer func() {
+		stdinW.Close() // signals shutdown
+		<-done
+	}()
+
+	// Wait for the server to come up.
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	var resp *http.Response
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = http.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("health endpoint never came up: %v\nstderr:\n%s", err, stderr.String())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type=%q, want application/json", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var snap map[string]any
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatalf("body is not JSON: %v\nbody:\n%s", err, string(body))
+	}
+	for _, key := range []string{
+		"version", "evidence_count", "last_signed_at",
+		"producer_count", "started_at", "uptime_seconds",
+	} {
+		if _, ok := snap[key]; !ok {
+			t.Errorf("missing key %q in /health response\nbody:\n%s", key, string(body))
+		}
+	}
+	if int(snap["evidence_count"].(float64)) != 1 {
+		t.Errorf("evidence_count=%v, want 1", snap["evidence_count"])
+	}
+	if snap["last_signed_at"] != "2026-05-02T12:00:00Z" {
+		t.Errorf("last_signed_at=%v, want 2026-05-02T12:00:00Z", snap["last_signed_at"])
+	}
+	if int(snap["producer_count"].(float64)) != 1 {
+		t.Errorf("producer_count=%v, want 1", snap["producer_count"])
+	}
+}
+
+func TestServeUnknownPathReturns404(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	stdinR, stdinW := io.Pipe()
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(
+			[]string{"serve", "--port", strconv.Itoa(port), "--evidence-dir", t.TempDir()},
+			stdinR, &stdout, &stderr,
+		)
+	}()
+	defer func() {
+		stdinW.Close()
+		<-done
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port)); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/wrong", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
 }

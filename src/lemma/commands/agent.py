@@ -1,25 +1,23 @@
-"""Implementation of the ``lemma agent`` CLI sub-commands (Refs #25 Slice C).
+"""Implementation of the ``lemma agent`` CLI sub-commands (Refs #25).
 
-The agent itself — a stateless Go/Rust binary deployed inside target
-environments and federating compliance state to a control plane — is
-tracked under #25 and not implemented yet. This CLI lands the surface
-operators will eventually script against, with three sub-commands:
-
-- ``lemma agent install``  — placeholder; tracked under #25.
-- ``lemma agent status``   — placeholder; tracked under #25.
-- ``lemma agent sync``     — ``--offline`` is fully wired today (thin
-  wrapper over ``lemma evidence bundle``); other modes are placeholders.
-
-The reason ``sync --offline`` ships now even though the binary doesn't
-exist: the underlying primitive is ``audit_bundle.build_bundle``, which
-shipped in #183. The eventual federated-online ``sync`` will reuse the
-same primitive on the agent side, so operators can script against
-``lemma agent sync --offline`` today knowing their scripts won't need
-to change when the binary lands.
+The Go agent binary lives at ``agent/`` and ships with a working
+``lemma-agent serve --port N --evidence-dir <dir> --keys-dir <dir>``
+that exposes a ``/health`` endpoint. ``lemma agent install`` renders a
+deployment artifact (Kubernetes Deployment, systemd unit, or a
+bare-metal launcher script) that runs the agent in production. ``lemma
+agent status`` queries the agent's ``/health`` endpoint and reports the
+snapshot. ``lemma agent sync --offline`` is a thin wrapper over
+``lemma evidence bundle`` for air-gapped operators.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import stat
+import urllib.error
+import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -43,43 +41,199 @@ def _require_lemma_project() -> Path:
     return cwd
 
 
-_NOT_YET = (
-    "[yellow]Not yet implemented.[/yellow] The Lemma agent binary, federation "
-    "protocol, and control plane are tracked under #25 (Federated Agent "
-    "Architecture). The CLI surface lands here so future operator scripts "
-    "stay stable across the implementation rollout."
-)
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_TEMPLATE_DIR = _REPO_ROOT / "agent" / "deploy"
+
+_SHAPES = {
+    "k8s": ("k8s-sidecar.yaml.tmpl", "lemma-agent.yaml"),
+    "systemd": ("lemma-agent.service.tmpl", "lemma-agent.service"),
+    "launcher": ("launcher.sh.tmpl", "lemma-agent.sh"),
+}
+
+_DEFAULT_IMAGE = "ghcr.io/joshdoesit/lemma-agent:latest"
+_DEFAULT_BINARY_PATH = "/usr/local/bin/lemma-agent"
+_DEFAULT_EVIDENCE_DIR = "/var/lib/lemma-agent/evidence"
+_DEFAULT_KEYS_DIR = "/var/lib/lemma-agent/keys"
+_DEFAULT_HEALTH_PORT = 8080
 
 
-_SCAFFOLD_POINTER = (
-    "The agent source lives at [bold]agent/[/bold]. See "
-    "[bold]agent/README.md[/bold] for current build instructions. "
-    "The current binary supports "
-    "[bold]lemma-agent verify <file> --keys-dir <dir>[/bold] for offline "
-    "evidence-log verification; install/status/sync wiring is tracked under #25."
-)
+def _render_template(template_path: Path, substitutions: dict[str, str]) -> str:
+    body = template_path.read_text()
+    for key, value in substitutions.items():
+        body = body.replace("{{" + key + "}}", value)
+    return body
 
 
 @agent_app.command(
     name="install",
-    help="Install the Lemma agent in the target environment (not yet implemented).",
+    help=(
+        "Render a deployment artifact for the Lemma agent (K8s sidecar, "
+        "systemd unit, or bare-metal launcher script)."
+    ),
 )
-def install_command() -> None:
-    console.print(_NOT_YET)
-    console.print(_SCAFFOLD_POINTER)
-    raise typer.Exit(code=1)
+def install_command(
+    shape: str = typer.Option(
+        ...,
+        "--shape",
+        help="Deployment shape: k8s, systemd, or launcher.",
+    ),
+    output: str = typer.Option(
+        ...,
+        "--output",
+        help="Output directory for the rendered artifact.",
+    ),
+    image: str = typer.Option(
+        _DEFAULT_IMAGE,
+        "--image",
+        help="Container image (k8s shape only).",
+    ),
+    binary_path: str = typer.Option(
+        _DEFAULT_BINARY_PATH,
+        "--binary-path",
+        help="Path to the lemma-agent binary on the target host (systemd / launcher).",
+    ),
+    evidence_dir: str = typer.Option(
+        _DEFAULT_EVIDENCE_DIR,
+        "--evidence-dir",
+        help="On-host evidence directory the agent serves from.",
+    ),
+    keys_dir: str = typer.Option(
+        _DEFAULT_KEYS_DIR,
+        "--keys-dir",
+        help="On-host producer-keys directory.",
+    ),
+    health_port: int = typer.Option(
+        _DEFAULT_HEALTH_PORT,
+        "--health-port",
+        help="TCP port the agent's /health endpoint listens on.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite an existing rendered artifact at --output.",
+    ),
+) -> None:
+    if shape not in _SHAPES:
+        console.print(
+            f"[red]Error:[/red] unknown --shape {shape!r}; "
+            f"valid shapes: {', '.join(sorted(_SHAPES))}."
+        )
+        raise typer.Exit(code=1)
+
+    template_name, output_name = _SHAPES[shape]
+    template_path = _TEMPLATE_DIR / template_name
+    if not template_path.is_file():
+        console.print(f"[red]Error:[/red] missing deployment template: {template_path}")
+        raise typer.Exit(code=1)
+
+    out_path = Path(output)
+    out_path.mkdir(parents=True, exist_ok=True)
+    target = out_path / output_name
+    if target.exists() and not force:
+        console.print(f"[red]Error:[/red] {target} already exists; pass --force to overwrite.")
+        raise typer.Exit(code=1)
+
+    rendered = _render_template(
+        template_path,
+        {
+            "IMAGE": image,
+            "BINARY_PATH": binary_path,
+            "EVIDENCE_DIR": evidence_dir,
+            "KEYS_DIR": keys_dir,
+            "HEALTH_PORT": str(health_port),
+        },
+    )
+    target.write_text(rendered)
+    if shape == "launcher":
+        os.chmod(target, 0o755)
+
+    console.print(f"[green]Wrote[/green] {shape} deployment artifact to {target}")
+    if shape == "k8s":
+        console.print("Apply with: [bold]kubectl apply -f " + str(target) + "[/bold]")
+    elif shape == "systemd":
+        console.print(
+            "Install with: [bold]sudo cp "
+            + str(target)
+            + " /etc/systemd/system/ && sudo systemctl daemon-reload && "
+            + "sudo systemctl enable --now lemma-agent[/bold]"
+        )
+    else:
+        console.print("Run with: [bold]" + str(target) + "[/bold]")
+
+
+def _format_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86_400)
+    hours, rem = divmod(rem, 3_600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if minutes or hours or days:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return "".join(parts)
 
 
 @agent_app.command(
     name="status",
-    help=(
-        "Report agent health, last sync time, and control evaluation counts (not yet implemented)."
-    ),
+    help="Report agent health, last sync time, and evidence counts via /health.",
 )
-def status_command() -> None:
-    console.print(_NOT_YET)
-    console.print(_SCAFFOLD_POINTER)
-    raise typer.Exit(code=1)
+def status_command(
+    endpoint: str = typer.Option(
+        ...,
+        "--endpoint",
+        help="Base URL of a running agent (e.g. http://127.0.0.1:8080).",
+    ),
+    timeout: int = typer.Option(
+        5,
+        "--timeout",
+        help="HTTP timeout in seconds.",
+    ),
+) -> None:
+    url = endpoint.rstrip("/") + "/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                console.print(f"[red]Error:[/red] /health returned HTTP {resp.status}.")
+                raise typer.Exit(code=1)
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        console.print(f"[red]Error:[/red] agent endpoint unreachable: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        snap = json.loads(body)
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]Error:[/red] /health returned non-JSON body: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    version = snap.get("version", "?")
+    evidence_count = snap.get("evidence_count", 0)
+    last_signed = snap.get("last_signed_at") or "(none)"
+    producer_count = snap.get("producer_count", 0)
+    started_at = snap.get("started_at", "?")
+    uptime = _format_uptime(snap.get("uptime_seconds", 0))
+
+    console.print(f"[bold]Lemma agent v{version}[/bold] @ {endpoint}")
+    console.print(f"  Started:           {started_at} (up {uptime})")
+    console.print(f"  Evidence count:    {evidence_count}")
+    console.print(f"  Last signed at:    {last_signed}")
+    console.print(f"  Producer keys:     {producer_count}")
+    # Drift warning if started_at is in the future relative to now —
+    # operators get a hint that clocks are off.
+    try:
+        start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=UTC)
+        if start_dt > datetime.now(UTC):
+            console.print(
+                "  [yellow]Warning:[/yellow] reported started_at is in the future — clock skew?"
+            )
+    except (ValueError, AttributeError):
+        pass
 
 
 @agent_app.command(
@@ -112,13 +266,19 @@ def sync_command(
     ),
 ) -> None:
     if not offline:
-        console.print(_NOT_YET)
         console.print(
-            "Online sync requires the agent binary + Control Plane; "
-            "use [bold]lemma agent sync --offline[/bold] to export a signed "
-            "audit bundle today."
+            "[yellow]Online sync not yet implemented.[/yellow] "
+            "Online federation requires the agent ↔ Control Plane "
+            "protocol, which is tracked under #25. Use "
+            "[bold]lemma agent sync --offline --output PATH[/bold] to "
+            "export a signed audit bundle today, or run "
+            "[bold]lemma-agent forward[/bold] from the Go agent for "
+            "HTTP/HTTPS-with-mTLS forwarding."
         )
-        console.print(_SCAFFOLD_POINTER)
+        console.print(
+            "The agent source lives at [bold]agent/[/bold]. See "
+            "[bold]agent/README.md[/bold] for current build instructions."
+        )
         raise typer.Exit(code=1)
 
     if not output:
@@ -149,3 +309,8 @@ def sync_command(
     console.print(
         f"[green]Wrote[/green] audit bundle to {output_path} ({len(manifest.files)} files)."
     )
+
+
+# Keep `stat` referenced so static checkers don't strip the import on
+# platforms where the launcher chmod path is the sole consumer.
+_ = stat

@@ -7,12 +7,14 @@ runtime counterpart to the `lemma agent` CLI in the main Python package.
 
 ## Status
 
-**Signs and verifies signed evidence logs offline today, including
-CRL-driven revocation.** The agent does not yet talk to a Control Plane,
-manage evidence on disk, or implement any of the `install` / `status` /
-`sync` behaviour described by the CLI surface in
-`src/lemma/commands/agent.py`. What it can do, byte-for-byte against the
-Python signer:
+**Signs, verifies, ingests, mints/rotates/revokes producer keys,
+forwards over plain HTTP and HTTPS+mTLS, and exposes a `/health`
+endpoint for `lemma agent status` to query.** Deployment artifacts
+(K8s sidecar, systemd unit, bare-metal launcher) ship under
+`agent/deploy/` and are rendered by `lemma agent install`. Per-key
+lifecycle (ACTIVE/RETIRED/REVOKED) is fully managed in Go. The
+remaining gap on #25 is the receiving Control Plane. Byte-for-byte
+parity against the Python signer:
 
 1. **Verify** a Lemma signed-evidence JSONL — each entry's `prev_hash`
    matches the prior entry's `entry_hash`; recomputing the entry hash
@@ -285,6 +287,75 @@ errors.
 **Out of scope** for the federation arc so far: retry/backoff,
 resumable forwarding (tracking which envelopes were already sent),
 bulk POSTs, and the Control Plane receiver — all tracked under #25.
+
+### Serve
+
+```bash
+./lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]
+```
+
+Runs an in-process HTTP server bound to `127.0.0.1:<N>` exposing one
+endpoint:
+
+- `GET /health` returns a JSON snapshot of the agent's observable
+  state derived from disk:
+  ```json
+  {
+    "version": "0.8.0",
+    "evidence_count": 17,
+    "last_signed_at": "2026-05-02T12:34:56Z",
+    "producer_count": 2,
+    "started_at": "2026-05-02T08:00:00Z",
+    "uptime_seconds": 16500
+  }
+  ```
+
+`evidence_count` is the count of non-blank lines across every `*.jsonl`
+file in `<evidence-dir>`. `last_signed_at` is the latest envelope's
+`signed_at` (empty string if there are no envelopes). `producer_count`
+is the number of subdirectories under `<keys-dir>` that contain a
+`meta.json`; bare directories don't count.
+
+This is the endpoint `lemma agent status --endpoint http://host:port`
+queries. The server runs in the foreground and shuts down cleanly when
+stdin EOFs (or on `SIGTERM` in production).
+
+**Out of scope**: TLS termination on the health endpoint, additional
+endpoints (`/metrics`, `/ready`, `/livez`), bearer-token auth on
+`/health` — `serve` is bound to `127.0.0.1` so only co-located
+processes (the K8s kubelet, the systemd unit, an SSH-tunneled `status`
+call) can reach it.
+
+### Install (Python wrapper)
+
+```bash
+lemma agent install --shape <k8s|systemd|launcher> --output <dir> \
+    [--image NAME:TAG] [--binary-path PATH] \
+    [--evidence-dir DIR] [--keys-dir DIR] [--health-port PORT] [--force]
+```
+
+Renders one of three deployment artifacts under `<dir>`:
+
+- `--shape k8s` → `lemma-agent.yaml` (a Kubernetes Deployment running
+  the agent's `serve` subcommand with readiness/liveness probes
+  pointing at `/health`).
+- `--shape systemd` → `lemma-agent.service` (a hardened systemd unit
+  running `lemma-agent serve` as a non-privileged user).
+- `--shape launcher` → `lemma-agent.sh` (an executable bare-metal
+  launcher script that exec's `lemma-agent serve`).
+
+All three are templated from `agent/deploy/*.tmpl`. `--force`
+overwrites an existing artifact at `<dir>/<artifact>`.
+
+### Status (Python wrapper)
+
+```bash
+lemma agent status --endpoint http://host:port [--timeout SECONDS]
+```
+
+GETs `<endpoint>/health` and prints a human-readable snapshot. Exits
+1 if the endpoint is unreachable, returns non-2xx, or returns
+non-JSON.
 
 ## Roadmap
 
