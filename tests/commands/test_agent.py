@@ -55,31 +55,216 @@ def test_agent_help_lists_three_subcommands(tmp_path: Path, monkeypatch):
     assert "sync" in result.stdout
 
 
-def test_agent_install_exits_one_with_tracking_pointer(tmp_path: Path, monkeypatch):
+def test_agent_install_requires_shape_and_output(tmp_path: Path, monkeypatch):
     from lemma.cli import app
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".lemma").mkdir()
     result = runner.invoke(app, ["agent", "install"])
+    # Typer reports missing required options via exit code 2 (usage).
+    assert result.exit_code != 0
+
+
+def test_agent_install_rejects_unknown_shape(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    result = runner.invoke(
+        app,
+        ["agent", "install", "--shape", "wat", "--output", str(tmp_path / "out")],
+    )
     assert result.exit_code == 1
-    assert "not yet implemented" in result.stdout.lower()
-    assert "#25" in result.stdout
-    # Now that the Go scaffold lives at agent/, point operators at it.
-    assert "agent/README.md" in result.stdout
-    # And advertise the verify subcommand the binary actually supports today.
-    assert "lemma-agent verify" in result.stdout
+    assert "shape" in result.stdout.lower()
 
 
-def test_agent_status_exits_one_with_tracking_pointer(tmp_path: Path, monkeypatch):
+def test_agent_install_k8s_renders_sidecar_yaml(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "install",
+            "--shape",
+            "k8s",
+            "--output",
+            str(out),
+            "--image",
+            "ghcr.io/joshdoesit/lemma-agent:1.2.3",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    rendered = out / "lemma-agent.yaml"
+    assert rendered.is_file(), f"missing: {rendered}"
+    body = rendered.read_text()
+    assert "{{IMAGE}}" not in body and "{{HEALTH_PORT}}" not in body, (
+        "all template placeholders must be substituted"
+    )
+    assert "ghcr.io/joshdoesit/lemma-agent:1.2.3" in body
+    assert "kind: Deployment" in body
+    assert "lemma-agent" in body
+
+
+def test_agent_install_systemd_renders_service_unit(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "install",
+            "--shape",
+            "systemd",
+            "--output",
+            str(out),
+            "--binary-path",
+            "/usr/local/bin/lemma-agent",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    rendered = out / "lemma-agent.service"
+    assert rendered.is_file()
+    body = rendered.read_text()
+    assert "{{BINARY_PATH}}" not in body
+    assert "/usr/local/bin/lemma-agent" in body
+    assert "[Service]" in body and "[Install]" in body
+
+
+def test_agent_install_launcher_renders_executable_shell_script(tmp_path: Path, monkeypatch):
+    import os
+    import stat
+
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["agent", "install", "--shape", "launcher", "--output", str(out)],
+    )
+    assert result.exit_code == 0, result.stdout
+    rendered = out / "lemma-agent.sh"
+    assert rendered.is_file()
+    mode = os.stat(rendered).st_mode
+    assert mode & stat.S_IXUSR, f"launcher must be executable; got mode {oct(mode)}"
+    body = rendered.read_text()
+    assert body.startswith("#!"), "launcher must start with a shebang"
+    assert "{{BINARY_PATH}}" not in body
+
+
+def test_agent_install_refuses_to_overwrite_unless_force(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "lemma-agent.yaml").write_text("existing")
+
+    first = runner.invoke(app, ["agent", "install", "--shape", "k8s", "--output", str(out)])
+    assert first.exit_code == 1
+    assert "exists" in first.stdout.lower() or "force" in first.stdout.lower()
+
+    second = runner.invoke(
+        app,
+        ["agent", "install", "--shape", "k8s", "--output", str(out), "--force"],
+    )
+    assert second.exit_code == 0, second.stdout
+    body = (out / "lemma-agent.yaml").read_text()
+    assert body != "existing"
+
+
+def test_agent_status_requires_endpoint(tmp_path: Path, monkeypatch):
     from lemma.cli import app
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".lemma").mkdir()
     result = runner.invoke(app, ["agent", "status"])
+    assert result.exit_code != 0
+
+
+def test_agent_status_reports_health_snapshot_from_running_agent(tmp_path: Path, monkeypatch):
+    """End-to-end-ish: spin up a stub /health server in-process, run
+    `lemma agent status` against it, assert the snapshot line."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from lemma.cli import app
+
+    payload = {
+        "version": "0.8.0",
+        "evidence_count": 17,
+        "last_signed_at": "2026-05-02T12:34:56Z",
+        "producer_count": 2,
+        "started_at": "2026-05-02T08:00:00Z",
+        "uptime_seconds": 16500,
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                body = _json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *a, **k):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = runner.invoke(
+            app,
+            ["agent", "status", "--endpoint", f"http://127.0.0.1:{port}"],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.exit_code == 0, result.stdout
+    out = result.stdout
+    assert "0.8.0" in out
+    assert "17" in out  # evidence_count
+    assert "2026-05-02T12:34:56Z" in out
+    assert "2" in out  # producer_count
+
+
+def test_agent_status_returns_one_when_endpoint_unreachable(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    # Port 1 is reserved; nothing listens. Pick a low timeout so the test
+    # doesn't hang the suite.
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "status",
+            "--endpoint",
+            "http://127.0.0.1:1",
+            "--timeout",
+            "1",
+        ],
+    )
     assert result.exit_code == 1
-    assert "not yet implemented" in result.stdout.lower()
-    assert "#25" in result.stdout
-    assert "agent/README.md" in result.stdout
+    assert "unreachable" in result.stdout.lower() or "error" in result.stdout.lower()
 
 
 def test_agent_sync_without_offline_exits_one_pointing_at_offline(tmp_path: Path, monkeypatch):

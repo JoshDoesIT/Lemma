@@ -1985,9 +1985,7 @@ lemma ai audit --summary
 
 ## `lemma agent`
 
-Federated-agent CLI surface. The full agent (a stateless Go binary deployed inside target environments and federating compliance state to a control plane) is tracked under [#25](https://github.com/JoshDoesIT/Lemma/issues/25). The CLI surface lands ahead of the binary so operator scripts stay stable across the implementation rollout. Today only `lemma agent sync --offline` is fully wired.
-
-The agent binary's source tree lives at [`agent/`](https://github.com/JoshDoesIT/Lemma/tree/main/agent). It exposes five subcommands:
+Federated-agent CLI surface. The Go agent binary lives at [`agent/`](https://github.com/JoshDoesIT/Lemma/tree/main/agent) and ships with verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, and serve subcommands. `lemma agent install` renders a deployment artifact (Kubernetes sidecar, systemd unit, or bare-metal launcher) that runs the agent in production; `lemma agent status` queries the running agent's `/health` endpoint; `lemma agent sync --offline` exports an audit bundle for air-gapped transfer. The receiving Control Plane is the only remaining federation gap on [#25](https://github.com/JoshDoesIT/Lemma/issues/25).
 
 ```bash
 lemma-agent verify <evidence.jsonl> --keys-dir <dir> [--crl <path>]...
@@ -1997,6 +1995,7 @@ lemma-agent keygen --keys-dir <dir> --producer <name>
 lemma-agent keyrotate --keys-dir <dir> --producer <name>
 lemma-agent keyrevoke --keys-dir <dir> --producer <name> --key-id <id> --reason <text>
 lemma-agent forward <jsonl> --to <url> [--header KEY=VALUE]... [--timeout SECONDS] [--mtls-cert <file>] [--mtls-key <file>] [--mtls-ca <file>] [--insecure-skip-verify]
+lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]
 ```
 
 `verify` walks a Lemma signed evidence JSONL, recomputes each entry's chain hash from the canonical `{event, provenance_excluding_storage}` payload, and checks the Ed25519 signature against the producer's public key under `<dir>/<producer>/<key_id>.public.pem`. The verifier also reads each producer's local lifecycle at `<dir>/<producer>/meta.json` and flips a verdict from PROVEN to VIOLATED when the signing key has `status: REVOKED` there with `revoked_at <= signed_at` — the same `signed_at >= revoked_at` rule Python's `EvidenceLog.verify_entry` applies. With `--crl <path>` (repeatable, one per producer in a multi-producer bundle) the verifier also consults the supplied CRLs; CRLs whose `producer` doesn't match the envelope's `event.metadata.product.name` are ignored. **When BOTH sources flag the same key, the earlier `revoked_at` wins** (defense-in-depth merge). The diagnostic Reason names which source won (`source: local lifecycle` or `source: CRL`). Missing or unreadable `meta.json` is treated as no local revocation (pass-through). Only `REVOKED` records flip; `RETIRED` is read but does not violate. Each CRL's own signature is verified against the issuer's public key up front; a bad CRL aborts the run with exit `1` before any per-envelope check runs. When no `--crl` is supplied the agent prints `Note: No CRL supplied; revocations issued elsewhere are not visible.` to stdout — exit code unchanged. Exit `0` means every entry is PROVEN; exit `1` means at least one entry is VIOLATED (chain, hash, signature, local-lifecycle, or CRL revocation) or a supplied CRL failed its own signature check; exit `2` is a usage error. The check is byte-for-byte parity with Python's `lemma evidence verify` envelope, CRL, and lifecycle layers.
@@ -2015,25 +2014,45 @@ lemma-agent forward <jsonl> --to <url> [--header KEY=VALUE]... [--timeout SECOND
 
 `forward` POSTs each line of a signed-evidence JSONL to a Control Plane URL with `Content-Type: application/json`. The most common pairing is `ingest` → `forward`. `--header KEY=VALUE` is repeatable for `Authorization` or routing headers (Content-Type is set automatically and cannot be overridden). `--timeout` sets a per-request deadline in seconds. **Mutual TLS**: pass `--mtls-cert` + `--mtls-key` (both required, PEM files) to authenticate the agent to the Control Plane via a client certificate; `--mtls-ca <file>` pins a CA bundle that verifies the server cert (replaces the system trust store). `--insecure-skip-verify` disables server cert verification entirely (dev/test only — emits a loud stderr warning). All mTLS flags require an `https://` URL; mixing them with `http://` exits 1 to prevent silent downgrade. A 2xx response counts as forwarded; anything else (4xx, 5xx, transport error) counts as failed. Output: `<N> forwarded, <M> failed.` Exit `0` only when all forwarded; exit `1` if any failed. Retry/backoff, resumable forwarding, and the Control Plane receiver itself are still tracked under #25. See [`agent/README.md`](https://github.com/JoshDoesIT/Lemma/blob/main/agent/README.md) for build instructions and the full feature roadmap under #25.
 
+`serve` runs an in-process HTTP server bound to `127.0.0.1:<port>` exposing `GET /health`, which returns a JSON snapshot derived from disk: `version`, `evidence_count` (non-blank lines across `*.jsonl` files in `--evidence-dir`), `last_signed_at` (latest `signed_at` across all envelopes), `producer_count` (subdirectories of `--keys-dir` that contain a `meta.json`), `started_at`, and `uptime_seconds`. The endpoint is what `lemma agent status` queries. The server runs in the foreground and shuts down cleanly when stdin EOFs (or on `SIGTERM` in production).
+
 ### `lemma agent install`
 
-Install the Lemma agent in the target environment.
+Render a deployment artifact for the Lemma agent.
 
 ```bash
-lemma agent install
+lemma agent install --shape <k8s|systemd|launcher> --output <dir> \
+    [--image NAME:TAG] [--binary-path PATH] \
+    [--evidence-dir DIR] [--keys-dir DIR] [--health-port PORT] [--force]
 ```
 
-Not yet implemented; tracked under #25 (Lemma Agent section). Exits 1 with a clear pointer message. When the agent binary ships, this command will deploy it as a K8s sidecar, systemd unit, or bare-metal process depending on the host.
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--shape` | Yes | Deployment shape: `k8s`, `systemd`, or `launcher`. |
+| `--output` | Yes | Output directory for the rendered artifact. |
+| `--image` | No | Container image (k8s shape only). Default: `ghcr.io/joshdoesit/lemma-agent:latest`. |
+| `--binary-path` | No | Path to the lemma-agent binary on the target host (systemd / launcher). Default: `/usr/local/bin/lemma-agent`. |
+| `--evidence-dir` | No | On-host evidence directory the agent serves from. Default: `/var/lib/lemma-agent/evidence`. |
+| `--keys-dir` | No | On-host producer-keys directory. Default: `/var/lib/lemma-agent/keys`. |
+| `--health-port` | No | TCP port the agent's `/health` endpoint listens on. Default: `8080`. |
+| `--force` | No | Overwrite an existing rendered artifact at `--output`. |
+
+The `k8s` shape renders a Kubernetes Deployment (`lemma-agent.yaml`) with readiness/liveness probes pointing at `/health`. The `systemd` shape renders a hardened service unit (`lemma-agent.service`) running as a non-privileged user with `ProtectSystem=strict`, `ReadOnlyPaths=<keys-dir>`. The `launcher` shape renders an executable shell script (`lemma-agent.sh`, mode 0o755) that exec's `lemma-agent serve`. All three are templated from `agent/deploy/*.tmpl`.
 
 ### `lemma agent status`
 
-Report agent health, last sync time, and control evaluation counts.
+Report agent health, last signed envelope, and producer-key count via the running agent's `/health` endpoint.
 
 ```bash
-lemma agent status
+lemma agent status --endpoint http://host:port [--timeout SECONDS]
 ```
 
-Not yet implemented; tracked under #25. Exits 1 with a clear pointer message. When the agent ships, this command will query the running agent's local health endpoint.
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--endpoint` | Yes | Base URL of a running agent (e.g. `http://127.0.0.1:8080`). |
+| `--timeout` | No | HTTP timeout in seconds. Default: 5. |
+
+Performs `GET <endpoint>/health` and prints a human-readable snapshot. Exits 1 if the endpoint is unreachable, returns non-2xx, or returns non-JSON. Pair with `lemma-agent serve` running on the target host.
 
 ### `lemma agent sync`
 

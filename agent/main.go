@@ -11,11 +11,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +28,7 @@ import (
 	"github.com/JoshDoesIT/Lemma/agent/internal/crypto"
 	"github.com/JoshDoesIT/Lemma/agent/internal/evidencelog"
 	"github.com/JoshDoesIT/Lemma/agent/internal/forwarder"
+	"github.com/JoshDoesIT/Lemma/agent/internal/health"
 	"github.com/JoshDoesIT/Lemma/agent/internal/keystore"
 	"github.com/JoshDoesIT/Lemma/agent/internal/signer"
 	"github.com/JoshDoesIT/Lemma/agent/internal/verifier"
@@ -32,7 +36,7 @@ import (
 
 // Version is the agent binary's semantic version. Bump on user-visible
 // behavior changes.
-const Version = "0.7.0"
+const Version = "0.8.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -41,12 +45,13 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stdout, "lemma-agent v%s\n", Version)
-		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward")
+		fmt.Fprintln(stdout, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve")
 		fmt.Fprintln(stdout, "Run `lemma-agent verify <jsonl> --keys-dir <dir> [--crl <path>]...` to verify a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent sign --keys-dir <dir> --producer <name>` to sign an OCSF event.")
 		fmt.Fprintln(stdout, "Run `lemma-agent ingest <input> --keys-dir <dir> --evidence-dir <dir> --producer <name>` to ingest OCSF events into a Lemma evidence log.")
 		fmt.Fprintln(stdout, "Run `lemma-agent keygen --keys-dir <dir> --producer <name>` to mint a producer keypair.")
 		fmt.Fprintln(stdout, "Run `lemma-agent forward <jsonl> --to <url> [--mtls-cert <f>] [--mtls-key <f>] [--mtls-ca <f>]` to POST signed envelopes to a Control Plane (HTTP or HTTPS+mTLS).")
+		fmt.Fprintln(stdout, "Run `lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]` to expose a /health endpoint for `lemma agent status`.")
 		fmt.Fprintln(stdout, "Federation install/status/sync wiring is tracked under #25.")
 		return 0
 	}
@@ -68,9 +73,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runKeyrevoke(args[1:], stdout, stderr)
 	case "forward":
 		return runForward(args[1:], stdout, stderr)
+	case "serve":
+		return runServe(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "lemma-agent: unknown subcommand %q\n", args[0])
-		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward")
+		fmt.Fprintln(stderr, "subcommands: verify, sign, ingest, keygen, keyrotate, keyrevoke, forward, serve")
 		return 2
 	}
 }
@@ -995,3 +1002,129 @@ func parseTimeoutSeconds(s string) (int, error) {
 	}
 	return n, nil
 }
+
+func runServe(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintln(stderr,
+			"usage: lemma-agent serve --port <N> --evidence-dir <dir> [--keys-dir <dir>]")
+	}
+
+	var port int
+	var evidenceDir, keysDir string
+	portSet := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--port":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent serve: --port requires a value")
+				return 2
+			}
+			n, err := parseTimeoutSeconds(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "lemma-agent serve: %v\n", err)
+				return 2
+			}
+			port = n
+			portSet = true
+			i++
+		case strings.HasPrefix(a, "--port="):
+			_, v, _ := strings.Cut(a, "=")
+			n, err := parseTimeoutSeconds(v)
+			if err != nil {
+				fmt.Fprintf(stderr, "lemma-agent serve: %v\n", err)
+				return 2
+			}
+			port = n
+			portSet = true
+		case a == "--evidence-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent serve: --evidence-dir requires a value")
+				return 2
+			}
+			evidenceDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--evidence-dir="):
+			_, evidenceDir, _ = strings.Cut(a, "=")
+		case a == "--keys-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "lemma-agent serve: --keys-dir requires a value")
+				return 2
+			}
+			keysDir = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--keys-dir="):
+			_, keysDir, _ = strings.Cut(a, "=")
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "lemma-agent serve: unknown flag %q\n", a)
+			usage()
+			return 2
+		default:
+			fmt.Fprintf(stderr, "lemma-agent serve: unexpected positional argument %q\n", a)
+			usage()
+			return 2
+		}
+	}
+	if !portSet {
+		fmt.Fprintln(stderr, "lemma-agent serve: --port is required")
+		usage()
+		return 2
+	}
+	if evidenceDir == "" {
+		fmt.Fprintln(stderr, "lemma-agent serve: --evidence-dir is required")
+		usage()
+		return 2
+	}
+
+	startedAt := time.Now()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		snap, err := health.Snapshot(health.SnapshotInput{
+			Version:     Version,
+			EvidenceDir: evidenceDir,
+			KeysDir:     keysDir,
+			StartedAt:   startedAt,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snap)
+	})
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		fmt.Fprintf(stderr, "lemma-agent serve: bind 127.0.0.1:%d: %v\n", port, err)
+		return 1
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	fmt.Fprintf(stdout, "lemma-agent serve listening on http://127.0.0.1:%d/health\n",
+		listener.Addr().(*net.TCPAddr).Port)
+
+	// Treat stdin EOF as the shutdown signal — operators send a SIGTERM
+	// in production; tests close the pipe.
+	shutdown := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, stdin)
+		close(shutdown)
+	}()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(listener) }()
+
+	select {
+	case <-shutdown:
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(stderr, "lemma-agent serve: %v\n", err)
+			return 1
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+	return 0
+}
+
