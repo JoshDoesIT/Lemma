@@ -284,3 +284,132 @@ def test_two_producers_get_separate_directories(tmp_path: Path) -> None:
     assert (cp_evidence / "Okta").is_dir()
     assert list((cp_evidence / "Lemma").glob("*.jsonl"))
     assert list((cp_evidence / "Okta").glob("*.jsonl"))
+
+
+# Aggregation tests -----------------------------------------------------
+
+
+def _seed_per_producer_envelopes(
+    evidence_dir: Path, agent_evidence_dir: Path, producer: str, count: int
+) -> None:
+    """Sign `count` envelopes locally as `producer` and copy them into
+    the Control Plane's per-producer day file. Mirrors what the live
+    receiver writes to disk after a series of POSTs."""
+    log = EvidenceLog(log_dir=agent_evidence_dir, key_dir=evidence_dir.parent / "keys")
+    for i in range(count):
+        ev = _compliance_event(f"{producer}-evt-{i}")
+        ev["metadata"]["product"]["name"] = producer
+        log.append(normalize(ev))
+
+    target_dir = evidence_dir / producer
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for jsonl in agent_evidence_dir.glob("*.jsonl"):
+        target = target_dir / jsonl.name
+        # Append (so multi-producer call into the same agent log still works).
+        with target.open("a", encoding="utf-8") as out, jsonl.open() as src:
+            for line in src:
+                env = json.loads(line)
+                if (
+                    env.get("event", {}).get("metadata", {}).get("product", {}).get("name")
+                    == producer
+                ):
+                    out.write(line)
+
+
+def test_aggregate_summarises_evidence_across_producers(tmp_path: Path) -> None:
+    """The unified compliance view: aggregating over an evidence-dir
+    that contains envelopes from ≥ 2 agents/producers must produce a
+    per-producer rollup plus totals."""
+    from lemma.services.control_plane import aggregate
+
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+
+    _seed_per_producer_envelopes(cp_evidence, tmp_path / "agent-lemma", "Lemma", 3)
+    _seed_per_producer_envelopes(cp_evidence, tmp_path / "agent-okta", "Okta", 2)
+
+    result = aggregate(cp_evidence)
+
+    # Top-level shape.
+    assert result.total_envelopes == 5
+    assert result.producer_count == 2
+    assert result.first_signed_at <= result.last_signed_at
+
+    # Per-producer breakdown.
+    by_name = {p.producer: p for p in result.producers}
+    assert set(by_name) == {"Lemma", "Okta"}
+    assert by_name["Lemma"].envelope_count == 3
+    assert by_name["Okta"].envelope_count == 2
+    assert by_name["Lemma"].latest_entry_hash != ""
+    assert by_name["Okta"].latest_entry_hash != ""
+
+
+def test_aggregate_empty_evidence_dir_returns_zero_summary(tmp_path: Path) -> None:
+    from lemma.services.control_plane import aggregate
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    result = aggregate(cp_evidence)
+    assert result.total_envelopes == 0
+    assert result.producer_count == 0
+    assert result.producers == []
+
+
+def test_aggregate_skips_blank_lines_and_garbage(tmp_path: Path) -> None:
+    """Lines that don't parse as envelopes don't crash the summary —
+    they're counted as parse failures so operators can see something is
+    wrong without losing the rollup."""
+    from lemma.services.control_plane import aggregate
+
+    cp_evidence = tmp_path / "cp-evidence"
+    (cp_evidence / "Lemma").mkdir(parents=True)
+    (cp_evidence / "Lemma" / "2026-05-03.jsonl").write_text(
+        "\n\n   \n" + '{"not":"a valid envelope"}\n'
+    )
+
+    result = aggregate(cp_evidence)
+    assert result.total_envelopes == 0
+    # The malformed line should surface as a parse_error count so the
+    # operator gets a signal without losing the per-producer entry.
+    assert result.parse_errors == 1
+
+
+def test_aggregate_missing_evidence_dir_returns_zero_summary(tmp_path: Path) -> None:
+    from lemma.services.control_plane import aggregate
+
+    result = aggregate(tmp_path / "does-not-exist")
+    assert result.total_envelopes == 0
+    assert result.producer_count == 0
+
+
+def test_aggregate_per_producer_day_file_count(tmp_path: Path) -> None:
+    """A single producer with envelopes spanning two days produces two
+    day-files; aggregate reports both."""
+    from lemma.services.control_plane import aggregate
+
+    cp_evidence = tmp_path / "cp-evidence"
+    cp_evidence.mkdir()
+    target_dir = cp_evidence / "Lemma"
+    target_dir.mkdir()
+
+    # Sign two envelopes via the production EvidenceLog, then split
+    # them into per-day files — mimicking the receiver's behaviour
+    # across two days of operation.
+    log = EvidenceLog(log_dir=tmp_path / "agent", key_dir=tmp_path / "keys")
+    ev1 = _compliance_event("day1")
+    ev1["time"] = "2026-05-01T12:00:00+00:00"
+    ev2 = _compliance_event("day2")
+    ev2["time"] = "2026-05-02T12:00:00+00:00"
+    log.append(normalize(ev1))
+    log.append(normalize(ev2))
+    envs = log.read_envelopes()
+    (target_dir / "2026-05-01.jsonl").write_text(envs[0].model_dump_json() + "\n")
+    (target_dir / "2026-05-02.jsonl").write_text(envs[1].model_dump_json() + "\n")
+
+    result = aggregate(cp_evidence)
+    by_name = {p.producer: p for p in result.producers}
+    assert by_name["Lemma"].day_file_count == 2
+    assert by_name["Lemma"].envelope_count == 2
+    assert by_name["Lemma"].first_signed_at < by_name["Lemma"].last_signed_at
