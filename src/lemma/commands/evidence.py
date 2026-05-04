@@ -574,6 +574,9 @@ def _first_party_connector(
     instance: str | None = None,
     username: str | None = None,
     query: str | None = None,
+    organization: str | None = None,
+    project: str | None = None,
+    wiql: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -633,7 +636,24 @@ def _first_party_connector(
             kwargs2["query"] = query
         return ServiceNowConnector(**kwargs2)
 
-    known = ["github", "okta", "aws", "jira", "servicenow"]
+    if name in ("azure-devops", "azure_devops"):
+        from lemma.sdk.connectors.azure_devops import AzureDevOpsConnector
+
+        if not organization:
+            msg = (
+                "The azure-devops connector requires organization=<your-org> "
+                "(the path segment after dev.azure.com/)."
+            )
+            raise ValueError(msg)
+        if not project:
+            msg = "The azure-devops connector requires project (within the organization)."
+            raise ValueError(msg)
+        kwargs3: dict = {"organization": organization, "project": project}
+        if wiql:
+            kwargs3["wiql"] = wiql
+        return AzureDevOpsConnector(**kwargs3)
+
+    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -657,6 +677,9 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         instance=config.get("instance"),
         username=config.get("username"),
         query=config.get("query"),
+        organization=config.get("organization"),
+        project=config.get("project"),
+        wiql=config.get("wiql"),
     )
 
 
