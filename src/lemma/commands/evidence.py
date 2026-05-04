@@ -571,6 +571,9 @@ def _first_party_connector(
     base_url: str | None = None,
     email: str | None = None,
     jql: str | None = None,
+    instance: str | None = None,
+    username: str | None = None,
+    query: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -613,7 +616,24 @@ def _first_party_connector(
             kwargs["jql"] = jql
         return JiraConnector(**kwargs)
 
-    known = ["github", "okta", "aws", "jira"]
+    if name == "servicenow":
+        from lemma.sdk.connectors.servicenow import ServiceNowConnector
+
+        if not instance:
+            msg = (
+                "The servicenow connector requires instance=<your-org> "
+                "(subdomain of service-now.com)."
+            )
+            raise ValueError(msg)
+        if not username:
+            msg = "The servicenow connector requires username for HTTP Basic auth."
+            raise ValueError(msg)
+        kwargs2: dict = {"instance": instance, "username": username}
+        if query:
+            kwargs2["query"] = query
+        return ServiceNowConnector(**kwargs2)
+
+    known = ["github", "okta", "aws", "jira", "servicenow"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -634,6 +654,9 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         base_url=config.get("base_url"),
         email=config.get("email"),
         jql=config.get("jql"),
+        instance=config.get("instance"),
+        username=config.get("username"),
+        query=config.get("query"),
     )
 
 
