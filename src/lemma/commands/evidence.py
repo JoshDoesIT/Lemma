@@ -577,6 +577,10 @@ def _first_party_connector(
     organization: str | None = None,
     project: str | None = None,
     wiql: str | None = None,
+    tenant_id: str | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    subscription_id: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -653,7 +657,28 @@ def _first_party_connector(
             kwargs3["wiql"] = wiql
         return AzureDevOpsConnector(**kwargs3)
 
-    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops"]
+    if name == "azure":
+        from lemma.sdk.connectors.azure import AzureConnector
+
+        if not tenant_id:
+            msg = "The azure connector requires tenant_id (Entra ID directory id)."
+            raise ValueError(msg)
+        if not client_id:
+            msg = "The azure connector requires client_id (App registration application id)."
+            raise ValueError(msg)
+        if not subscription_id:
+            msg = "The azure connector requires subscription_id."
+            raise ValueError(msg)
+        kwargs4: dict = {
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "subscription_id": subscription_id,
+        }
+        if client_secret:
+            kwargs4["client_secret"] = client_secret
+        return AzureConnector(**kwargs4)
+
+    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -680,6 +705,10 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         organization=config.get("organization"),
         project=config.get("project"),
         wiql=config.get("wiql"),
+        tenant_id=config.get("tenant_id"),
+        client_id=config.get("client_id"),
+        client_secret=config.get("client_secret"),
+        subscription_id=config.get("subscription_id"),
     )
 
 
