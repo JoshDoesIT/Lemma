@@ -43,7 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ingest = [
-    "docling>=2.0",
+    "docling>=2.91.0",
     "pandas>=2.0",
     "openpyxl>=3.1",
 ]
