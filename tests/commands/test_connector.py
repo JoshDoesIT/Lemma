@@ -103,3 +103,89 @@ class TestConnectorTest:
 
         assert result.exit_code == 1
         assert "line 1" in result.stdout.lower() or "json" in result.stdout.lower()
+
+
+class TestConnectorSecrets:
+    def _init_project(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        monkeypatch.setenv("LEMMA_SECRET_PASSPHRASE", "unit-pass")
+
+    def test_set_secret_via_env_value_then_list(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        monkeypatch.setenv("LEMMA_SECRET_VALUE", "ghp_abc123")
+
+        result = runner.invoke(app, ["connector", "set-secret", "GITHUB_TOKEN"])
+        assert result.exit_code == 0, result.stdout
+        assert "Stored" in result.stdout
+
+        listed = runner.invoke(app, ["connector", "list-secrets"])
+        assert listed.exit_code == 0
+        assert "GITHUB_TOKEN" in listed.stdout
+        # The value is never printed.
+        assert "ghp_abc123" not in listed.stdout
+
+    def test_set_secret_rotates_existing(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+        from lemma.services.secret_store import SecretStore
+
+        self._init_project(tmp_path, monkeypatch)
+
+        monkeypatch.setenv("LEMMA_SECRET_VALUE", "v1")
+        runner.invoke(app, ["connector", "set-secret", "TOK"])
+        monkeypatch.setenv("LEMMA_SECRET_VALUE", "v2")
+        result = runner.invoke(app, ["connector", "set-secret", "TOK"])
+
+        assert "Rotated" in result.stdout
+        store = SecretStore(tmp_path / ".lemma" / "secrets.json", passphrase="unit-pass")
+        assert store.get("TOK") == "v2"
+
+    def test_set_secret_requires_passphrase(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+        monkeypatch.delenv("LEMMA_SECRET_PASSPHRASE", raising=False)
+        monkeypatch.setenv("LEMMA_SECRET_VALUE", "x")
+
+        result = runner.invoke(app, ["connector", "set-secret", "TOK"])
+        assert result.exit_code == 1
+        assert "LEMMA_SECRET_PASSPHRASE" in result.stdout
+
+    def test_rm_secret(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        monkeypatch.setenv("LEMMA_SECRET_VALUE", "v")
+        runner.invoke(app, ["connector", "set-secret", "TOK"])
+
+        result = runner.invoke(app, ["connector", "rm-secret", "TOK"])
+        assert result.exit_code == 0
+        assert "Removed" in result.stdout
+        assert "TOK" not in runner.invoke(app, ["connector", "list-secrets"]).stdout
+
+    def test_rotated_secret_picked_up_without_restart(self, tmp_path: Path, monkeypatch):
+        """A connector resolves the *current* stored value each run — rotating
+        the secret is picked up by the next `evidence collect` with no restart."""
+        from lemma.services.connector_config import load_connector_config
+        from lemma.services.secret_store import SecretStore
+
+        self._init_project(tmp_path, monkeypatch)
+        store = SecretStore(tmp_path / ".lemma" / "secrets.json", passphrase="unit-pass")
+        store.set("TOK", "old")
+
+        cfg_path = tmp_path / "c.yaml"
+        cfg_path.write_text("connector: jira\nconfig:\n  token: ${secret:TOK}\n")
+
+        first = load_connector_config(cfg_path, secret_store=store)
+        assert first.config["token"] == "old"
+
+        # Rotate the secret; a fresh load (== next run) sees the new value.
+        store.set("TOK", "new")
+        second = load_connector_config(
+            cfg_path,
+            secret_store=SecretStore(tmp_path / ".lemma" / "secrets.json", passphrase="unit-pass"),
+        )
+        assert second.config["token"] == "new"

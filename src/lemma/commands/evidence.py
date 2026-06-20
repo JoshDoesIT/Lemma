@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -751,9 +752,16 @@ def collect_command(
     # file-declared and CLI-declared values).
     if config:
         from lemma.services.connector_config import load_connector_config
+        from lemma.services.secret_store import SecretStore
+
+        # Only hand the loader a secret store when a passphrase is present, so
+        # configs that use plain ${ENV_VAR} keep working with no passphrase.
+        secret_store = None
+        if os.environ.get("LEMMA_SECRET_PASSPHRASE"):
+            secret_store = SecretStore(project_dir / ".lemma" / "secrets.json")
 
         try:
-            cfg = load_connector_config(Path(config))
+            cfg = load_connector_config(Path(config), secret_store=secret_store)
         except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc

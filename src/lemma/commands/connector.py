@@ -89,6 +89,89 @@ def _fail(msg: str) -> None:
     raise typer.Exit(code=1)
 
 
+def _secret_store():
+    """Open the project's encrypted secret store (Refs #117)."""
+    import os
+
+    from lemma.services.secret_store import SecretStore
+
+    project = Path.cwd()
+    if not (project / ".lemma").exists():
+        _fail("Not a Lemma project. Run `lemma init` first.")
+    if not os.environ.get("LEMMA_SECRET_PASSPHRASE"):
+        _fail(
+            "Set LEMMA_SECRET_PASSPHRASE in the environment to unlock the encrypted secret store."
+        )
+    return SecretStore(project / ".lemma" / "secrets.json")
+
+
+@connector_app.command(
+    name="set-secret",
+    help="Store or rotate a connector credential in the encrypted secret store.",
+)
+def set_secret_command(
+    name: str = typer.Argument(help="Secret name, referenced as ${secret:NAME} in config"),
+) -> None:
+    """Set/rotate a secret. The value is read from the LEMMA_SECRET_VALUE env
+    var if set, otherwise prompted (hidden) — never passed as an argument, so
+    it can't leak into shell history or process listings."""
+    import os
+
+    store = _secret_store()
+    value = os.environ.get("LEMMA_SECRET_VALUE")
+    if value is None:
+        value = typer.prompt(f"Value for secret '{name}'", hide_input=True)
+    if not value:
+        _fail("Refusing to store an empty secret value.")
+
+    existed = name in store.names()
+    try:
+        store.set(name, value)
+    except ValueError as exc:
+        _fail(str(exc))
+
+    verb = "Rotated" if existed else "Stored"
+    console.print(
+        f"[green]{verb}[/green] secret [cyan]{name}[/cyan]. "
+        f"Reference it in config as [bold]${{secret:{name}}}[/bold]."
+    )
+
+
+@connector_app.command(
+    name="list-secrets",
+    help="List the names of stored connector secrets (never the values).",
+)
+def list_secrets_command() -> None:
+    store = _secret_store()
+    try:
+        names = store.names()
+    except ValueError as exc:
+        _fail(str(exc))
+
+    if not names:
+        console.print("[dim]No secrets stored. Add one with `lemma connector set-secret`.[/dim]")
+        return
+    for name in names:
+        console.print(f"• {name}")
+
+
+@connector_app.command(
+    name="rm-secret",
+    help="Remove a stored connector secret.",
+)
+def rm_secret_command(
+    name: str = typer.Argument(help="Secret name to remove"),
+) -> None:
+    store = _secret_store()
+    try:
+        if name not in store.names():
+            _fail(f"No secret named '{name}' is stored.")
+        store.delete(name)
+    except ValueError as exc:
+        _fail(str(exc))
+    console.print(f"[green]Removed[/green] secret [cyan]{name}[/cyan].")
+
+
 @connector_app.command(
     name="init",
     help="Scaffold a new connector project with a working reference implementation.",

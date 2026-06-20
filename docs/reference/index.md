@@ -422,6 +422,33 @@ lemma connector test <PATH>
 
 Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
 
+### `lemma connector set-secret`
+
+Store or rotate a connector credential in the project's **encrypted secret store** (`.lemma/secrets.json`), an alternative to (or companion of) plain environment variables. The store is encrypted at rest with a key derived (PBKDF2-HMAC-SHA256, 600k iterations) from a passphrase in `LEMMA_SECRET_PASSPHRASE`; neither secret names nor values appear in plaintext on disk, and the file is written `0600`.
+
+```bash
+export LEMMA_SECRET_PASSPHRASE='…'        # required for every secret op
+lemma connector set-secret GITHUB_TOKEN   # value read from LEMMA_SECRET_VALUE or a hidden prompt
+```
+
+The secret **value** is never taken as a command-line argument (it can't leak into shell history or process listings) — it comes from `LEMMA_SECRET_VALUE` or an interactive hidden prompt. Reference a stored secret in `lemma_connector_config.yaml` with `${secret:NAME}` (see the [`lemma evidence collect` config-file mode](#lemma-evidence-collect)). Re-running `set-secret` for an existing name **rotates** it; because each `lemma evidence collect` run re-reads the store, the new value is picked up on the next run with no service restart. See the [connector credentials security guide](../security/connector-secrets.md) for the threat model and leaked-token incident-response playbook.
+
+### `lemma connector list-secrets`
+
+List the names of stored connector secrets (never the values). Requires `LEMMA_SECRET_PASSPHRASE`.
+
+```bash
+lemma connector list-secrets
+```
+
+### `lemma connector rm-secret`
+
+Remove a stored connector secret.
+
+```bash
+lemma connector rm-secret GITHUB_TOKEN
+```
+
 **Status — v0 slice (#26):** Python SDK, reference JSONL connector, `init`/`test` CLIs. Deferred to follow-ups:
 - TypeScript SDK → [#108](https://github.com/JoshDoesIT/Lemma/issues/108)
 - `lemma connector publish` → [#109](https://github.com/JoshDoesIT/Lemma/issues/109)
@@ -770,7 +797,7 @@ config:                  # required; passed to the connector factory
   token: ${LEMMA_GITHUB_TOKEN}
 ```
 
-`${ENV_VAR}` references in string values are interpolated at load time from the environment; an unset env var raises a clean error rather than silently substituting an empty string. `enabled: false` skips the run cleanly (useful for temporarily disabling a connector without deleting its config). The config schema is strict — typo'd top-level keys are rejected with a clear message naming the offending key.
+`${ENV_VAR}` references in string values are interpolated at load time from the environment; an unset env var raises a clean error rather than silently substituting an empty string. `${secret:NAME}` references resolve from the project's encrypted secret store (see [`lemma connector`](#lemma-connector)) when `LEMMA_SECRET_PASSPHRASE` is set; a missing secret (or no passphrase) raises a clean error naming the reference. The two forms can be mixed in one config. `enabled: false` skips the run cleanly (useful for temporarily disabling a connector without deleting its config). The config schema is strict — typo'd top-level keys are rejected with a clear message naming the offending key.
 
 **First-party connectors**
 
