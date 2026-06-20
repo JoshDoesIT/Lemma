@@ -743,7 +743,11 @@ def collect_command(
         ),
     ),
 ) -> None:
+    from lemma.commands._rbac import enforce
+    from lemma.models.rbac import Permission
+
     project_dir = _require_lemma_project()
+    enforce(Permission.COLLECT_EVIDENCE)
 
     # --config wins when set: load the file, validate, interpolate
     # ${ENV_VAR}s, then construct the connector from the resulting

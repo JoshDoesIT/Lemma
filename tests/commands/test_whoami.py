@@ -52,3 +52,41 @@ def test_map_blocked_for_auditor(tmp_path, monkeypatch):
     result = runner.invoke(app, ["map", "--framework", "nist-800-53"])
     assert result.exit_code == 1
     assert "write access" in result.stdout.lower() or "not permitted" in result.stdout.lower()
+
+
+def _seed_min_project(tmp_path):
+    (tmp_path / ".lemma").mkdir()
+
+
+def test_scope_load_blocked_for_auditor(tmp_path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_min_project(tmp_path)
+    (tmp_path / "scopes").mkdir()
+    monkeypatch.setenv("LEMMA_ROLE", "auditor")
+    result = runner.invoke(app, ["scope", "load"])
+    assert result.exit_code == 1
+    assert "not permitted" in result.stdout.lower() or "access" in result.stdout.lower()
+
+
+def test_framework_add_blocked_for_auditor(tmp_path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_min_project(tmp_path)
+    monkeypatch.setenv("LEMMA_ROLE", "auditor")
+    result = runner.invoke(app, ["framework", "add", "nist-800-53"])
+    assert result.exit_code == 1
+    assert "not permitted" in result.stdout.lower() or "access" in result.stdout.lower()
+
+
+def test_evidence_collect_blocked_for_auditor(tmp_path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_min_project(tmp_path)
+    monkeypatch.setenv("LEMMA_ROLE", "auditor")
+    result = runner.invoke(app, ["evidence", "collect", "github", "--repo", "o/r"])
+    assert result.exit_code == 1
+    assert "not permitted" in result.stdout.lower() or "access" in result.stdout.lower()

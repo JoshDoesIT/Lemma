@@ -223,7 +223,11 @@ def status_command() -> None:
     help="Load every declared scope into the compliance graph.",
 )
 def load_command() -> None:
+    from lemma.commands._rbac import enforce
+    from lemma.models.rbac import Permission
+
     project_dir = _require_lemma_project()
+    enforce(Permission.MANAGE_SCOPES)
     scopes_dir = project_dir / "scopes"
 
     try:
