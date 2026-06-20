@@ -160,3 +160,56 @@ class TestTraceSection:
         )
         assert "<b>x</b>" not in html
         assert "&lt;b&gt;" in html
+
+
+def _envelope(
+    *, producer="GitHub", entry_hash="abc123def456abc1", event_class="Compliance Finding"
+):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(
+        class_name=event_class,
+        class_uid=2003,
+        metadata={"product": {"name": producer}, "uid": "x"},
+    )
+    return SimpleNamespace(
+        event=event,
+        signed_at=datetime(2026, 6, 20, 9, 30, tzinfo=UTC),
+        entry_hash=entry_hash,
+        signer_key_id="key-1",
+    )
+
+
+class TestEvidenceSection:
+    def test_no_evidence_omits_section(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW, evidence=None)
+        assert "Evidence Timeline" not in html
+
+    def test_evidence_renders_timeline(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(
+            _result(),
+            generated_at=_NOW,
+            evidence=[_envelope(producer="Okta"), _envelope(producer="AWS")],
+        )
+        assert "Evidence Timeline" in html
+        assert "Okta" in html
+        assert "AWS" in html
+        assert "Compliance Finding" in html
+        assert "abc123def456abc1" in html  # truncated entry hash
+
+    def test_producer_falls_back_to_key_id(self):
+        from types import SimpleNamespace
+
+        from lemma.services.report import render_html_report
+
+        env = _envelope()
+        # Strip the product metadata so producer falls back to signer key.
+        env.event = SimpleNamespace(class_name="X", class_uid=2003, metadata={})
+        env.signer_key_id = "fallback-key-id"
+        html = render_html_report(_result(), generated_at=_NOW, evidence=[env])
+        assert "fallback-key-id"[:16] in html

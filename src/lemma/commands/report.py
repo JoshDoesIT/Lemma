@@ -68,7 +68,17 @@ def report_command(
 
         traces = TraceLog(traces_dir).read_all()
 
-    html = render_html_report(result, generated_at=datetime.now(UTC), traces=traces)
+    # Include the signed evidence log (auditor-portal timeline) when present.
+    evidence = None
+    evidence_dir = project_dir / ".lemma" / "evidence"
+    if evidence_dir.exists():
+        from lemma.services.evidence_log import EvidenceLog
+
+        evidence = EvidenceLog(log_dir=evidence_dir).read_envelopes()
+
+    html = render_html_report(
+        result, generated_at=datetime.now(UTC), traces=traces, evidence=evidence
+    )
 
     if output:
         out_path = Path(output)

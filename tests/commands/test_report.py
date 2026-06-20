@@ -106,3 +106,32 @@ def test_report_includes_ai_decisions_when_traces_exist(tmp_path: Path, monkeypa
     assert result.exit_code == 0, result.stdout
     assert "AI Decisions" in result.stdout
     assert "ollama/llama3.2" in result.stdout
+
+
+def test_report_includes_evidence_timeline_when_log_exists(tmp_path: Path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from lemma.cli import app
+    from lemma.models.ocsf import ComplianceFinding
+    from lemma.services.evidence_log import EvidenceLog
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+    EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence").append(
+        ComplianceFinding(
+            class_name="Compliance Finding",
+            category_uid=2000,
+            category_name="Findings",
+            type_uid=200301,
+            activity_id=1,
+            time=datetime.now(UTC),
+            message="m",
+            status_id=1,
+            metadata={"version": "1.3.0", "product": {"name": "GitHub"}, "uid": "ev-1"},
+        )
+    )
+
+    result = runner.invoke(app, ["report"])
+    assert result.exit_code == 0, result.stdout
+    assert "Evidence Timeline" in result.stdout
+    assert "GitHub" in result.stdout
