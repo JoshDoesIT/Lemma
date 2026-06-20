@@ -58,6 +58,35 @@ def test_benchmark_graph_build(capsys):
 
 
 @pytest.mark.benchmark
+def test_benchmark_query_latency_baseline_1000_nodes(capsys):
+    """Baseline (#48 AC): a standard traversal over a ~1000-node graph stays
+    well under 500 ms. The assertion carries a generous margin (typical run is
+    single-digit ms) so it's a regression tripwire, not a flaky timing gate —
+    and it only runs under --run-benchmark, never in the default suite."""
+    g = ComplianceGraph()
+    g.add_framework("bench-fw", title="Benchmark Framework")
+    for i in range(1000):
+        g.add_control(
+            framework="bench-fw",
+            control_id=f"c-{i}",
+            title=f"Control {i}",
+            family=f"fam-{i % 20}",
+        )
+
+    node_ids = [n["id"] for n in g.export_json()["nodes"]]
+    start = time.perf_counter()
+    # A "standard traversal": every node's outgoing edges, the primitive the
+    # graph/impact/query walks build on.
+    visited = sum(len(g.outgoing_edges(nid)) for nid in node_ids)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    with capsys.disabled():
+        print(f"\n[bench] 1000-node standard traversal: {elapsed_ms:.1f} ms")
+    assert visited >= 1000  # framework→control CONTAINS edges
+    assert elapsed_ms < 500, f"traversal took {elapsed_ms:.1f} ms (baseline < 500 ms)"
+
+
+@pytest.mark.benchmark
 def test_benchmark_graph_export_and_traverse(capsys):
     g = _build_graph()
 
