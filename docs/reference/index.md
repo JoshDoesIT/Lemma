@@ -81,7 +81,7 @@ The role is read from the `LEMMA_ROLE` environment variable (case-insensitive: `
 | `engineer` | Auditor's reads + `write_mapping`, `review_decision`, `manage_scopes`, `collect_evidence`, `manage_keys`. |
 | `owner` | Everything, including `manage_users`. |
 
-Roles are strictly privilege-ordered (`auditor ⊆ engineer ⊆ owner`). The same `authorize` / `require` checks back any future write-gating.
+Roles are strictly privilege-ordered (`auditor ⊆ engineer ⊆ owner`). The same `authorize` / `require` checks back write-gating: `lemma map` already enforces `write_mapping`, so `LEMMA_ROLE=auditor lemma map …` exits `1` ("not permitted") while the default owner is unaffected. Further write commands adopt the same gate as multi-tenancy lands.
 
 ---
 

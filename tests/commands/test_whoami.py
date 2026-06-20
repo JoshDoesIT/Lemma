@@ -37,3 +37,18 @@ def test_whoami_unknown_role_errors(monkeypatch):
     result = runner.invoke(app, ["whoami"])
     assert result.exit_code == 1
     assert "unknown role" in result.stdout.lower()
+
+
+def test_map_blocked_for_auditor(tmp_path, monkeypatch):
+    """RBAC enforcement end-to-end: an auditor (read-only) cannot run `lemma map`."""
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".lemma").mkdir()
+    (tmp_path / "policies").mkdir()
+    (tmp_path / "policies" / "p.md").write_text("# policy")
+    monkeypatch.setenv("LEMMA_ROLE", "auditor")
+
+    result = runner.invoke(app, ["map", "--framework", "nist-800-53"])
+    assert result.exit_code == 1
+    assert "write access" in result.stdout.lower() or "not permitted" in result.stdout.lower()

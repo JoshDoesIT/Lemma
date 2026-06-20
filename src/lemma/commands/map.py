@@ -43,6 +43,17 @@ def map_command(
     if not (cwd / ".lemma").exists():
         _error("Not a Lemma project. Run `lemma init` first.")
 
+    # RBAC gate: mapping mutates the compliance record (write). Default role is
+    # owner, so single-operator workflows are unaffected; an explicit auditor
+    # (LEMMA_ROLE=auditor) is read-only and blocked here.
+    from lemma.models.rbac import AccessDeniedError, Permission
+    from lemma.services.principal import require_permission
+
+    try:
+        require_permission(Permission.WRITE_MAPPING)
+    except (AccessDeniedError, ValueError) as exc:
+        _error(f"{exc} Set LEMMA_ROLE to a role with write access (engineer or owner).")
+
     # Validate policies directory
     policies_dir = cwd / "policies"
     if not policies_dir.exists() or not list(policies_dir.glob("*.md")):
