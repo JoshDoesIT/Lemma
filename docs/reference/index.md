@@ -953,7 +953,7 @@ lemma report [--framework <ID>] [--output <PATH>] [--min-confidence FLOAT]
 | `--output` | (stdout) | Write the HTML to this path (parent dirs created); otherwise the document is printed to stdout for piping/redirection. |
 | `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as [`lemma check`](#lemma-check), so the report and the CI gate agree. |
 
-The report shows aggregate pass/fail counts, a per-framework coverage bar, and a findings table of failed controls. It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles and framework names are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph/AI-trace views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
+The report shows aggregate pass/fail counts, a per-framework coverage bar, and a findings table of failed controls. When an AI trace log exists (`.lemma/traces/`), it also appends an **AI Decisions** section — the dashboard's AI-trace viewer, listing each logged AI determination with its model, confidence (color-coded), determination, and human-review status. It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles, framework names, and trace fields are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
 
 ---
 

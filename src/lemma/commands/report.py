@@ -59,7 +59,16 @@ def report_command(
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    html = render_html_report(result, generated_at=datetime.now(UTC))
+    # Include the AI-decision trace log when one exists, so the dashboard
+    # carries both posture and AI transparency.
+    traces = None
+    traces_dir = project_dir / ".lemma" / "traces"
+    if traces_dir.exists():
+        from lemma.services.trace_log import TraceLog
+
+        traces = TraceLog(traces_dir).read_all()
+
+    html = render_html_report(result, generated_at=datetime.now(UTC), traces=traces)
 
     if output:
         out_path = Path(output)

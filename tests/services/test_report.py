@@ -108,3 +108,55 @@ class TestRenderHtmlReport:
         assert "0 failed" in html or "failed" in html
         # The generated timestamp appears.
         assert "2026-06-20" in html
+
+
+def _trace(
+    *, operation="map", confidence=0.92, status="ACCEPTED", control_id="control:nist-800-53:ac-1"
+):
+    from lemma.models.trace import AITrace
+
+    return AITrace(
+        operation=operation,
+        input_text="policy text",
+        prompt="prompt",
+        model_id="ollama/llama3.2",
+        model_version="1",
+        raw_output="{}",
+        confidence=confidence,
+        determination="MAPPED",
+        control_id=control_id,
+        framework="nist-800-53",
+        status=status,
+    )
+
+
+class TestTraceSection:
+    def test_no_traces_omits_section(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW, traces=None)
+        assert "AI Decisions" not in html
+
+    def test_traces_render_decision_table(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(
+            _result(),
+            generated_at=_NOW,
+            traces=[_trace(), _trace(status="PROPOSED", confidence=0.4)],
+        )
+        assert "AI Decisions" in html
+        assert "ollama/llama3.2" in html
+        assert "MAPPED" in html
+        assert "ACCEPTED" in html
+        assert "0.92" in html
+        assert "2 AI decision" in html
+
+    def test_trace_control_id_is_escaped(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(
+            _result(), generated_at=_NOW, traces=[_trace(control_id="<b>x</b>")]
+        )
+        assert "<b>x</b>" not in html
+        assert "&lt;b&gt;" in html

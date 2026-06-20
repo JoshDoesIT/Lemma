@@ -77,3 +77,32 @@ def test_report_outside_project_errors(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["report"])
     assert result.exit_code == 1
     assert "lemma init" in result.stdout.lower()
+
+
+def test_report_includes_ai_decisions_when_traces_exist(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.models.trace import AITrace
+    from lemma.services.trace_log import TraceLog
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+    TraceLog(tmp_path / ".lemma" / "traces").append(
+        AITrace(
+            operation="map",
+            input_text="policy",
+            prompt="p",
+            model_id="ollama/llama3.2",
+            model_version="1",
+            raw_output="{}",
+            confidence=0.91,
+            determination="MAPPED",
+            control_id="control:nist-800-53:ac-1",
+            framework="nist-800-53",
+            status="ACCEPTED",
+        )
+    )
+
+    result = runner.invoke(app, ["report"])
+    assert result.exit_code == 0, result.stdout
+    assert "AI Decisions" in result.stdout
+    assert "ollama/llama3.2" in result.stdout
