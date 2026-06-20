@@ -155,3 +155,59 @@ class TestFrameworkService:
 
         with pytest.raises(ValueError, match="Unsupported"):
             import_framework(bad_file, project_dir=tmp_path)
+
+
+class TestHipaaSecurityRuleFramework:
+    """The bundled HIPAA Security Rule community framework (Refs #33)."""
+
+    def test_registry_includes_hipaa(self):
+        from lemma.services.framework import get_framework_registry
+
+        registry = get_framework_registry()
+        assert "hipaa-security-rule" in registry
+        assert registry["hipaa-security-rule"].is_file()
+
+    def test_catalog_is_valid_oscal_and_parses(self):
+        import json
+
+        from lemma.services.framework import get_framework_registry
+        from lemma.services.parsers.oscal import parse_catalog
+
+        path = get_framework_registry()["hipaa-security-rule"]
+        catalog = json.loads(path.read_text())["catalog"]
+        assert catalog["metadata"]["title"].startswith("HIPAA Security Rule")
+
+        controls = parse_catalog(catalog)
+        # Five safeguard families, dozens of standards + implementation specs.
+        assert len(controls) > 50
+        families = {c["family"] for c in controls}
+        assert "Administrative Safeguards" in families
+        assert "Physical Safeguards" in families
+        assert "Technical Safeguards" in families
+
+    def test_catalog_controls_have_id_title_prose(self):
+        import json
+
+        from lemma.services.framework import get_framework_registry
+        from lemma.services.parsers.oscal import parse_catalog
+
+        path = get_framework_registry()["hipaa-security-rule"]
+        controls = parse_catalog(json.loads(path.read_text())["catalog"])
+        for c in controls:
+            assert c["id"]
+            assert c["title"]
+            assert c["prose"]
+
+    def test_catalog_includes_known_technical_safeguard(self):
+        import json
+
+        from lemma.services.framework import get_framework_registry
+        from lemma.services.parsers.oscal import parse_catalog
+
+        path = get_framework_registry()["hipaa-security-rule"]
+        controls = parse_catalog(json.loads(path.read_text())["catalog"])
+        by_id = {c["id"]: c for c in controls}
+        # §164.312(a)(1) Access Control, with its Encryption/Decryption spec.
+        assert "164.312(a)(1)" in by_id
+        assert by_id["164.312(a)(1)"]["title"] == "Access Control"
+        assert "164.312(a)(2)(iv)" in by_id  # Encryption and Decryption (Addressable)

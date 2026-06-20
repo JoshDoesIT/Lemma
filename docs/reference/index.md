@@ -88,6 +88,7 @@ lemma framework add <NAME>
 | `nist-800-53` | NIST SP 800-53 Rev 5 | 1,196 |
 | `nist-csf-2.0` | NIST Cybersecurity Framework 2.0 | 219 |
 | `nist-800-171` | NIST SP 800-171 Rev 3 | 130 |
+| `hipaa-security-rule` | HIPAA Security Rule (45 CFR Part 164, Subpart C) | 61 |
 
 **Example:**
 
