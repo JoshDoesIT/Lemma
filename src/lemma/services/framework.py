@@ -32,6 +32,7 @@ def get_framework_registry() -> dict[str, Path]:
         "nist-csf-2.0": data_dir / "nist-csf-2.0.json",
         "nist-800-171": data_dir / "nist-800-171-rev3.json",
         "hipaa-security-rule": data_dir / "hipaa-security-rule.json",
+        "cmmc-level-1": data_dir / "cmmc-level-1.json",
     }
 
 

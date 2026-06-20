@@ -211,3 +211,53 @@ class TestHipaaSecurityRuleFramework:
         assert "164.312(a)(1)" in by_id
         assert by_id["164.312(a)(1)"]["title"] == "Access Control"
         assert "164.312(a)(2)(iv)" in by_id  # Encryption and Decryption (Addressable)
+
+
+class TestCmmcLevel1Framework:
+    """The bundled CMMC Level 1 community framework (Refs #33)."""
+
+    def test_registry_includes_cmmc(self):
+        from lemma.services.framework import get_framework_registry
+
+        registry = get_framework_registry()
+        assert "cmmc-level-1" in registry
+        assert registry["cmmc-level-1"].is_file()
+
+    def test_catalog_parses_to_seventeen_practices(self):
+        import json
+
+        from lemma.services.framework import get_framework_registry
+        from lemma.services.parsers.oscal import parse_catalog
+
+        path = get_framework_registry()["cmmc-level-1"]
+        catalog = json.loads(path.read_text())["catalog"]
+        assert catalog["metadata"]["title"].startswith("CMMC Level 1")
+
+        controls = parse_catalog(catalog)
+        assert len(controls) == 17
+        families = {c["family"] for c in controls}
+        # Six CMMC Level 1 domains.
+        assert families == {
+            "Access Control",
+            "Identification and Authentication",
+            "Media Protection",
+            "Physical Protection",
+            "System and Communications Protection",
+            "System and Information Integrity",
+        }
+
+    def test_practices_have_id_title_prose(self):
+        import json
+
+        from lemma.services.framework import get_framework_registry
+        from lemma.services.parsers.oscal import parse_catalog
+
+        path = get_framework_registry()["cmmc-level-1"]
+        controls = parse_catalog(json.loads(path.read_text())["catalog"])
+        for c in controls:
+            assert c["id"]
+            assert c["title"]
+            assert c["prose"]
+        ids = {c["id"] for c in controls}
+        assert "AC.L1-3.1.1" in ids  # Authorized Access Control
+        assert "SI.L1-3.14.5" in ids  # System & File Scanning

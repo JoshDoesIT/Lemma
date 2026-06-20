@@ -89,6 +89,7 @@ lemma framework add <NAME>
 | `nist-csf-2.0` | NIST Cybersecurity Framework 2.0 | 219 |
 | `nist-800-171` | NIST SP 800-171 Rev 3 | 130 |
 | `hipaa-security-rule` | HIPAA Security Rule (45 CFR Part 164, Subpart C) | 61 |
+| `cmmc-level-1` | CMMC Level 1 (Foundational, derived from FAR 52.204-21) | 17 |
 
 **Example:**
 
