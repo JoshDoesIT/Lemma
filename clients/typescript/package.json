@@ -1,0 +1,18 @@
+{
+  "name": "@lemma/connector-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for building Lemma evidence connectors (OCSF output).",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\""
+  },
+  "keywords": ["lemma", "grc", "compliance", "ocsf", "connector"],
+  "dependencies": {}
+}
