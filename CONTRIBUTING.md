@@ -19,6 +19,27 @@ If you are writing production code, there must be a failing test for it first. I
 3. Install dependencies 
 4. Verify your environment by running the test suite
 
+## RFC Process (major architectural decisions)
+
+Most changes go straight to a pull request. **Architecturally significant**
+changes — new top-level subsystems, breaking schema/API changes, new runtime
+dependencies, security-model changes, or anything that's expensive to reverse
+— start with an **RFC** so the design is reviewed before code is written.
+
+1. **Open an RFC issue.** Copy the template at
+   [`docs/contributing/rfc-template.md`](docs/contributing/rfc-template.md)
+   into a new issue titled `RFC: <short title>` and fill it in (summary,
+   motivation, design, alternatives, risks, rollout).
+2. **Discuss.** Maintainers and the community comment; iterate on the issue
+   until there's rough consensus (or an explicit decision to decline).
+3. **Decide.** A maintainer marks the RFC accepted, declined, or deferred,
+   with a one-line rationale. Accepted RFCs link the implementing PR(s).
+4. **Implement.** Reference the RFC issue from the PR. Breaking changes from
+   an accepted RFC also need a [migration guide](docs/contributing/migrations.md).
+
+If you're unsure whether a change needs an RFC, open a lightweight issue and
+ask — it's cheaper to find out early than to rework an implemented PR.
+
 ## Branch Naming Conventions
 
 We use conventional branch names to organize work:

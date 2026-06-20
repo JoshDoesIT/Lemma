@@ -75,3 +75,4 @@ nav:
   - Contributing:
     - Developer Guide: contributing/index.md
     - Migration Guides: contributing/migrations.md
+    - RFC Template: contributing/rfc-template.md
