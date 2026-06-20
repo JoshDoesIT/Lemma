@@ -791,7 +791,7 @@ Output reports how many events were ingested and how many were skipped as duplic
 Run the CI/CD compliance gate over the knowledge graph. Exits non-zero if any control in the selected framework has zero satisfying policies, so pipelines can fail builds on compliance regressions.
 
 ```bash
-lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOAT]
+lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOAT] [--policy-dir <PATH>]
 ```
 
 | Option | Default | Description |
@@ -799,8 +799,33 @@ lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOA
 | `--framework` | all frameworks in the graph | Restrict the check to a single framework (e.g. `nist-800-53`) |
 | `--format` | `text` | Output format: `text` (human-readable Rich table), `json` (machine-parseable), or `sarif` (SARIF 2.1.0 for GitHub Code Scanning / GitLab CI ingestion) |
 | `--min-confidence` | `0.0` | Only count `SATISFIES` edges whose `confidence` attribute is at or above this floor. Default `0.0` accepts every edge (preserves v0 behavior). Operators raise this in CI to demand a higher bar than the auto-accept threshold. |
+| `--policy-dir` | (none) | Directory of OPA/Rego (`.rego`) policies evaluated against the compliance graph and evidence log. Violations count toward the gate alongside coverage. Requires the `opa` binary on `PATH`. |
 
 **Pass criterion.** A control is `PASSED` if at least one policy has a `SATISFIES` edge pointing at it whose `confidence` ≥ `--min-confidence`; `FAILED` otherwise. Edges with no recorded confidence are treated as fully trusted (default `1.0`) so legacy / external-tool-written edges keep working.
+
+**Policy-as-Code (`--policy-dir`).** Built-in checks only answer "is every control covered?". For richer, organization-specific assertions — "no IAM user without MFA", "every change ticket was approved" — point `--policy-dir` at a directory of OPA/Rego policies. Lemma shells out to the `opa` binary (`opa eval`, same shell-out pattern as `lemma scope discover network` → `nmap`); a missing `opa` exits `1` with an install hint. Each `.rego` file in the directory (non-recursive) is evaluated; each violation it emits counts as one `failed` in the result and is rendered in `text` / `json` / `sarif` output. A policy that emits no violations records one `PASSED` policy outcome.
+
+Every policy declares `package lemma` and a `deny` rule that is a **set of violation message strings**; Lemma queries `data.lemma.deny` per file:
+
+```rego
+package lemma
+
+deny[msg] {
+    some node in input.graph.nodes
+    node.type == "Control"
+    count({src | input.graph.edges[_].relationship == "SATISFIES"; input.graph.edges[_].target == node.id}) == 0
+    msg := sprintf("control %s has no satisfying policy", [node.control_id])
+}
+```
+
+**Rego `input` document.** Policies read two well-documented top-level paths:
+
+| Path | Shape |
+|------|-------|
+| `input.graph` | The full compliance graph export — `{"nodes": [...], "edges": [...]}`, identical to `lemma graph export` / `ComplianceGraph.export_json()`. Node `type` is `Framework` / `Control` / `Policy` / `Resource` / …; edge `relationship` is `SATISFIES` / `SCOPED_TO` / … with an optional `confidence`. |
+| `input.evidence` | The signed evidence log as a list of OCSF event objects (`EvidenceLog.read_all()`), each a plain JSON dict (`class_uid`, `time`, `metadata`, …). Empty list when no evidence has been collected. |
+
+Invalid Rego (parse error) exits `1` with a message naming the offending file.
 
 **`--min-confidence` vs `ai.automation.thresholds.map`.** They're orthogonal: `ai.automation.thresholds.map` (default 0.85) governs whether `lemma map` *auto-accepts* a new mapping into the graph as a SATISFIES edge. `--min-confidence` filters which already-accepted edges *count toward `lemma check`'s pass/fail*. A mapping accepted at 0.85 can still be filtered out by `lemma check --min-confidence 0.95` for stricter CI gating.
 
@@ -821,12 +846,22 @@ lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOA
       "satisfying_policies": []
     }
   ],
-  "total": 1,
+  "policy_outcomes": [
+    {
+      "policy_file": "mfa.rego",
+      "rule": "deny",
+      "status": "FAILED",
+      "message": "IAM user alice has no MFA"
+    }
+  ],
+  "total": 2,
   "passed": 0,
-  "failed": 1,
+  "failed": 2,
   "min_confidence_applied": 0.0
 }
 ```
+
+`policy_outcomes` is empty unless `--policy-dir` is given. Both control outcomes and policy outcomes fold into the aggregate `total` / `passed` / `failed` counts; a Rego violation increments `failed` and fails the gate just like an uncovered control.
 
 **SARIF output.** `--format sarif` emits SARIF 2.1.0 JSON for ingestion into GitHub Code Scanning (`github/codeql-action/upload-sarif@v3`) or GitLab's SAST report ingestion. Only `FAILED` controls become SARIF results — passing controls are not findings, so they don't clutter the Security tab. Each result carries:
 

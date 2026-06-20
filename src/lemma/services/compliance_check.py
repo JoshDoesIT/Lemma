@@ -115,6 +115,7 @@ def to_sarif(result: CheckResult) -> SarifLog:
     which Lemma doesn't do today.
     """
     failed = [o for o in result.outcomes if o.status == CheckStatus.FAILED]
+    failed_policies = [o for o in result.policy_outcomes if o.status == CheckStatus.FAILED]
 
     rules = [
         SarifRule(
@@ -124,6 +125,21 @@ def to_sarif(result: CheckResult) -> SarifLog:
         )
         for outcome in failed
     ]
+    # One SARIF rule per offending Rego policy file (deduped) so Code Scanning
+    # groups every violation from a file under the same rule.
+    seen_policy_rules: set[str] = set()
+    for policy in failed_policies:
+        rule_id = f"rego:{policy.policy_file}"
+        if rule_id in seen_policy_rules:
+            continue
+        seen_policy_rules.add(rule_id)
+        rules.append(
+            SarifRule(
+                id=rule_id,
+                name=policy.policy_file,
+                short_description=SarifMessage(text=f"Rego policy {policy.policy_file}"),
+            )
+        )
 
     sarif_results = [
         SarifResult(
@@ -151,6 +167,24 @@ def to_sarif(result: CheckResult) -> SarifLog:
         )
         for outcome in failed
     ]
+    # Rego policy violations land in the same SARIF run, located at the
+    # offending .rego file so Code Scanning annotates the policy source.
+    sarif_results.extend(
+        SarifResult(
+            rule_id=f"rego:{policy.policy_file}",
+            level="error",
+            message=SarifMessage(text=policy.message or f"{policy.rule} violation"),
+            locations=[
+                SarifLocation(
+                    physical_location=SarifPhysicalLocation(
+                        artifact_location=SarifArtifactLocation(uri=policy.policy_file),
+                    ),
+                ),
+            ],
+            properties={"rule": policy.rule},
+        )
+        for policy in failed_policies
+    )
 
     return SarifLog(
         runs=[

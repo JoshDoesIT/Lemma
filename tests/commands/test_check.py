@@ -229,3 +229,85 @@ def test_check_unknown_format_errors_loud(tmp_path: Path, monkeypatch):
     assert "text" in result.stdout.lower()
     assert "json" in result.stdout.lower()
     assert "sarif" in result.stdout.lower()
+
+
+def _write_rego(policy_dir: Path, name: str = "p.rego") -> Path:
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    (policy_dir / name).write_text("package lemma\n")
+    return policy_dir
+
+
+def test_check_policy_dir_violation_fails_gate(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services import policy_engine
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)  # coverage passes; policy should fail it
+    policies = _write_rego(tmp_path / "policies")
+
+    captured: dict = {}
+
+    def _fake_opa(rego_file, input_document):
+        captured["input"] = input_document
+        return ["IAM user alice has no MFA"]
+
+    monkeypatch.setattr(policy_engine, "_default_opa_runner", _fake_opa)
+
+    result = runner.invoke(app, ["check", "--format", "json", "--policy-dir", str(policies)])
+
+    assert result.exit_code == 1, result.stdout
+    payload = json.loads(result.stdout.strip())
+    assert payload["failed"] == 1
+    pol = payload["policy_outcomes"]
+    assert len(pol) == 1
+    assert pol[0]["status"] == "FAILED"
+    assert pol[0]["message"] == "IAM user alice has no MFA"
+    # The Rego input document exposes both graph and evidence.
+    assert "graph" in captured["input"]
+    assert "evidence" in captured["input"]
+
+
+def test_check_policy_dir_pass_keeps_gate_green(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services import policy_engine
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+    policies = _write_rego(tmp_path / "policies")
+
+    monkeypatch.setattr(policy_engine, "_default_opa_runner", lambda *_: [])
+
+    result = runner.invoke(app, ["check", "--format", "json", "--policy-dir", str(policies)])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout.strip())
+    assert [o["status"] for o in payload["policy_outcomes"]] == ["PASSED"]
+
+
+def test_check_policy_dir_in_sarif_output(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+    from lemma.services import policy_engine
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+    policies = _write_rego(tmp_path / "policies")
+    monkeypatch.setattr(policy_engine, "_default_opa_runner", lambda *_: ["boom"])
+
+    result = runner.invoke(app, ["check", "--format", "sarif", "--policy-dir", str(policies)])
+
+    assert result.exit_code == 1, result.stdout
+    payload = json.loads(result.stdout.strip())
+    results = payload["runs"][0]["results"]
+    assert any(r["ruleId"] == "rego:p.rego" and r["message"]["text"] == "boom" for r in results)
+
+
+def test_check_policy_dir_missing_errors(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+
+    result = runner.invoke(app, ["check", "--policy-dir", str(tmp_path / "nope")])
+
+    assert result.exit_code == 1
+    assert "does not exist" in result.stdout.lower() or "directory" in result.stdout.lower()
