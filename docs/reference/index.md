@@ -312,6 +312,24 @@ lemma coverage [OPTIONS]
 
 ---
 
+## `lemma debt`
+
+Report **Compliance Debt** — the controls that should be satisfied but aren't, framed as debt to burn down and ranked worst-first ([#40](https://github.com/JoshDoesIT/Lemma/issues/40) Reporting & Analytics). Computed from the same `CheckResult` as [`lemma check`](#lemma-check), so the CI gate and the debt metric always agree — distinct from `lemma coverage` (which measures cross-framework harmonization overlap).
+
+```bash
+lemma debt [--framework <ID>] [--format text|json] [--min-confidence FLOAT]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--framework` | all frameworks in the graph | Restrict the metric to a single framework. |
+| `--format` | `text` | Output format: `text` (Rich summary + per-framework table) or `json` (machine-readable, for trend tracking). |
+| `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as `lemma check`. |
+
+The summary reports total controls, the uncovered count, and the overall debt percentage; the table breaks debt down per framework (uncovered / total / debt %), worst first, so the next thing to pay down is at the top. Zero uncovered controls reports zero debt. JSON output (`total_controls`, `covered`, `uncovered`, `debt_pct`, `frameworks[]`) is stable for tracking compliance debt over time alongside technical debt. Exit `1` on an unknown `--framework` or outside a Lemma project.
+
+---
+
 ## `lemma gaps`
 
 Identify unmapped controls for a specific framework.

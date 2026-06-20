@@ -21,6 +21,7 @@ from lemma.commands.ai import ai_app
 from lemma.commands.check import check_command
 from lemma.commands.connector import connector_app
 from lemma.commands.control_plane import control_plane_app
+from lemma.commands.debt import debt_command
 from lemma.commands.evidence import evidence_app
 from lemma.commands.framework import framework_app
 from lemma.commands.graph import graph_app
@@ -62,6 +63,9 @@ app.command(name="report", help="Generate a static HTML compliance-posture dashb
     report_command
 )
 app.command(name="coverage", help="Per-framework coverage percentages")(coverage_command)
+app.command(name="debt", help="Report Compliance Debt — uncovered controls, ranked worst-first")(
+    debt_command
+)
 app.command(name="gaps", help="Identify unmapped controls")(gaps_command)
 app.command(name="diff", help="Compare framework versions")(diff_command)
 app.add_typer(framework_app, name="framework", help="Manage compliance frameworks")
