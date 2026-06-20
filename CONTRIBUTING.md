@@ -66,6 +66,7 @@ Before submitting your pull request, ensure you have completed the following:
 - [ ] Run the full test suite (`npm run test` or equivalent) and ensure all tests pass
 - [ ] Performed a self-review of your changes
 - [ ] Updated any relevant documentation (README, API docs, architecture diagrams)
+- [ ] For breaking changes: added a migration guide with before/after examples (see `docs/contributing/migrations.md`)
 - [ ] Ensure any new AI logic is highly transparent and logs its trace
 
 ## Getting Help

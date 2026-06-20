@@ -74,3 +74,4 @@ nav:
     - Connector Credentials: security/connector-secrets.md
   - Contributing:
     - Developer Guide: contributing/index.md
+    - Migration Guides: contributing/migrations.md
