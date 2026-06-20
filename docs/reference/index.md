@@ -422,6 +422,26 @@ lemma connector test <PATH>
 
 Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
 
+### `lemma connector run`
+
+Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).
+
+```bash
+lemma connector run --config lemma_connector_config.yaml --once        # one collection, then exit
+lemma connector run --config lemma_connector_config.yaml               # loop on the config's `schedule`
+lemma connector run --config lemma_connector_config.yaml --max-runs 24 # stop after N scheduled runs
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config` | (required) | Path to the connector config file. |
+| `--once` | `false` | Run a single collection immediately and exit (ignores `schedule`). |
+| `--max-runs` | `0` | Stop after this many scheduled runs (`0` = run indefinitely). |
+
+The schedule comes from the config's `schedule:` field, a standard 5-field cron expression (`minute hour day-of-month month day-of-week`) supporting `*`, ranges (`9-17`), lists (`1,2,3`), and steps (`*/30`). Without a `schedule` (and without `--once`) the command errors. `enabled: false` skips the run. For external schedulers (systemd timers, Kubernetes CronJobs, the platform cron), use `--once` per fire instead of the built-in loop.
+
+**Push vs. pull.** `lemma connector run` is the *pull* model (Lemma samples the source on a schedule). The complementary *push* model — an upstream/agent firing signed evidence at Lemma — is the Control Plane receiver's `POST /v1/evidence` (see [`lemma control-plane`](#lemma-control-plane)), which authenticates each envelope by its Ed25519 producer signature and appends it identically to a direct `collect()`. Use pull for systems best sampled periodically (config snapshots, ticket queues); push for systems that emit events as they happen.
+
 ### `lemma connector set-secret`
 
 Store or rotate a connector credential in the project's **encrypted secret store** (`.lemma/secrets.json`), an alternative to (or companion of) plain environment variables. The store is encrypted at rest with a key derived (PBKDF2-HMAC-SHA256, 600k iterations) from a passphrase in `LEMMA_SECRET_PASSPHRASE`; neither secret names nor values appear in plaintext on disk, and the file is written `0600`.

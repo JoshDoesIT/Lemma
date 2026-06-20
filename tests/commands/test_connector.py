@@ -189,3 +189,130 @@ class TestConnectorSecrets:
             secret_store=SecretStore(tmp_path / ".lemma" / "secrets.json", passphrase="unit-pass"),
         )
         assert second.config["token"] == "new"
+
+
+class TestConnectorRun:
+    def _init_project(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".lemma").mkdir()
+
+    def _stub_connector(self, counter: list):
+        """A connector whose collect() emits one finding and counts calls."""
+        from datetime import UTC, datetime
+
+        from lemma.models.connector_manifest import ConnectorManifest
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connector import Connector
+
+        class _Stub(Connector):
+            def __init__(self) -> None:
+                self.manifest = ConnectorManifest(
+                    name="stub", version="0.1.0", producer="Stub", description="x"
+                )
+
+            def collect(self):
+                counter.append(1)
+                yield ComplianceFinding(
+                    class_name="Compliance Finding",
+                    category_uid=2000,
+                    category_name="Findings",
+                    type_uid=200301,
+                    activity_id=1,
+                    time=datetime.now(UTC),
+                    message="stub",
+                    status_id=1,
+                    metadata={
+                        "version": "1.3.0",
+                        "product": {"name": "Stub"},
+                        "uid": f"stub:{len(counter)}",
+                    },
+                )
+
+        return _Stub()
+
+    def test_run_once_collects_and_exits(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        calls: list = []
+        stub = self._stub_connector(calls)
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict", lambda *a, **k: stub
+        )
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig: {}\n")
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg), "--once"])
+        assert result.exit_code == 0, result.stdout
+        assert len(calls) == 1
+        assert "Collected" in result.stdout
+
+    def test_watch_runs_max_runs_times(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        calls: list = []
+        stub = self._stub_connector(calls)
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict", lambda *a, **k: stub
+        )
+        # Don't actually sleep between scheduled runs.
+        monkeypatch.setattr("lemma.commands.connector._sleep_until", lambda _t: None)
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig: {}\nschedule: '* * * * *'\n")
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg), "--max-runs", "3"])
+        assert result.exit_code == 0, result.stdout
+        assert len(calls) == 3
+
+    def test_watch_without_schedule_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict",
+            lambda *a, **k: self._stub_connector([]),
+        )
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig: {}\n")  # no schedule
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg)])
+        assert result.exit_code == 1
+        assert "schedule" in result.stdout.lower()
+
+    def test_invalid_schedule_errors(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict",
+            lambda *a, **k: self._stub_connector([]),
+        )
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig: {}\nschedule: 'not a cron'\n")
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg), "--max-runs", "1"])
+        assert result.exit_code == 1
+        assert "schedule" in result.stdout.lower()
+
+    def test_disabled_config_skips(self, tmp_path: Path, monkeypatch):
+        from lemma.cli import app
+
+        self._init_project(tmp_path, monkeypatch)
+        calls: list = []
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict",
+            lambda *a, **k: self._stub_connector(calls),
+        )
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig: {}\nenabled: false\n")
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg), "--once"])
+        assert result.exit_code == 0
+        assert "disabled" in result.stdout.lower()
+        assert calls == []

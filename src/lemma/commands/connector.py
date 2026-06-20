@@ -172,6 +172,120 @@ def rm_secret_command(
     console.print(f"[green]Removed[/green] secret [cyan]{name}[/cyan].")
 
 
+def _sleep_until(target) -> None:
+    """Sleep until ``target`` (a tz-aware datetime). Seam for tests."""
+    import time
+    from datetime import UTC, datetime
+
+    seconds = (target - datetime.now(UTC)).total_seconds()
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def _run_connector_once(connector, evidence_log) -> None:
+    """Collect from ``connector`` into ``evidence_log`` and report the tally."""
+    result = connector.run(evidence_log)
+    console.print(
+        f"[green]Collected[/green] from [cyan]{connector.manifest.name}[/cyan]: "
+        f"{result.ingested} new, {result.skipped_duplicates} duplicate(s) skipped."
+    )
+
+
+@connector_app.command(
+    name="run",
+    help="Run a configured connector once, or on its schedule (pull execution model).",
+)
+def run_command(
+    config: str = typer.Option(
+        ...,
+        "--config",
+        help="Path to a lemma_connector_config.yaml describing the connector to run.",
+    ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Run a single collection now and exit (ignores the schedule).",
+    ),
+    max_runs: int = typer.Option(
+        0,
+        "--max-runs",
+        help="Stop after this many scheduled runs (0 = run indefinitely).",
+        min=0,
+    ),
+) -> None:
+    """Scheduled "pull" execution for a connector (Refs #111).
+
+    Loads the connector from a config file (the same format as
+    ``lemma evidence collect --config``), then either runs it once
+    (``--once``) or repeatedly on the config's cron ``schedule`` — no external
+    orchestrator required. Each run appends to the project's signed evidence
+    log, deduped by the log's per-day guard.
+    """
+    import os
+    from datetime import UTC, datetime
+
+    from lemma.services.connector_config import load_connector_config
+    from lemma.services.cron import CronSchedule
+    from lemma.services.evidence_log import EvidenceLog
+    from lemma.services.secret_store import SecretStore
+
+    project = Path.cwd()
+    if not (project / ".lemma").exists():
+        _fail("Not a Lemma project. Run `lemma init` first.")
+
+    secret_store = None
+    if os.environ.get("LEMMA_SECRET_PASSPHRASE"):
+        secret_store = SecretStore(project / ".lemma" / "secrets.json")
+
+    try:
+        cfg = load_connector_config(Path(config), secret_store=secret_store)
+    except (FileNotFoundError, ValueError) as exc:
+        _fail(str(exc))
+
+    if not cfg.enabled:
+        console.print(
+            f"[yellow]Connector '{cfg.connector}' is disabled in config; skipping.[/yellow]"
+        )
+        return
+
+    # Reuse the first-party connector factory from the evidence command.
+    from lemma.commands.evidence import _connector_from_config_dict
+
+    try:
+        connector = _connector_from_config_dict(cfg.connector, cfg.config)
+    except ValueError as exc:
+        _fail(str(exc))
+
+    evidence_log = EvidenceLog(log_dir=project / ".lemma" / "evidence")
+
+    if once:
+        _run_connector_once(connector, evidence_log)
+        return
+
+    if not cfg.schedule:
+        _fail(
+            "This config has no `schedule`; add a cron expression (e.g. "
+            "`schedule: '*/30 * * * *'`) or use --once."
+        )
+    try:
+        schedule = CronSchedule.parse(cfg.schedule)
+    except ValueError as exc:
+        _fail(f"Invalid schedule '{cfg.schedule}': {exc}")
+
+    console.print(
+        f"Scheduling [cyan]{cfg.connector}[/cyan] on [bold]{cfg.schedule}[/bold]"
+        + (f" for {max_runs} run(s)." if max_runs else " (Ctrl-C to stop).")
+    )
+    runs = 0
+    while True:
+        due = schedule.next_after(datetime.now(UTC))
+        _sleep_until(due)
+        _run_connector_once(connector, evidence_log)
+        runs += 1
+        if max_runs and runs >= max_runs:
+            break
+
+
 @connector_app.command(
     name="init",
     help="Scaffold a new connector project with a working reference implementation.",
