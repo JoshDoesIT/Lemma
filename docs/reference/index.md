@@ -1554,7 +1554,7 @@ lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure]
 | `--host` | (required) | vCenter hostname (e.g. `vcenter.example.com`). Whitespace-only values are rejected. |
 | `--port` | `443` | vCenter port. |
 | `--insecure` | `false` | Skip SSL verification. Lab/dev vCenters with self-signed certs only — production deployments should configure proper certs and leave this off. |
-| `--datacenter` | (all) | Datacenter name filter. v0 reserves the flag; the service walks every datacenter rooted at `content.rootFolder` regardless. Per-datacenter filtering at the `CreateContainerView` level is tracked in [#154](https://github.com/JoshDoesIT/Lemma/issues/154). |
+| `--datacenter` | (all) | Datacenter name filter. When set, each kind's `CreateContainerView` is rooted at the matching datacenter's per-kind inventory folder (`vmFolder` / `hostFolder` / `datastoreFolder`), so a multi-datacenter vCenter only yields the requested datacenter's fleet (datacenters nested inside folders are resolved). Absent the flag, the service walks every datacenter rooted at `content.rootFolder` (default). An unmatched name exits `1` listing the available datacenters. |
 | `--vsphere-kind` | `vm,host,datastore` | Comma-separated kinds to enumerate. Unknown kind exits `1`. |
 | `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
 

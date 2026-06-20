@@ -37,6 +37,19 @@ _KIND_TO_VIM_TYPE: dict[str, Any] = {
     "datastore": vim.Datastore,
 }
 
+# When a datacenter filter is active, each kind's ContainerView is rooted at
+# that datacenter's dedicated inventory folder rather than the global
+# ``content.rootFolder``.
+_KIND_TO_DC_FOLDER: dict[str, str] = {
+    "vm": "vmFolder",
+    "host": "hostFolder",
+    "datastore": "datastoreFolder",
+}
+
+# Datacenters can be nested inside vim.Folder objects in vCenter; bound the
+# recursive descent so a malformed/cyclic inventory can't spin forever.
+_MAX_FOLDER_DEPTH = 50
+
 
 def discover_resources_from_vsphere(
     *,
@@ -55,9 +68,13 @@ def discover_resources_from_vsphere(
         vc_host: vCenter hostname; baked into resource ids so multi-vCenter
             discovery doesn't collide.
         datacenter: Optional datacenter-name filter. ``None`` = walk every
-            datacenter rooted at ``content.rootFolder``. v0 reserves the
-            argument; per-datacenter filtering at the ContainerView level is
-            a follow-up.
+            datacenter rooted at ``content.rootFolder`` (the global view).
+            When set, each kind's ContainerView is rooted at the matching
+            datacenter's per-kind inventory folder (``vmFolder`` /
+            ``hostFolder`` / ``datastoreFolder``), so a multi-datacenter
+            vCenter only yields the requested datacenter's fleet. An
+            unmatched name raises ``ValueError`` naming the available
+            datacenters.
         kinds: List of ``{"vm", "host", "datastore"}``. Unknown kind raises
             ``ValueError``. Empty list raises ``ValueError``.
 
@@ -68,7 +85,8 @@ def discover_resources_from_vsphere(
         still produce results.
 
     Raises:
-        ValueError: If ``kinds`` is empty or contains an unknown kind.
+        ValueError: If ``kinds`` is empty, contains an unknown kind, or
+            ``datacenter`` is set but no datacenter of that name exists.
     """
     if not kinds:
         msg = "discover_resources_from_vsphere requires at least one kind."
@@ -80,34 +98,83 @@ def discover_resources_from_vsphere(
         msg = f"Unknown vSphere kind(s): {', '.join(unknown)}. Known: {known}."
         raise ValueError(msg)
 
+    # Resolve the datacenter filter once up front so a typo'd name fails fast
+    # for every kind rather than per-kind.
+    matched_datacenters: list[Any] | None = None
+    if datacenter:
+        all_datacenters = _find_all_datacenters(content.rootFolder)
+        matched_datacenters = [dc for dc in all_datacenters if dc.name == datacenter]
+        if not matched_datacenters:
+            available = ", ".join(sorted(dc.name for dc in all_datacenters)) or "(none)"
+            msg = (
+                f"vSphere datacenter '{datacenter}' not found at {vc_host}. "
+                f"Available datacenters: {available}."
+            )
+            raise ValueError(msg)
+
     field_name_by_key = _build_custom_field_index(content)
 
     discovered: list[ResourceDefinition] = []
     for kind in kinds:
         vim_type = _KIND_TO_VIM_TYPE[kind]
-        try:
-            view = content.viewManager.CreateContainerView(content.rootFolder, [vim_type], True)
-        except (vim.fault.NoPermission, vim.fault.NotAuthenticated) as exc:
-            logger.warning("vSphere %s discovery skipped: %s", kind, exc)
-            continue
+        roots = _container_roots(content, kind, matched_datacenters)
+        for root in roots:
+            try:
+                view = content.viewManager.CreateContainerView(root, [vim_type], True)
+            except (vim.fault.NoPermission, vim.fault.NotAuthenticated) as exc:
+                logger.warning("vSphere %s discovery skipped: %s", kind, exc)
+                continue
 
-        try:
-            objects = list(view.view or [])
-        finally:
-            destroy = getattr(view, "Destroy", None)
-            if callable(destroy):
-                with contextlib.suppress(Exception):
-                    destroy()
+            try:
+                objects = list(view.view or [])
+            finally:
+                destroy = getattr(view, "Destroy", None)
+                if callable(destroy):
+                    with contextlib.suppress(Exception):
+                        destroy()
 
-        for obj in objects:
-            if kind == "vm":
-                discovered.append(_project_vm(obj, vc_host, field_name_by_key))
-            elif kind == "host":
-                discovered.append(_project_host(obj, vc_host, field_name_by_key))
-            elif kind == "datastore":
-                discovered.append(_project_datastore(obj, vc_host, field_name_by_key))
+            for obj in objects:
+                if kind == "vm":
+                    discovered.append(_project_vm(obj, vc_host, field_name_by_key))
+                elif kind == "host":
+                    discovered.append(_project_host(obj, vc_host, field_name_by_key))
+                elif kind == "datastore":
+                    discovered.append(_project_datastore(obj, vc_host, field_name_by_key))
 
     return discovered
+
+
+def _container_roots(content: Any, kind: str, datacenters: list[Any] | None) -> list[Any]:
+    """ContainerView roots for ``kind``.
+
+    No datacenter filter → the global ``content.rootFolder`` (one view).
+    A filter → the matching datacenters' per-kind inventory folders.
+    """
+    if datacenters is None:
+        return [content.rootFolder]
+    folder_attr = _KIND_TO_DC_FOLDER[kind]
+    return [getattr(dc, folder_attr) for dc in datacenters]
+
+
+def _find_all_datacenters(root_folder: Any) -> list[Any]:
+    """Collect every ``vim.Datacenter`` reachable from ``root_folder``.
+
+    vCenter lets operators nest datacenters inside ``vim.Folder`` objects, so
+    descend through child folders (bounded by ``_MAX_FOLDER_DEPTH``).
+    """
+    found: list[Any] = []
+    _collect_datacenters(root_folder, found, depth=0)
+    return found
+
+
+def _collect_datacenters(folder: Any, acc: list[Any], depth: int) -> None:
+    if depth > _MAX_FOLDER_DEPTH:
+        return
+    for child in getattr(folder, "childEntity", None) or []:
+        if isinstance(child, vim.Datacenter):
+            acc.append(child)
+        elif isinstance(child, vim.Folder):
+            _collect_datacenters(child, acc, depth + 1)
 
 
 def _build_custom_field_index(content: Any) -> dict[int, str]:

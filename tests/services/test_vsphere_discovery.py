@@ -276,6 +276,186 @@ class TestCustomAttributes:
         assert rd.attributes["vsphere"]["tags"] == {}
 
 
+def _make_datacenter(
+    *,
+    name: str,
+    vms: list | None = None,
+    hosts: list | None = None,
+    datastores: list | None = None,
+) -> Any:
+    """A vim.Datacenter mock with per-kind inventory folders.
+
+    Each datacenter exposes distinct ``vmFolder`` / ``hostFolder`` /
+    ``datastoreFolder`` sentinels so a ContainerView rooted at one of them
+    can be traced back to the datacenter that owns it.
+    """
+    dc = MagicMock(spec=vim.Datacenter)
+    dc.name = name
+    dc.vmFolder = MagicMock(name=f"{name}-vmFolder")
+    dc.hostFolder = MagicMock(name=f"{name}-hostFolder")
+    dc.datastoreFolder = MagicMock(name=f"{name}-datastoreFolder")
+    dc._lemma_inv = {
+        "vm": vms or [],
+        "host": hosts or [],
+        "datastore": datastores or [],
+    }
+    return dc
+
+
+_TYPE_TO_KIND = {
+    vim.VirtualMachine: "vm",
+    vim.HostSystem: "host",
+    vim.Datastore: "datastore",
+}
+
+
+def _multi_dc_content(
+    datacenters: list,
+    *,
+    custom_fields: list | None = None,
+    nest_under_folder: bool = False,
+) -> MagicMock:
+    """Content whose ContainerView honors which folder it is rooted at.
+
+    A view rooted at ``rootFolder`` aggregates every datacenter's inventory
+    (current "all datacenters" behavior); a view rooted at a datacenter's
+    per-kind folder returns only that datacenter's objects for the kind.
+    """
+    content = MagicMock()
+    root = MagicMock(name="rootFolder")
+    if nest_under_folder:
+        # Datacenters live inside an intermediate vim.Folder, exercising the
+        # recursive descent through childEntity.
+        inner = MagicMock(spec=vim.Folder)
+        inner.childEntity = list(datacenters)
+        root.childEntity = [inner]
+    else:
+        root.childEntity = list(datacenters)
+    content.rootFolder = root
+    content.customFieldsManager = MagicMock()
+    content.customFieldsManager.field = custom_fields or []
+
+    def _create_view(folder: Any, types: list, recursive: bool) -> Any:
+        kind = _TYPE_TO_KIND[types[0]]
+        view = MagicMock()
+        if folder is root:
+            objs: list = []
+            for dc in datacenters:
+                objs.extend(dc._lemma_inv[kind])
+            view.view = objs
+            return view
+        owner = next(
+            dc for dc in datacenters if folder in (dc.vmFolder, dc.hostFolder, dc.datastoreFolder)
+        )
+        view.view = owner._lemma_inv[kind]
+        return view
+
+    content.viewManager = MagicMock()
+    content.viewManager.CreateContainerView.side_effect = _create_view
+    return content
+
+
+class TestDatacenterFilter:
+    def test_filter_returns_only_matching_datacenter_resources(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        content = _multi_dc_content(
+            [
+                _make_datacenter(name="dc-east", vms=[_make_vm(moid="vm-east")]),
+                _make_datacenter(name="dc-west", vms=[_make_vm(moid="vm-west")]),
+            ]
+        )
+
+        result = discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            datacenter="dc-east",
+            kinds=["vm"],
+        )
+
+        ids = {r.id for r in result}
+        assert ids == {"vsphere-vc-vm-vm-east"}
+
+    def test_absent_filter_walks_every_datacenter(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        content = _multi_dc_content(
+            [
+                _make_datacenter(name="dc-east", vms=[_make_vm(moid="vm-east")]),
+                _make_datacenter(name="dc-west", vms=[_make_vm(moid="vm-west")]),
+            ]
+        )
+
+        result = discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            datacenter=None,
+            kinds=["vm"],
+        )
+
+        ids = {r.id for r in result}
+        assert ids == {"vsphere-vc-vm-vm-east", "vsphere-vc-vm-vm-west"}
+
+    def test_filter_roots_each_kind_at_its_own_datacenter_folder(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        dc = _make_datacenter(
+            name="dc-east",
+            vms=[_make_vm(moid="vm-1")],
+            hosts=[_make_host(moid="host-1")],
+        )
+        content = _multi_dc_content([dc])
+
+        discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            datacenter="dc-east",
+            kinds=["vm", "host"],
+        )
+
+        roots_used = {
+            call.args[0] for call in content.viewManager.CreateContainerView.call_args_list
+        }
+        assert dc.vmFolder in roots_used
+        assert dc.hostFolder in roots_used
+        assert content.rootFolder not in roots_used
+
+    def test_unknown_datacenter_raises_naming_available(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        content = _multi_dc_content(
+            [
+                _make_datacenter(name="dc-east", vms=[_make_vm(moid="vm-east")]),
+                _make_datacenter(name="dc-west", vms=[_make_vm(moid="vm-west")]),
+            ]
+        )
+
+        with pytest.raises(ValueError, match=r"(?i)datacenter.*nope|dc-east|dc-west"):
+            discover_resources_from_vsphere(
+                content=content,
+                vc_host="vc",
+                datacenter="nope",
+                kinds=["vm"],
+            )
+
+    def test_filter_finds_datacenter_nested_in_folder(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        content = _multi_dc_content(
+            [_make_datacenter(name="dc-east", vms=[_make_vm(moid="vm-east")])],
+            nest_under_folder=True,
+        )
+
+        result = discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            datacenter="dc-east",
+            kinds=["vm"],
+        )
+
+        assert {r.id for r in result} == {"vsphere-vc-vm-vm-east"}
+
+
 class TestErrorHandling:
     def test_unknown_kind_raises_value_error(self):
         from lemma.services.vsphere_discovery import discover_resources_from_vsphere
