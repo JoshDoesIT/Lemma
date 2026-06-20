@@ -63,24 +63,37 @@ function toPublicKey(pem: string): KeyObject {
   return createPublicKey(pem);
 }
 
-/** Sign an OCSF event's canonical bytes; returns a hex signature. */
-export function signEvent(event: OcsfEvent, privateKeyPem: string): string {
-  const message = Buffer.from(canonicalize(event), "utf8");
+/** Sign an arbitrary UTF-8 message with Ed25519; returns a hex signature. */
+export function signMessage(message: string, privateKeyPem: string): string {
   // Ed25519 takes a null digest algorithm in Node's sign/verify API.
-  const signature = nodeSign(null, message, toPrivateKey(privateKeyPem));
+  const signature = nodeSign(null, Buffer.from(message, "utf8"), toPrivateKey(privateKeyPem));
   return signature.toString("hex");
 }
 
-/** Verify a hex signature over an OCSF event's canonical bytes. */
-export function verifyEvent(
-  event: OcsfEvent,
+/** Verify a hex Ed25519 signature over a UTF-8 message. Safe on any error. */
+export function verifyMessage(
+  message: string,
   signatureHex: string,
   publicKeyPem: string,
 ): boolean {
   try {
-    const message = Buffer.from(canonicalize(event), "utf8");
-    return nodeVerify(null, message, toPublicKey(publicKeyPem), Buffer.from(signatureHex, "hex"));
+    return nodeVerify(
+      null,
+      Buffer.from(message, "utf8"),
+      toPublicKey(publicKeyPem),
+      Buffer.from(signatureHex, "hex"),
+    );
   } catch {
     return false;
   }
+}
+
+/** Sign an OCSF event's canonical bytes; returns a hex signature. */
+export function signEvent(event: OcsfEvent, privateKeyPem: string): string {
+  return signMessage(canonicalize(event), privateKeyPem);
+}
+
+/** Verify a hex signature over an OCSF event's canonical bytes. */
+export function verifyEvent(event: OcsfEvent, signatureHex: string, publicKeyPem: string): boolean {
+  return verifyMessage(canonicalize(event), signatureHex, publicKeyPem);
 }

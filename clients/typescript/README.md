@@ -61,13 +61,31 @@ verifyEvent(ev, sig, keys.publicKeyPem);          // true; tampering or a wrong 
 Events are canonicalized (recursively key-sorted JSON) before signing so the
 bytes are deterministic.
 
+## Hash-chained evidence log
+
+`EvidenceLog` binds each event into a signed, append-only chain — the TS
+counterpart of the Python log:
+
+```ts
+import { EvidenceLog, complianceFinding, generateKeyPair } from "@lemma/connector-sdk";
+
+const keys = generateKeyPair();
+const log = new EvidenceLog(keys.privateKeyPem, keys.publicKeyPem, "acme-key");
+log.append(complianceFinding({ message: "ok", statusId: 1, uid: "acme:x:2026-06-20", producer: "Acme" }));
+log.verify(); // [{ index: 0, verdict: "PROVEN", reason: "" }, ...]
+```
+
+`entryHash = sha256(prevHash || canonical(event))` and the entry hash is
+Ed25519-signed; tampering with an event, a signature, or the chain link
+surfaces as `VIOLATED` / `DEGRADED` on `verify()`.
+
 ## What's here vs deferred
 
-- **Here**: OCSF event types (`complianceFinding` factory), the `Connector`
-  base with `collect()` / `run()`, a `ReferenceConnector`, and Ed25519
-  signing / verification (`generateKeyPair`, `signEvent`, `verifyEvent`,
-  `canonicalize`).
-- **Deferred** (tracked on #108): the full hash-chained evidence log in
-  TypeScript with `prev_hash` chaining matching the Python entry-hash layout
-  (today the Python CLI persists), `npm` publishing, and richer OCSF classes
-  as connector work demands them.
+- **Here**: OCSF event types (`complianceFinding`), the `Connector` base
+  (`collect()` / `run()`), a `ReferenceConnector`, Ed25519 signing
+  (`generateKeyPair`, `signEvent`, `verifyEvent`, `canonicalize`), and a
+  hash-chained `EvidenceLog` (`append`, `entries`, `verify`).
+- **Deferred** (tracked on #108): byte-for-byte parity with the Python
+  entry-hash layout so a TS-produced envelope verifies on the Python side (the
+  chaining/verification semantics already match), `npm` publishing, and richer
+  OCSF classes as connector work demands them.

@@ -15,6 +15,10 @@ export {
   canonicalize,
   generateKeyPair,
   signEvent,
+  signMessage,
   verifyEvent,
+  verifyMessage,
 } from "./signing.ts";
 export type { Ed25519KeyPair } from "./signing.ts";
+export { EvidenceLog, GENESIS_HASH } from "./evidence.ts";
+export type { SignedEvidence, Verdict, VerifyResult } from "./evidence.ts";
