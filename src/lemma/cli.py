@@ -34,6 +34,7 @@ from lemma.commands.init import init_command
 from lemma.commands.map import map_command
 from lemma.commands.person import person_app
 from lemma.commands.query import query_command
+from lemma.commands.report import report_command
 from lemma.commands.resource import resource_app
 from lemma.commands.risk import risk_app
 from lemma.commands.scope import scope_app
@@ -57,6 +58,9 @@ app.command(name="check", help="Run the CI/CD compliance gate over the knowledge
     check_command
 )
 app.command(name="harmonize", help="Harmonize controls across frameworks")(harmonize_command)
+app.command(name="report", help="Generate a static HTML compliance-posture dashboard")(
+    report_command
+)
 app.command(name="coverage", help="Per-framework coverage percentages")(coverage_command)
 app.command(name="gaps", help="Identify unmapped controls")(gaps_command)
 app.command(name="diff", help="Compare framework versions")(diff_command)

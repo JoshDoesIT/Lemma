@@ -939,6 +939,24 @@ See `docs/guides/ci-cd-integration.md` for end-to-end GitHub Actions and GitLab 
 
 ---
 
+## `lemma report`
+
+Generate a **standalone HTML compliance-posture dashboard** from the knowledge graph — the first slice of the engineer-first dashboard ([#32](https://github.com/JoshDoesIT/Lemma/issues/32)). No server and no JavaScript build: one portable, brand-styled (Void Black / Terminal Green) file you can open locally, attach to an audit, or publish behind any static host.
+
+```bash
+lemma report [--framework <ID>] [--output <PATH>] [--min-confidence FLOAT]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--framework` | all frameworks in the graph | Restrict the report to a single framework (e.g. `nist-800-53`). |
+| `--output` | (stdout) | Write the HTML to this path (parent dirs created); otherwise the document is printed to stdout for piping/redirection. |
+| `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as [`lemma check`](#lemma-check), so the report and the CI gate agree. |
+
+The report shows aggregate pass/fail counts, a per-framework coverage bar, and a findings table of failed controls. It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles and framework names are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph/AI-trace views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
+
+---
+
 ## `lemma scope`
 
 Scope-as-code — declare which compliance frameworks apply to which slice of your infrastructure, and validate the declaration with a strict schema before it ever reaches an auditor.
