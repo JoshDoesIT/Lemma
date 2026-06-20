@@ -13,9 +13,14 @@ down is at the top.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
 from lemma.models.check_result import CheckResult, CheckStatus
+
+_HISTORY_FILE = "debt-history.jsonl"
 
 
 @dataclass(frozen=True)
@@ -82,3 +87,43 @@ def compute_compliance_debt(result: CheckResult) -> ComplianceDebt:
         uncovered=sum(uncovered.values()),
         frameworks=frameworks,
     )
+
+
+def record_debt_snapshot(
+    analytics_dir: Path,
+    debt: ComplianceDebt,
+    *,
+    at: datetime | None = None,
+) -> Path:
+    """Append a debt snapshot to the append-only history log, for trend tracking.
+
+    Returns the history file path. Snapshots are one JSON object per line
+    (``timestamp``, ``total_controls``, ``covered``, ``uncovered``,
+    ``debt_pct``) so a burn-down can be charted over time.
+    """
+    analytics_dir = Path(analytics_dir)
+    analytics_dir.mkdir(parents=True, exist_ok=True)
+    history_path = analytics_dir / _HISTORY_FILE
+    snapshot = {
+        "timestamp": (at or datetime.now(UTC)).isoformat(),
+        "total_controls": debt.total_controls,
+        "covered": debt.covered,
+        "uncovered": debt.uncovered,
+        "debt_pct": debt.debt_pct,
+    }
+    with history_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(snapshot) + "\n")
+    return history_path
+
+
+def read_debt_history(analytics_dir: Path) -> list[dict]:
+    """Read all debt snapshots in chronological (append) order."""
+    history_path = Path(analytics_dir) / _HISTORY_FILE
+    if not history_path.exists():
+        return []
+    snapshots: list[dict] = []
+    for line in history_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            snapshots.append(json.loads(line))
+    return snapshots

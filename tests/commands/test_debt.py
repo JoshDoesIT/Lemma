@@ -88,3 +88,31 @@ def test_debt_outside_project_errors(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["debt"])
     assert result.exit_code == 1
     assert "lemma init" in result.stdout.lower()
+
+
+def test_debt_snapshot_records_and_history_shows_trend(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=False)  # 50% debt
+
+    snap = runner.invoke(app, ["debt", "--snapshot"])
+    assert snap.exit_code == 0, snap.stdout
+    assert "Recorded" in snap.stdout
+    assert (tmp_path / ".lemma" / "analytics" / "debt-history.jsonl").is_file()
+
+    hist = runner.invoke(app, ["debt", "--history"])
+    assert hist.exit_code == 0, hist.stdout
+    assert "debt over time" in hist.stdout.lower()
+    assert "50" in hist.stdout
+
+
+def test_debt_history_empty_message(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=True)
+
+    result = runner.invoke(app, ["debt", "--history"])
+    assert result.exit_code == 0
+    assert "no debt snapshots" in result.stdout.lower()
