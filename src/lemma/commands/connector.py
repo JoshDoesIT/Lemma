@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from lemma.models.connector_manifest import ConnectorManifest
 from lemma.sdk.connector import Connector
@@ -87,6 +88,37 @@ Scaffolded by `lemma connector init`.
 def _fail(msg: str) -> None:
     console.print(f"[red]Error:[/red] {msg}")
     raise typer.Exit(code=1)
+
+
+@connector_app.command(
+    name="registry",
+    help="List the available first-party connectors and their required config.",
+)
+def registry_command() -> None:
+    """Show the connector registry — the catalog of available connectors."""
+    from lemma.services.connector_registry import FIRST_PARTY_REGISTRY
+
+    table = Table(title=f"First-party connectors ({len(FIRST_PARTY_REGISTRY)})")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Producer")
+    table.add_column("Config keys")
+    table.add_column("Secret (env var)")
+    table.add_column("Description")
+    for d in sorted(FIRST_PARTY_REGISTRY, key=lambda x: x.name):
+        table.add_row(
+            d.name,
+            d.producer,
+            ", ".join(d.config_keys) or "—",
+            d.required_secret or "—",
+            d.description,
+        )
+    # Wider console so the secret/description columns aren't truncated on
+    # narrow terminals (mirrors `lemma evidence log`).
+    Console(width=160).print(table)
+    console.print(
+        "\nUse a connector via [bold]lemma evidence collect <name>[/bold] or a "
+        "[bold]lemma_connector_config.yaml[/bold] (see `lemma evidence collect --config`)."
+    )
 
 
 def _secret_store():

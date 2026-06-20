@@ -464,6 +464,16 @@ lemma connector test <PATH>
 
 Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
 
+### `lemma connector registry`
+
+List the available first-party connectors and their required configuration — the queryable connector catalog ([#34](https://github.com/JoshDoesIT/Lemma/issues/34) Connector Registry).
+
+```bash
+lemma connector registry
+```
+
+Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
+
 ### `lemma connector run`
 
 Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).
