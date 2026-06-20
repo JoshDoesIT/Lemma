@@ -456,6 +456,85 @@ class TestDatacenterFilter:
         assert {r.id for r in result} == {"vsphere-vc-vm-vm-east"}
 
 
+class TestCisTags:
+    def test_modern_tags_project_under_cis_tags(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        def _resolver(moid: str, vim_type: str) -> dict[str, str]:
+            assert vim_type == "VirtualMachine"
+            if moid == "vm-1":
+                return {"Environment": "prod", "Owner": "platform"}
+            return {}
+
+        content = _fake_content(vms=[_make_vm(moid="vm-1")])
+
+        rd = discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            kinds=["vm"],
+            tag_resolver=_resolver,
+        )[0]
+
+        assert rd.attributes["vsphere"]["cis_tags"] == {
+            "Environment": "prod",
+            "Owner": "platform",
+        }
+
+    def test_cis_tags_default_empty_without_resolver(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        content = _fake_content(vms=[_make_vm(moid="vm-1")])
+
+        rd = discover_resources_from_vsphere(content=content, vc_host="vc", kinds=["vm"])[0]
+
+        assert rd.attributes["vsphere"]["cis_tags"] == {}
+
+    def test_resolver_receives_correct_vim_type_per_kind(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        seen: list[tuple[str, str]] = []
+
+        def _resolver(moid: str, vim_type: str) -> dict[str, str]:
+            seen.append((moid, vim_type))
+            return {}
+
+        content = _fake_content(
+            vms=[_make_vm(moid="vm-1")],
+            hosts=[_make_host(moid="host-1")],
+            datastores=[_make_datastore(moid="ds-1")],
+        )
+
+        discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            kinds=["vm", "host", "datastore"],
+            tag_resolver=_resolver,
+        )
+
+        assert ("vm-1", "VirtualMachine") in seen
+        assert ("host-1", "HostSystem") in seen
+        assert ("ds-1", "Datastore") in seen
+
+    def test_legacy_custom_attributes_unchanged_alongside_cis_tags(self):
+        from lemma.services.vsphere_discovery import discover_resources_from_vsphere
+
+        custom_fields = [_custom_field_def(100, "legacy_env")]
+        vm = _make_vm(moid="vm-1", custom_value=[_custom_value(100, "prod")])
+        content = _fake_content(vms=[vm], custom_fields=custom_fields)
+
+        rd = discover_resources_from_vsphere(
+            content=content,
+            vc_host="vc",
+            kinds=["vm"],
+            tag_resolver=lambda *_: {"Environment": "prod"},
+        )[0]
+
+        # Legacy custom attributes stay under `tags`; modern tags are
+        # namespaced under `cis_tags` so the two never collide.
+        assert rd.attributes["vsphere"]["tags"] == {"legacy_env": "prod"}
+        assert rd.attributes["vsphere"]["cis_tags"] == {"Environment": "prod"}
+
+
 class TestErrorHandling:
     def test_unknown_kind_raises_value_error(self):
         from lemma.services.vsphere_discovery import discover_resources_from_vsphere

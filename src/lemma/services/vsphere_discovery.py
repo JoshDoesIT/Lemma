@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from pyVmomi import vim
@@ -31,10 +32,21 @@ from lemma.models.resource import ResourceDefinition
 
 logger = logging.getLogger(__name__)
 
+# A tag resolver maps (managed-object id, vAPI type name) -> {category: tag}.
+TagResolver = Callable[[str, str], dict[str, str]]
+
 _KIND_TO_VIM_TYPE: dict[str, Any] = {
     "vm": vim.VirtualMachine,
     "host": vim.HostSystem,
     "datastore": vim.Datastore,
+}
+
+# vAPI (cis.tagging) expects the vSphere managed-object type name, which
+# differs from Lemma's short kind label.
+_KIND_TO_VAPI_TYPE: dict[str, str] = {
+    "vm": "VirtualMachine",
+    "host": "HostSystem",
+    "datastore": "Datastore",
 }
 
 # When a datacenter filter is active, each kind's ContainerView is rooted at
@@ -57,6 +69,7 @@ def discover_resources_from_vsphere(
     vc_host: str,
     datacenter: str | None = None,
     kinds: list[str],
+    tag_resolver: TagResolver | None = None,
 ) -> list[ResourceDefinition]:
     """Discover vSphere resources across the requested kinds.
 
@@ -77,6 +90,11 @@ def discover_resources_from_vsphere(
             datacenters.
         kinds: List of ``{"vm", "host", "datastore"}``. Unknown kind raises
             ``ValueError``. Empty list raises ``ValueError``.
+        tag_resolver: Optional callable ``(moid, vapi_type) -> {category:
+            tag}`` resolving modern vSphere Tags (vAPI / ``cis.tagging``) for
+            a managed object. ``None`` (default) skips modern-tag projection;
+            ``vsphere.cis_tags`` is then an empty dict. Legacy Custom
+            Attributes always project to ``vsphere.tags`` regardless.
 
     Returns:
         List of ``ResourceDefinition`` records, one per discovered managed
@@ -134,14 +152,30 @@ def discover_resources_from_vsphere(
                         destroy()
 
             for obj in objects:
+                cis_tags = _resolve_cis_tags(tag_resolver, obj, kind)
                 if kind == "vm":
-                    discovered.append(_project_vm(obj, vc_host, field_name_by_key))
+                    discovered.append(_project_vm(obj, vc_host, field_name_by_key, cis_tags))
                 elif kind == "host":
-                    discovered.append(_project_host(obj, vc_host, field_name_by_key))
+                    discovered.append(_project_host(obj, vc_host, field_name_by_key, cis_tags))
                 elif kind == "datastore":
-                    discovered.append(_project_datastore(obj, vc_host, field_name_by_key))
+                    discovered.append(_project_datastore(obj, vc_host, field_name_by_key, cis_tags))
 
     return discovered
+
+
+def _resolve_cis_tags(tag_resolver: TagResolver | None, obj: Any, kind: str) -> dict[str, str]:
+    """Resolve modern vSphere Tags for a managed object, or ``{}``.
+
+    A resolver failure is logged and degraded to an empty dict so a vAPI
+    hiccup never aborts an otherwise-good SOAP discovery.
+    """
+    if tag_resolver is None:
+        return {}
+    try:
+        return tag_resolver(obj._moId, _KIND_TO_VAPI_TYPE[kind])
+    except Exception as exc:
+        logger.warning("vSphere %s %s tag resolution skipped: %s", kind, obj._moId, exc)
+        return {}
 
 
 def _container_roots(content: Any, kind: str, datacenters: list[Any] | None) -> list[Any]:
@@ -191,7 +225,12 @@ def _project_tags(obj: Any, field_name_by_key: dict[int, str]) -> dict[str, str]
     return out
 
 
-def _project_vm(vm: Any, vc_host: str, field_name_by_key: dict[int, str]) -> ResourceDefinition:
+def _project_vm(
+    vm: Any,
+    vc_host: str,
+    field_name_by_key: dict[int, str],
+    cis_tags: dict[str, str],
+) -> ResourceDefinition:
     summary = vm.summary
     config = summary.config
     runtime = summary.runtime
@@ -210,12 +249,18 @@ def _project_vm(vm: Any, vc_host: str, field_name_by_key: dict[int, str]) -> Res
                 "cpu_count": config.numCpu,
                 "memory_mb": config.memorySizeMB,
                 "tags": _project_tags(vm, field_name_by_key),
+                "cis_tags": cis_tags,
             }
         },
     )
 
 
-def _project_host(host: Any, vc_host: str, field_name_by_key: dict[int, str]) -> ResourceDefinition:
+def _project_host(
+    host: Any,
+    vc_host: str,
+    field_name_by_key: dict[int, str],
+    cis_tags: dict[str, str],
+) -> ResourceDefinition:
     summary = host.summary
     config = summary.config
     runtime = summary.runtime
@@ -237,13 +282,17 @@ def _project_host(host: Any, vc_host: str, field_name_by_key: dict[int, str]) ->
                 "vendor": hardware.vendor,
                 "model": hardware.model,
                 "tags": _project_tags(host, field_name_by_key),
+                "cis_tags": cis_tags,
             }
         },
     )
 
 
 def _project_datastore(
-    ds: Any, vc_host: str, field_name_by_key: dict[int, str]
+    ds: Any,
+    vc_host: str,
+    field_name_by_key: dict[int, str],
+    cis_tags: dict[str, str],
 ) -> ResourceDefinition:
     summary = ds.summary
     return ResourceDefinition(
@@ -260,6 +309,7 @@ def _project_datastore(
                 "capacity_bytes": summary.capacity,
                 "free_bytes": summary.freeSpace,
                 "tags": _project_tags(ds, field_name_by_key),
+                "cis_tags": cis_tags,
             }
         },
     )

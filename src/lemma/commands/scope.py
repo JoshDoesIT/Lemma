@@ -14,9 +14,10 @@ Sub-commands:
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import typer
 import yaml
@@ -63,10 +64,23 @@ from lemma.services.terraform_state import (
     discover_resources_from_state as tf_state_discover_resources,
 )
 from lemma.services.vsphere_discovery import (
+    TagResolver,
+)
+from lemma.services.vsphere_discovery import (
     discover_resources_from_vsphere as vsphere_discover_resources,
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
+
+
+class _VsphereClients(NamedTuple):
+    """The pair of vSphere clients a discover run uses: the SOAP SDK content
+    (pyVmomi) and an optional modern-tag resolver (vAPI / cis.tagging)."""
+
+    content: Any
+    tag_resolver: TagResolver | None
+
 
 scope_app = typer.Typer(
     name="scope",
@@ -858,12 +872,41 @@ def _build_vsphere_clients(host: str, port: int, insecure: bool):
         msg = f"vCenter '{host}:{port}' is unreachable: {exc}"
         raise ValueError(msg) from exc
 
+    resolver = _build_vsphere_tag_resolver(host, port, user, password, insecure)
     try:
-        yield si.RetrieveContent()
+        yield _VsphereClients(
+            content=si.RetrieveContent(),
+            tag_resolver=resolver.tags_for if resolver is not None else None,
+        )
     finally:
-        # Best-effort: a failed Disconnect must not mask a discovery error.
+        # Best-effort: a failed teardown must not mask a discovery error.
         with contextlib.suppress(Exception):
             Disconnect(si)
+        if resolver is not None:
+            with contextlib.suppress(Exception):
+                resolver.close()
+
+
+def _build_vsphere_tag_resolver(host: str, port: int, user: str, password: str, insecure: bool):
+    """Open a vAPI tag resolver (modern Tags + Categories), or ``None``.
+
+    The Automation REST API (vAPI / ``cis.tagging``) uses a separate session
+    from the SOAP SDK. Tag enrichment is best-effort: a vCenter without the
+    Automation API, or any auth/network failure, degrades to ``None`` so the
+    legacy Custom-Attribute projection (and the rest of discovery) still runs.
+    """
+    from lemma.services.vsphere_tags import VsphereTagResolver
+
+    try:
+        return VsphereTagResolver.connect(
+            base_url=f"https://{host}:{port}",
+            user=user,
+            password=password,
+            verify=not insecure,
+        )
+    except Exception as exc:
+        logger.warning("vSphere vAPI tag enrichment unavailable on %s: %s", host, exc)
+        return None
 
 
 def _build_network_scanner(
@@ -1177,13 +1220,14 @@ def _build_candidates_for_provider(provider: str, **flags: Any) -> tuple[list, s
         try:
             with _build_vsphere_clients(
                 vc_host, flags["vsphere_port"], flags["insecure"]
-            ) as vsphere_content:
+            ) as vsphere_clients:
                 return (
                     vsphere_discover_resources(
-                        content=vsphere_content,
+                        content=vsphere_clients.content,
                         vc_host=vc_host,
                         datacenter=flags["datacenter"] or None,
                         kinds=kinds,
+                        tag_resolver=vsphere_clients.tag_resolver,
                     ),
                     "vsphere",
                 )

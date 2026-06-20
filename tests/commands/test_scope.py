@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+def _vsphere_clients(*, content, tag_resolver=None):
+    """Stand-in for ``scope._VsphereClients`` (content + optional resolver)."""
+    return SimpleNamespace(content=content, tag_resolver=tag_resolver)
 
 
 def _valid_yaml(name: str = "prod-us-east") -> str:
@@ -2087,7 +2093,9 @@ class TestScopeDiscover:
         )
         monkeypatch.setattr(
             "lemma.commands.scope._build_vsphere_clients",
-            lambda host, port, insecure: contextlib.nullcontext(object()),
+            lambda host, port, insecure: contextlib.nullcontext(
+                _vsphere_clients(content=object(), tag_resolver=None)
+            ),
         )
 
         result = runner.invoke(
@@ -2114,7 +2122,9 @@ class TestScopeDiscover:
         )
         monkeypatch.setattr(
             "lemma.commands.scope._build_vsphere_clients",
-            lambda host, port, insecure: contextlib.nullcontext(object()),
+            lambda host, port, insecure: contextlib.nullcontext(
+                _vsphere_clients(content=object(), tag_resolver=None)
+            ),
         )
 
         result = runner.invoke(
@@ -2289,6 +2299,12 @@ class TestVsphereSessionCleanup:
 
         monkeypatch.setattr(pvc, "SmartConnect", lambda **_kw: fake_si, raising=False)
         monkeypatch.setattr(pvc, "Disconnect", lambda si: disconnected.append(si), raising=False)
+        # Keep the vAPI tag resolver out of these SOAP-session tests (it opens
+        # a separate HTTP session); its own cleanup is covered elsewhere.
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_vsphere_tag_resolver",
+            lambda *_a, **_k: None,
+        )
         monkeypatch.setenv("LEMMA_VSPHERE_USER", "administrator@vsphere.local")
         monkeypatch.setenv("LEMMA_VSPHERE_PASSWORD", "secret")
         return fake_si, disconnected
@@ -2298,8 +2314,9 @@ class TestVsphereSessionCleanup:
 
         fake_si, disconnected = self._patch_sdk(monkeypatch)
 
-        with _build_vsphere_clients("vcenter.example.com", 443, False) as content:
-            assert content == "CONTENT"
+        with _build_vsphere_clients("vcenter.example.com", 443, False) as clients:
+            assert clients.content == "CONTENT"
+            assert clients.tag_resolver is None
             assert disconnected == []  # still connected inside the block
 
         assert disconnected == [fake_si]
@@ -2316,6 +2333,34 @@ class TestVsphereSessionCleanup:
             raise RuntimeError("boom")
 
         assert disconnected == [fake_si]
+
+    def test_threads_and_closes_tag_resolver(self, monkeypatch):
+        import pyVim.connect as pvc
+
+        from lemma.commands.scope import _build_vsphere_clients
+
+        fake_si = MagicMock()
+        fake_si.RetrieveContent.return_value = "CONTENT"
+        monkeypatch.setattr(pvc, "SmartConnect", lambda **_kw: fake_si, raising=False)
+        monkeypatch.setattr(pvc, "Disconnect", lambda si: None, raising=False)
+        monkeypatch.setenv("LEMMA_VSPHERE_USER", "u")
+        monkeypatch.setenv("LEMMA_VSPHERE_PASSWORD", "p")
+
+        closed: list = []
+        fake_resolver = SimpleNamespace(
+            tags_for=lambda moid, vim_type: {"Environment": "prod"},
+            close=lambda: closed.append(True),
+        )
+        monkeypatch.setattr(
+            "lemma.commands.scope._build_vsphere_tag_resolver",
+            lambda *_a, **_k: fake_resolver,
+        )
+
+        with _build_vsphere_clients("vcenter.example.com", 443, False) as clients:
+            assert clients.tag_resolver("vm-1", "VirtualMachine") == {"Environment": "prod"}
+            assert closed == []  # resolver open during the run
+
+        assert closed == [True]  # closed on exit
 
     def test_missing_credentials_raises_before_connect(self, monkeypatch):
         import pyVim.connect as pvc

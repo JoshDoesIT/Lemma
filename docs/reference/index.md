@@ -1592,7 +1592,16 @@ match_rules:
     value: prod
 ```
 
-vSphere 6.0+ Tags (the vAPI / `cis.tagging` REST endpoints) are a separate auth domain and are tracked in [#156](https://github.com/JoshDoesIT/Lemma/issues/156). Any tag scheme already migrated to Custom Attributes works in v0.
+**Modern Tags + Categories → `vsphere.cis_tags.<category>`.** vSphere 6.0+ Tags live behind the vSphere Automation REST API (vAPI / `cis.tagging`), which uses a session separate from the SOAP SDK. During a discover run Lemma opens a second vAPI session (HTTP Basic against `POST /api/session`, same `LEMMA_VSPHERE_USER` / `LEMMA_VSPHERE_PASSWORD` credentials), then for each managed object resolves its attached tags into a `{category: tag}` dict projected under `cis_tags` — namespaced separately from the legacy `tags` dict so the two never collide:
+
+```yaml
+match_rules:
+  - source: vsphere.cis_tags.Environment
+    operator: equals
+    value: prod
+```
+
+Tag and category names are cached per run, so a fleet-wide discover resolves each category once. Modern-tag enrichment is **best-effort**: a vCenter without the Automation API, or any vAPI auth/network failure, degrades to an empty `cis_tags` dict (logged as a warning) while the SOAP discovery and legacy Custom-Attribute projection still run. On a category with multiple attached tags the last one wins; multi-cardinality categories are better matched on the legacy Custom-Attribute projection.
 
 **Per-kind RBAC tolerance.** A `vim.fault.NoPermission` or `vim.fault.NotAuthenticated` on one kind logs a warning and continues to the next; a service-account that can read VMs but not Hosts still produces useful output.
 
