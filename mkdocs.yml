@@ -63,6 +63,7 @@ nav:
   - Guides:
     - Tutorials: guides/index.md
     - Graph Query Cookbook: guides/graph-queries.md
+    - Connector Cookbook: guides/connector-cookbook.md
   - Reference:
     - API & CLI: reference/index.md
     - AI System Card: reference/ai-system-card.md
