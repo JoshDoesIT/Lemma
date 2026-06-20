@@ -41,6 +41,7 @@ from lemma.commands.risk import risk_app
 from lemma.commands.scope import scope_app
 from lemma.commands.status import status_command
 from lemma.commands.validate import validate_command
+from lemma.commands.whoami import whoami_command
 
 app = typer.Typer(
     name="lemma",
@@ -51,6 +52,7 @@ app = typer.Typer(
 app.command(name="init", help="Scaffold a compliance-as-code repository")(init_command)
 app.command(name="status", help="Show compliance posture summary")(status_command)
 app.command(name="validate", help="Validate an OSCAL JSON file")(validate_command)
+app.command(name="whoami", help="Show the current RBAC role and its permissions")(whoami_command)
 app.command(name="map", help="Map policies to framework controls")(map_command)
 app.command(name="query", help="Ask the compliance graph a question in plain English")(
     query_command

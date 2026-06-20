@@ -65,6 +65,26 @@ lemma validate catalog.json
 
 ---
 
+## `lemma whoami`
+
+Show the acting principal's RBAC role and the permissions it grants — the visible surface of the role-based access-control layer ([#38](https://github.com/JoshDoesIT/Lemma/issues/38) Multi-Tenancy & Access Control).
+
+```bash
+lemma whoami
+```
+
+The role is read from the `LEMMA_ROLE` environment variable (case-insensitive: `owner`, `engineer`, or read-only `auditor`); when unset it defaults to `owner`, so existing single-operator workflows keep full access (enforcement is opt-in until a multi-tenant principal store lands). The command prints the role and a permission grant table. An unrecognized `LEMMA_ROLE` exits `1` naming the valid roles.
+
+| Role | Holds |
+|------|-------|
+| `auditor` | Read-only: `read`, `export`, `verify_evidence`. |
+| `engineer` | Auditor's reads + `write_mapping`, `review_decision`, `manage_scopes`, `collect_evidence`, `manage_keys`. |
+| `owner` | Everything, including `manage_users`. |
+
+Roles are strictly privilege-ordered (`auditor ⊆ engineer ⊆ owner`). The same `authorize` / `require` checks back any future write-gating.
+
+---
+
 ## `lemma framework`
 
 Manage compliance frameworks. Has three subcommands.
