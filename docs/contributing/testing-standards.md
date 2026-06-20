@@ -83,8 +83,17 @@ rather than silently passing.
 
 ## Benchmarks
 
-Performance benchmarks (graph build/query, embedding, evidence verification at
-scale) are tracked as a future addition; when added they live alongside the
-suite behind a marker so they don't slow the default run. Until then, keep an
-eye on the runtime of new tests — the default suite should stay fast enough to
-run on every change.
+Performance benchmarks live under `tests/benchmarks/`, behind the `benchmark`
+marker, and are **skipped by default** so they never slow the suite or fail CI
+on timing noise:
+
+```bash
+uv run pytest tests/benchmarks/ --run-benchmark -s
+```
+
+Benchmarks assert **correctness** (node/edge counts), not wall-clock
+thresholds — the timing is printed for humans, not gated. The initial set
+covers compliance-graph build and export/traversal at scale (2,000 controls,
+200 policies); add new benchmarks here as new hot paths emerge (embedding,
+evidence verification at scale). Keep an eye on the runtime of regular tests
+too — the default suite should stay fast enough to run on every change.
