@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -2084,7 +2087,7 @@ class TestScopeDiscover:
         )
         monkeypatch.setattr(
             "lemma.commands.scope._build_vsphere_clients",
-            lambda host, port, insecure: object(),
+            lambda host, port, insecure: contextlib.nullcontext(object()),
         )
 
         result = runner.invoke(
@@ -2111,7 +2114,7 @@ class TestScopeDiscover:
         )
         monkeypatch.setattr(
             "lemma.commands.scope._build_vsphere_clients",
-            lambda host, port, insecure: object(),
+            lambda host, port, insecure: contextlib.nullcontext(object()),
         )
 
         result = runner.invoke(
@@ -2269,3 +2272,65 @@ class TestScopeDiscover:
         assert captured_service["cidrs"] == ["2001:db8::/64"]
         assert captured_service["label"] == "v6-lab"
         assert captured_service["ipv6"] is True
+
+
+class TestVsphereSessionCleanup:
+    """`_build_vsphere_clients` is a context manager that Disconnects the
+    vSphere SDK session on exit so long-running processes don't leak it
+    (Refs #155)."""
+
+    def _patch_sdk(self, monkeypatch):
+        """Patch SmartConnect/Disconnect and return (fake_si, disconnected)."""
+        import pyVim.connect as pvc
+
+        fake_si = MagicMock()
+        fake_si.RetrieveContent.return_value = "CONTENT"
+        disconnected: list = []
+
+        monkeypatch.setattr(pvc, "SmartConnect", lambda **_kw: fake_si, raising=False)
+        monkeypatch.setattr(pvc, "Disconnect", lambda si: disconnected.append(si), raising=False)
+        monkeypatch.setenv("LEMMA_VSPHERE_USER", "administrator@vsphere.local")
+        monkeypatch.setenv("LEMMA_VSPHERE_PASSWORD", "secret")
+        return fake_si, disconnected
+
+    def test_yields_content_and_disconnects_on_exit(self, monkeypatch):
+        from lemma.commands.scope import _build_vsphere_clients
+
+        fake_si, disconnected = self._patch_sdk(monkeypatch)
+
+        with _build_vsphere_clients("vcenter.example.com", 443, False) as content:
+            assert content == "CONTENT"
+            assert disconnected == []  # still connected inside the block
+
+        assert disconnected == [fake_si]
+
+    def test_disconnects_even_when_body_raises(self, monkeypatch):
+        from lemma.commands.scope import _build_vsphere_clients
+
+        fake_si, disconnected = self._patch_sdk(monkeypatch)
+
+        with (
+            pytest.raises(RuntimeError),
+            _build_vsphere_clients("vcenter.example.com", 443, False),
+        ):
+            raise RuntimeError("boom")
+
+        assert disconnected == [fake_si]
+
+    def test_missing_credentials_raises_before_connect(self, monkeypatch):
+        import pyVim.connect as pvc
+
+        from lemma.commands.scope import _build_vsphere_clients
+
+        monkeypatch.delenv("LEMMA_VSPHERE_USER", raising=False)
+        monkeypatch.delenv("LEMMA_VSPHERE_PASSWORD", raising=False)
+        connected: list = []
+        monkeypatch.setattr(pvc, "SmartConnect", lambda **_kw: connected.append(1), raising=False)
+
+        with (
+            pytest.raises(ValueError, match=r"LEMMA_VSPHERE_USER"),
+            _build_vsphere_clients("vcenter.example.com", 443, False),
+        ):
+            pass
+
+        assert connected == []  # never attempted to connect

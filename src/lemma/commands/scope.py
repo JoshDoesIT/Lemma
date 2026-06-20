@@ -13,6 +13,7 @@ Sub-commands:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -811,17 +812,23 @@ def _build_device42_client(url: str) -> Any:
     return client
 
 
-def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
-    """Connect to vCenter and return the ServiceInstanceContent.
+@contextlib.contextmanager
+def _build_vsphere_clients(host: str, port: int, insecure: bool):
+    """Connect to vCenter and yield the ServiceInstanceContent.
+
+    A context manager so the SDK session is dropped with an explicit
+    ``Disconnect(si)`` on exit (success or error). The short-lived CLI would
+    survive on process-exit cleanup, but a long-running process (continuous
+    validation, scheduled discovers in one process) would otherwise leak a
+    vCenter session per run.
 
     Auth via ``LEMMA_VSPHERE_USER`` / ``LEMMA_VSPHERE_PASSWORD`` env vars.
     ``insecure=True`` skips SSL verification (lab/dev vCenters with self-signed
     certs); production should configure proper certs and leave it ``False``.
-    Process exit cleans up the session — no explicit ``Disconnect()``.
     """
     import os
 
-    from pyVim.connect import SmartConnect
+    from pyVim.connect import Disconnect, SmartConnect
     from pyVmomi import vim
 
     user = os.environ.get("LEMMA_VSPHERE_USER")
@@ -851,7 +858,12 @@ def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
         msg = f"vCenter '{host}:{port}' is unreachable: {exc}"
         raise ValueError(msg) from exc
 
-    return si.RetrieveContent()
+    try:
+        yield si.RetrieveContent()
+    finally:
+        # Best-effort: a failed Disconnect must not mask a discovery error.
+        with contextlib.suppress(Exception):
+            Disconnect(si)
 
 
 def _build_network_scanner(
@@ -1163,22 +1175,18 @@ def _build_candidates_for_provider(provider: str, **flags: Any) -> tuple[list, s
             raise typer.Exit(code=1)
         kinds = [k.strip() for k in flags["vsphere_kind"].split(",") if k.strip()]
         try:
-            vsphere_content = _build_vsphere_clients(
+            with _build_vsphere_clients(
                 vc_host, flags["vsphere_port"], flags["insecure"]
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            return (
-                vsphere_discover_resources(
-                    content=vsphere_content,
-                    vc_host=vc_host,
-                    datacenter=flags["datacenter"] or None,
-                    kinds=kinds,
-                ),
-                "vsphere",
-            )
+            ) as vsphere_content:
+                return (
+                    vsphere_discover_resources(
+                        content=vsphere_content,
+                        vc_host=vc_host,
+                        datacenter=flags["datacenter"] or None,
+                        kinds=kinds,
+                    ),
+                    "vsphere",
+                )
         except ValueError as exc:
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc

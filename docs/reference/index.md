@@ -1563,7 +1563,9 @@ lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure]
 - `LEMMA_VSPHERE_USER` (e.g. `administrator@vsphere.local`)
 - `LEMMA_VSPHERE_PASSWORD`
 
-**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs. Process-exit cleans up the SDK session; explicit `Disconnect()` is tracked in [#155](https://github.com/JoshDoesIT/Lemma/issues/155).
+**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs.
+
+**Session cleanup.** The vCenter session opened for a discover run is closed with an explicit `Disconnect(si)` when the run finishes (success or error), so a long-running process — continuous validation, scheduled discovers in one process — does not leak a session per run rather than relying on process exit.
 
 **What gets discovered.** Three v0 kinds, mirroring the AWS / GCP / Azure three-pillar shape:
 
