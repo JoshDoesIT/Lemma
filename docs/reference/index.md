@@ -572,6 +572,21 @@ lemma evidence log
 
 Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, a **Graph** indicator (`✓` / `✗` — whether the entry has been loaded into the compliance graph via `lemma evidence load`), and the integrity verdict.
 
+### `lemma evidence export`
+
+Export the evidence log's OCSF events for ingestion into a SIEM / analytics pipeline ([#41](https://github.com/JoshDoesIT/Lemma/issues/41) Advanced Integrations). Unwraps the signed envelopes and emits the raw OCSF events — the shape a SIEM ingests.
+
+```bash
+lemma evidence export [--format ndjson|json] [--output <PATH>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--format` | `ndjson` | `ndjson` (one OCSF event per line — the Splunk HEC / Elasticsearch bulk convention) or `json` (a single array). |
+| `--output` | (stdout) | Write to this path (parent dirs created); otherwise stream to stdout for piping into a forwarder. |
+
+For example, `lemma evidence export | your-siem-forwarder` streams every signed finding into your SIEM, or `lemma evidence export --format json --output evidence.json` writes a portable array for a one-off load. An empty log produces empty output; exit `1` outside a Lemma project or on an unknown `--format`.
+
 ### `lemma evidence load`
 
 Walk every envelope in the signed log and upsert a corresponding `Evidence` node into the compliance graph, with `EVIDENCES` edges pointing at each control named in the event's `metadata.control_refs` list.

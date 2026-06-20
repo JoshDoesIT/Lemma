@@ -506,6 +506,56 @@ def log_command() -> None:
     Console(width=120).print(table)
 
 
+@evidence_app.command(
+    name="export",
+    help="Export evidence-log OCSF events for SIEM/analytics ingestion (NDJSON or JSON).",
+)
+def export_command(
+    output_format: str = typer.Option(
+        "ndjson",
+        "--format",
+        help="ndjson (one OCSF event per line, for Splunk/Elastic ingestion) or json (array).",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write to this path (parent dirs created). Default: stdout.",
+    ),
+) -> None:
+    """Emit the evidence log's OCSF events for downstream SIEM/CSPM/ITSM ingestion (Refs #41).
+
+    Unwraps the signed envelopes and emits the raw OCSF events — the shape a
+    SIEM ingests — as newline-delimited JSON (the Splunk HEC / Elasticsearch
+    bulk convention) or a single JSON array.
+    """
+    if output_format not in ("ndjson", "json"):
+        console.print(
+            f"[red]Error:[/red] Unknown --format '{output_format}'. Choose ndjson or json."
+        )
+        raise typer.Exit(code=1)
+
+    project_dir = _require_lemma_project()
+    events = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence").read_all()
+
+    if output_format == "ndjson":
+        body = "\n".join(e.model_dump_json() for e in events)
+        body = body + "\n" if body else ""
+    else:
+        body = "[" + ", ".join(e.model_dump_json() for e in events) + "]"
+
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+        console.print(
+            f"[green]Exported[/green] {len(events)} OCSF event(s) to {out_path} ({output_format})."
+        )
+        return
+
+    # Plain stdout so it can be piped into a SIEM forwarder.
+    print(body, end="")
+
+
 def _key_status_style(status_value: str) -> str:
     if status_value == "ACTIVE":
         return "[green]ACTIVE[/green]"
