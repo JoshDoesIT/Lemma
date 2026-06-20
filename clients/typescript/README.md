@@ -45,10 +45,29 @@ cd clients/typescript
 npm test          # node --test --experimental-strip-types test/
 ```
 
+## Signing
+
+Ed25519 signing is available via `node:crypto` (no external dependency):
+
+```ts
+import { complianceFinding, generateKeyPair, signEvent, verifyEvent } from "@lemma/connector-sdk";
+
+const keys = generateKeyPair();
+const ev = complianceFinding({ message: "ok", statusId: 1, uid: "acme:x:2026-06-20", producer: "Acme" });
+const sig = signEvent(ev, keys.privateKeyPem);   // hex signature over canonical JSON
+verifyEvent(ev, sig, keys.publicKeyPem);          // true; tampering or a wrong key → false
+```
+
+Events are canonicalized (recursively key-sorted JSON) before signing so the
+bytes are deterministic.
+
 ## What's here vs deferred
 
 - **Here**: OCSF event types (`complianceFinding` factory), the `Connector`
-  base with `collect()` / `run()`, and a `ReferenceConnector`.
-- **Deferred** (tracked on #108): Ed25519 signing + the hash-chained evidence
-  log in TypeScript (today the Python CLI signs and persists), `npm`
-  publishing, and richer OCSF classes as connector work demands them.
+  base with `collect()` / `run()`, a `ReferenceConnector`, and Ed25519
+  signing / verification (`generateKeyPair`, `signEvent`, `verifyEvent`,
+  `canonicalize`).
+- **Deferred** (tracked on #108): the full hash-chained evidence log in
+  TypeScript with `prev_hash` chaining matching the Python entry-hash layout
+  (today the Python CLI persists), `npm` publishing, and richer OCSF classes
+  as connector work demands them.

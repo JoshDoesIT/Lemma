@@ -11,3 +11,10 @@ export type {
 export { Connector } from "./connector.ts";
 export type { CollectResult, ConnectorManifest } from "./connector.ts";
 export { ReferenceConnector } from "./reference.ts";
+export {
+  canonicalize,
+  generateKeyPair,
+  signEvent,
+  verifyEvent,
+} from "./signing.ts";
+export type { Ed25519KeyPair } from "./signing.ts";
