@@ -880,6 +880,7 @@ lemma evidence import-sarif <FILE> [--dry-run]
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--controls` | (none) | Comma-separated control id(s) to tag every ingested finding with (e.g. `AC-6,SI-2`). Sets `metadata.control_refs` so [`lemma evidence load`](#lemma-evidence-load) wires the findings to those controls as `EVIDENCES` edges. |
 | `--dry-run` | off | Parse and count findings without writing to the evidence log. |
 
 **Mapping.** Each SARIF `result` across every `run` becomes one `DetectionFinding` (class_uid 2004). The tool name (`runs[].tool.driver.name`) is the producer; the SARIF `level` sets OCSF severity and status (`error` → HIGH/Fail, `warning` → MEDIUM/Fail, `note` → LOW/informational, `none` → INFORMATIONAL). `metadata` carries `rule_id`, `level`, `tool`, and the first location (`location_uri`, `location_line`).
@@ -888,7 +889,7 @@ lemma evidence import-sarif <FILE> [--dry-run]
 
 **Provenance.** Each entry records a `source` provenance record (the SARIF file's hash) and a `transform` record (the sarif→ocsf conversion of that finding), so the chain back to the original report is auditable.
 
-**Control mapping.** Findings are not auto-mapped to OSCAL controls; [`lemma evidence load`](#lemma-evidence-load) consumes `metadata.control_refs`, and the AI-assisted [`lemma evidence infer`](#lemma-evidence-infer) can propose `EVIDENCES` edges for the ingested findings.
+**Control mapping.** Pass `--controls AC-6,SI-2` to tag every ingested finding with those control ids (`metadata.control_refs`), so [`lemma evidence load`](#lemma-evidence-load) wires them to the named controls as `EVIDENCES` edges — the typical pattern when a whole scan maps to one control (e.g. all SAST findings → a secure-development control). Without `--controls`, the AI-assisted [`lemma evidence infer`](#lemma-evidence-infer) can instead propose `EVIDENCES` edges for the ingested findings.
 
 **Example:**
 

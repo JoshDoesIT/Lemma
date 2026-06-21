@@ -1025,6 +1025,15 @@ def ingest_command(
 )
 def import_sarif_command(
     file: str = typer.Argument(help="Path to a SARIF report (.sarif or .json)."),
+    controls: str = typer.Option(
+        "",
+        "--controls",
+        help=(
+            "Comma-separated control id(s) to tag every ingested finding with "
+            "(e.g. AC-6,SI-2). Sets metadata.control_refs so `lemma evidence load` "
+            "wires the findings to those controls as EVIDENCES edges."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -1045,7 +1054,8 @@ def import_sarif_command(
         console.print(f"[red]Error:[/red] {path.name}: invalid JSON ({exc}).")
         raise typer.Exit(code=1) from exc
 
-    findings = sarif_to_findings(doc)
+    control_refs = [c.strip() for c in controls.split(",") if c.strip()]
+    findings = sarif_to_findings(doc, control_refs=control_refs)
     if not findings:
         console.print("0 findings in the SARIF report — nothing to ingest.")
         return
