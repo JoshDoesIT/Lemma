@@ -55,7 +55,7 @@ secrets = [
     # Manager backend uses boto3, which is already a core dependency; only the
     # Vault and OS-keyring backends need these extras.
     "hvac>=2.0",
-    "keyring>=24.0",
+    "keyring>=25.7.0",
 ]
 dev = [
     "pytest>=8.0",
