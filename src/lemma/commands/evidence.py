@@ -34,6 +34,7 @@ from lemma.services.evidence_log import EvidenceLog
 from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.llm import get_llm_client
 from lemma.services.ocsf_normalizer import normalize_with_provenance, severity_name
+from lemma.services.sarif_ingest import sarif_to_findings
 
 _DEFAULT_EVIDENCE_REUSE_THRESHOLD = 0.7
 
@@ -1009,6 +1010,66 @@ def ingest_command(
     skipped = 0
     for event, norm_record in pairs:
         if log.append(event, provenance=[source_record, norm_record]):
+            ingested += 1
+        else:
+            skipped += 1
+    console.print(f"{ingested} ingested, {skipped} skipped (duplicate).")
+
+
+@evidence_app.command(
+    name="import-sarif",
+    help=(
+        "Ingest a SARIF 2.1.0 static-analysis report (CodeQL, Snyk, Trivy, "
+        "Semgrep, …) as signed OCSF Detection Findings in the evidence log."
+    ),
+)
+def import_sarif_command(
+    file: str = typer.Argument(help="Path to a SARIF report (.sarif or .json)."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Parse and count findings without writing to the evidence log.",
+    ),
+) -> None:
+    project_dir = _require_lemma_project()
+
+    path = Path(file)
+    if not path.exists():
+        console.print(f"[red]Error:[/red] {path}: file not found.")
+        raise typer.Exit(code=1)
+
+    raw_bytes = path.read_bytes()
+    try:
+        doc = json.loads(raw_bytes)
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]Error:[/red] {path.name}: invalid JSON ({exc}).")
+        raise typer.Exit(code=1) from exc
+
+    findings = sarif_to_findings(doc)
+    if not findings:
+        console.print("0 findings in the SARIF report — nothing to ingest.")
+        return
+
+    if dry_run:
+        console.print(f"{len(findings)} finding(s) parsed (dry run — nothing written).")
+        return
+
+    source_record = ProvenanceRecord(
+        stage="source",
+        actor=f"sarif-cli:{path.name}",
+        content_hash=hashlib.sha256(raw_bytes).hexdigest(),
+    )
+
+    log = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence")
+    ingested = 0
+    skipped = 0
+    for finding in findings:
+        transform_record = ProvenanceRecord(
+            stage="transform",
+            actor="sarif-to-ocsf",
+            content_hash=hashlib.sha256(finding.model_dump_json().encode()).hexdigest(),
+        )
+        if log.append(finding, provenance=[source_record, transform_record]):
             ingested += 1
         else:
             skipped += 1

@@ -852,6 +852,37 @@ lemma evidence ingest smoke.jsonl
 # 0 ingested, 1 skipped (duplicate).
 ```
 
+### `lemma evidence import-sarif`
+
+Ingest a SARIF 2.1.0 static-analysis report — the output of CodeQL, Snyk, Trivy, Semgrep, and most security scanners — as signed OCSF `DetectionFinding` evidence. This is the inbound counterpart to [`lemma evidence export`](#lemma-evidence-export): security-tool findings become first-class, tamper-evident entries in the same hash-chained evidence log as connector output.
+
+```bash
+lemma evidence import-sarif <FILE> [--dry-run]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `FILE` | Yes | Path to a SARIF report (`.sarif` or `.json`). |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dry-run` | off | Parse and count findings without writing to the evidence log. |
+
+**Mapping.** Each SARIF `result` across every `run` becomes one `DetectionFinding` (class_uid 2004). The tool name (`runs[].tool.driver.name`) is the producer; the SARIF `level` sets OCSF severity and status (`error` → HIGH/Fail, `warning` → MEDIUM/Fail, `note` → LOW/informational, `none` → INFORMATIONAL). `metadata` carries `rule_id`, `level`, `tool`, and the first location (`location_uri`, `location_line`).
+
+**Dedupe.** `metadata.uid` is `sarif:<tool>:<ruleId>:<fingerprint>:<UTC date>`, where the fingerprint prefers SARIF's own `fingerprints`/`partialFingerprints` and otherwise hashes the rule + location. Re-importing the same report on the same day skips every finding as a duplicate.
+
+**Provenance.** Each entry records a `source` provenance record (the SARIF file's hash) and a `transform` record (the sarif→ocsf conversion of that finding), so the chain back to the original report is auditable.
+
+**Control mapping.** Findings are not auto-mapped to OSCAL controls; [`lemma evidence load`](#lemma-evidence-load) consumes `metadata.control_refs`, and the AI-assisted [`lemma evidence infer`](#lemma-evidence-infer) can propose `EVIDENCES` edges for the ingested findings.
+
+**Example:**
+
+```bash
+lemma evidence import-sarif codeql-results.sarif
+# 2 ingested, 0 skipped (duplicate).
+```
+
 ### `lemma evidence collect`
 
 Run a first-party connector and append its OCSF output to the signed evidence log. Each event is normalized, deduped on `metadata.uid`, and wrapped in a `SignedEvidence` envelope hash-chained to the prior entry.
