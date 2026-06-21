@@ -2323,6 +2323,27 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 
 **Out of scope** (deferred to later #25 slices): per-agent rate limiting / backpressure, the policy-push direction (Control Plane → Agent), retry-friendly bulk ingestion, durable shutdown semantics. The receiver is intentionally minimal in v1 — it's the missing federation surface, not a fully-featured Control Plane.
 
+### `lemma control-plane install`
+
+Render a deployment artifact for the Control Plane receiver — the operator-facing side of Enterprise Deployment Options ([#42](https://github.com/JoshDoesIT/Lemma/issues/42)), mirroring [`lemma agent install`](#lemma-agent).
+
+```bash
+lemma control-plane install --shape <systemd|docker-compose> --output ./deploy [options]
+```
+
+| Option | Default | Applies to | Description |
+|--------|---------|------------|-------------|
+| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`) or `docker-compose`. |
+| `--output` | (required) | all | Directory the rendered artifact is written to. |
+| `--port` | `8443` | all | Port the receiver listens on. |
+| `--image` | the published image | docker-compose | Container image to run. |
+| `--binary` | `/usr/local/bin/lemma` | systemd | Path to the `lemma` binary on the host. |
+| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories. |
+| `--bind` | `127.0.0.1` | systemd | Bind address. |
+| `--force` | `false` | all | Overwrite an existing rendered artifact. |
+
+The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. Both are rendered with all placeholders substituted (no `{{…}}` left). An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
+
 ### `lemma control-plane aggregate`
 
 Summarise persisted evidence across all producers — the unified compliance view called out by the AC on #25.
