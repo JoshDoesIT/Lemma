@@ -253,11 +253,26 @@ def test_collect_runs_okta_connector_and_appends_signed_evidence(tmp_path: Path,
 
     def _handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        # Covers both ?type=MFA_ENROLL and ?type=PASSWORD policy reads.
         if "/api/v1/policies" in url:
             return httpx.Response(200, json=[{"id": "p1", "name": "MFA", "status": "ACTIVE"}])
         if "/api/v1/apps" in url:
             return httpx.Response(200, json=[{"id": "a1", "status": "ACTIVE"}])
-        return httpx.Response(404)
+        if "/api/v1/users" in url:
+            return httpx.Response(
+                200, json=[{"id": "u1", "status": "ACTIVE"}, {"id": "u2", "status": "SUSPENDED"}]
+            )
+        if "/api/v1/groups" in url:
+            return httpx.Response(
+                200, json=[{"id": "g1", "type": "OKTA_GROUP", "profile": {"name": "Everyone"}}]
+            )
+        if "/api/v1/logs" in url:
+            return httpx.Response(
+                200, json=[{"outcome": {"result": "SUCCESS"}}, {"outcome": {"result": "FAILURE"}}]
+            )
+        # Fail loudly if the connector grows an endpoint the mock doesn't cover.
+        msg = f"Unmocked Okta endpoint: {url}"
+        raise AssertionError(msg)
 
     mock_client = httpx.Client(
         base_url="https://example.okta.com", transport=httpx.MockTransport(_handler)
@@ -278,7 +293,9 @@ def test_collect_runs_okta_connector_and_appends_signed_evidence(tmp_path: Path,
     assert "ingested" in result.stdout.lower()
 
     log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
-    assert len(log.read_envelopes()) == 2  # MFA policy + SSO apps
+    # One finding per Okta check: MFA policy, SSO apps, user inventory, groups,
+    # password policy, and the auth-events rollup.
+    assert len(log.read_envelopes()) == 6
 
 
 def test_collect_okta_without_domain_exits_nonzero(tmp_path: Path, monkeypatch):
@@ -304,18 +321,55 @@ def test_collect_runs_aws_connector_and_appends_signed_evidence(tmp_path: Path, 
     (tmp_path / ".lemma").mkdir()
 
     session = MagicMock()
+
+    sts = MagicMock()
+    sts.get_caller_identity.return_value = {"Account": "123456789012"}
+
     iam = MagicMock()
     iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 1}}
     iam.get_account_password_policy.return_value = {"PasswordPolicy": {"MinimumPasswordLength": 14}}
+    iam.get_paginator.return_value.paginate.return_value = [{"Users": [{"UserName": "alice"}]}]
+    iam.list_access_keys.return_value = {"AccessKeyMetadata": []}
+
     trail = MagicMock()
     trail.describe_trails.return_value = {"trailList": [{"Name": "t1", "IsMultiRegionTrail": True}]}
-    sts = MagicMock()
-    sts.get_caller_identity.return_value = {"Account": "123456789012"}
-    session.client.side_effect = lambda svc, **_: {
+
+    config = MagicMock()
+    config.describe_configuration_recorders.return_value = {
+        "ConfigurationRecorders": [{"name": "default"}]
+    }
+    config.describe_configuration_recorder_status.return_value = {
+        "ConfigurationRecordersStatus": [{"recording": True}]
+    }
+
+    s3control = MagicMock()
+    s3control.get_public_access_block.return_value = {
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        }
+    }
+
+    ec2 = MagicMock()
+    ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-1"}]}
+    ec2.describe_flow_logs.return_value = {"FlowLogs": [{"ResourceId": "vpc-1"}]}
+    ec2.describe_security_groups.return_value = {
+        "SecurityGroups": [{"GroupId": "sg-1", "IpPermissions": [], "IpPermissionsEgress": []}]
+    }
+
+    # A dict (not a defaultdict): a future connector that reaches for an
+    # unmocked service KeyErrors loudly here instead of silently no-op'ing.
+    clients = {
+        "sts": sts,
         "iam": iam,
         "cloudtrail": trail,
-        "sts": sts,
-    }[svc]
+        "config": config,
+        "s3control": s3control,
+        "ec2": ec2,
+    }
+    session.client.side_effect = lambda svc, **_: clients[svc]
 
     from lemma.sdk.connectors import aws as aws_module
 
@@ -332,7 +386,9 @@ def test_collect_runs_aws_connector_and_appends_signed_evidence(tmp_path: Path, 
     assert "ingested" in result.stdout.lower()
 
     log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
-    assert len(log.read_envelopes()) == 3  # root MFA + password policy + CloudTrail
+    # One finding per AWS check: root MFA, password policy, IAM inventory,
+    # CloudTrail, Config recorder, S3 public-access block, VPC flow logs, default SG.
+    assert len(log.read_envelopes()) == 8
 
 
 def test_keys_command_lists_all_keys_with_lifecycle(tmp_path: Path, monkeypatch):
