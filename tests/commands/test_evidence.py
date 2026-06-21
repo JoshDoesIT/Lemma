@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -1607,6 +1608,35 @@ class TestEvidenceRebuildReuse:
 
 
 class TestCollectFromConfigFile:
+    @pytest.fixture(autouse=True)
+    def _stub_github_api(self, monkeypatch):
+        """Inject a mock httpx client into the GitHub connector so the
+        config/CLI collect paths never reach the live GitHub API — which
+        rate-limits unauthenticated CI runs and made these tests flaky."""
+        import httpx
+
+        from lemma.sdk.connectors import github as gh_module
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/branches/main/protection" in url:
+                return httpx.Response(200, json={})
+            if "/contents/CODEOWNERS" in url:
+                return httpx.Response(404, json={"message": "Not Found"})
+            if "/dependabot/alerts" in url:
+                return httpx.Response(200, json=[])
+            return httpx.Response(404)
+
+        mock_client = httpx.Client(
+            base_url="https://api.github.com", transport=httpx.MockTransport(_handler)
+        )
+        original_init = gh_module.GitHubConnector.__init__
+
+        def _patched_init(self, *, repo, client=None, token=None):
+            original_init(self, repo=repo, client=client or mock_client, token=token)
+
+        monkeypatch.setattr(gh_module.GitHubConnector, "__init__", _patched_init)
+
     def test_collect_loads_config_file_and_runs_connector(
         self, tmp_path: Path, monkeypatch
     ) -> None:
