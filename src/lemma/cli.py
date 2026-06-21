@@ -21,6 +21,7 @@ from lemma.commands.ai import ai_app
 from lemma.commands.check import check_command
 from lemma.commands.connector import connector_app
 from lemma.commands.control_plane import control_plane_app
+from lemma.commands.debt import debt_command
 from lemma.commands.evidence import evidence_app
 from lemma.commands.framework import framework_app
 from lemma.commands.graph import graph_app
@@ -34,11 +35,13 @@ from lemma.commands.init import init_command
 from lemma.commands.map import map_command
 from lemma.commands.person import person_app
 from lemma.commands.query import query_command
+from lemma.commands.report import report_command
 from lemma.commands.resource import resource_app
 from lemma.commands.risk import risk_app
 from lemma.commands.scope import scope_app
 from lemma.commands.status import status_command
 from lemma.commands.validate import validate_command
+from lemma.commands.whoami import whoami_command
 
 app = typer.Typer(
     name="lemma",
@@ -49,6 +52,7 @@ app = typer.Typer(
 app.command(name="init", help="Scaffold a compliance-as-code repository")(init_command)
 app.command(name="status", help="Show compliance posture summary")(status_command)
 app.command(name="validate", help="Validate an OSCAL JSON file")(validate_command)
+app.command(name="whoami", help="Show the current RBAC role and its permissions")(whoami_command)
 app.command(name="map", help="Map policies to framework controls")(map_command)
 app.command(name="query", help="Ask the compliance graph a question in plain English")(
     query_command
@@ -57,7 +61,13 @@ app.command(name="check", help="Run the CI/CD compliance gate over the knowledge
     check_command
 )
 app.command(name="harmonize", help="Harmonize controls across frameworks")(harmonize_command)
+app.command(name="report", help="Generate a static HTML compliance-posture dashboard")(
+    report_command
+)
 app.command(name="coverage", help="Per-framework coverage percentages")(coverage_command)
+app.command(name="debt", help="Report Compliance Debt — uncovered controls, ranked worst-first")(
+    debt_command
+)
 app.command(name="gaps", help="Identify unmapped controls")(gaps_command)
 app.command(name="diff", help="Compare framework versions")(diff_command)
 app.add_typer(framework_app, name="framework", help="Manage compliance frameworks")

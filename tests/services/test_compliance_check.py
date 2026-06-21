@@ -199,3 +199,59 @@ class TestToSarif:
         assert rebuilt.version == sarif.version
         assert len(rebuilt.runs) == len(sarif.runs)
         assert len(rebuilt.runs[0].results) == len(sarif.runs[0].results)
+
+
+class TestPolicyOutcomes:
+    def _result_with_policies(self):
+        from lemma.models.check_result import (
+            CheckResult,
+            CheckStatus,
+            ControlCheckOutcome,
+            PolicyCheckOutcome,
+        )
+
+        return CheckResult(
+            framework="nist-800-53",
+            outcomes=[
+                ControlCheckOutcome(
+                    control_id="control:nist-800-53:ac-1",
+                    framework="nist-800-53",
+                    short_id="ac-1",
+                    title="Access Control",
+                    status=CheckStatus.PASSED,
+                    satisfying_policies=["p.md"],
+                ),
+            ],
+            policy_outcomes=[
+                PolicyCheckOutcome(
+                    policy_file="mfa.rego", status=CheckStatus.FAILED, message="no mfa"
+                ),
+                PolicyCheckOutcome(
+                    policy_file="mfa.rego", status=CheckStatus.FAILED, message="weak pw"
+                ),
+                PolicyCheckOutcome(policy_file="ok.rego", status=CheckStatus.PASSED),
+            ],
+        )
+
+    def test_policy_outcomes_fold_into_counts(self):
+        result = self._result_with_policies()
+        # 1 control + 3 policy outcomes
+        assert result.total == 4
+        # 1 control PASSED + 1 policy PASSED
+        assert result.passed == 2
+        # 2 policy FAILED
+        assert result.failed == 2
+
+    def test_sarif_emits_policy_violations(self):
+        from lemma.services.compliance_check import to_sarif
+
+        sarif = to_sarif(self._result_with_policies())
+        results = sarif.runs[0].results
+        rego_results = [r for r in results if r.rule_id == "rego:mfa.rego"]
+        assert len(rego_results) == 2
+        assert {r.message.text for r in rego_results} == {"no mfa", "weak pw"}
+        # The violation is located at the offending .rego file.
+        assert rego_results[0].locations[0].physical_location.artifact_location.uri == "mfa.rego"
+        # Rule registered once despite two violations from the same file.
+        rule_ids = [rule.id for rule in sarif.runs[0].tool.driver.rules]
+        assert rule_ids.count("rego:mfa.rego") == 1
