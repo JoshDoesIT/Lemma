@@ -69,6 +69,7 @@ pythonpath = ["src"]
 addopts = "--strict-markers -v"
 markers = [
     "eval: RAG evaluation tests requiring Ollama; skipped by default, run with --run-eval",
+    "benchmark: performance benchmarks; skipped by default, run with --run-benchmark",
 ]
 
 [tool.coverage.run]

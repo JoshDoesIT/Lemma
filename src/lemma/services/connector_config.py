@@ -24,12 +24,19 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+if TYPE_CHECKING:
+    from lemma.services.secret_store import SecretStore
+
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+# ``${secret:NAME}`` pulls from the encrypted SecretStore (#117) rather than
+# the environment. Names are case-insensitive in the regex but resolved as
+# written; resolved before the ${ENV_VAR} pass so the two never clash.
+_SECRET_REF_RE = re.compile(r"\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class ConnectorConfig(BaseModel):
@@ -44,13 +51,20 @@ class ConnectorConfig(BaseModel):
     schedule: str = Field(default="", description="Cron-like schedule (interpreted by scheduler)")
 
 
-def load_connector_config(path: Path) -> ConnectorConfig:
-    """Load, validate, and env-var-interpolate a connector config file.
+def load_connector_config(
+    path: Path, *, secret_store: SecretStore | None = None
+) -> ConnectorConfig:
+    """Load, validate, and interpolate a connector config file.
+
+    Resolves ``${secret:NAME}`` references against ``secret_store`` (the
+    encrypted store from #117) and ``${ENV_VAR}`` references against the
+    environment.
 
     Raises:
         FileNotFoundError: If ``path`` does not exist.
-        ValueError: On malformed YAML, schema-validation failure, or a
-            ``${VAR}`` reference whose env var is not set.
+        ValueError: On malformed YAML, schema-validation failure, a
+            ``${VAR}`` reference whose env var is not set, or a
+            ``${secret:NAME}`` reference with no store / missing secret.
     """
     path = Path(path)
     if not path.is_file():
@@ -69,7 +83,7 @@ def load_connector_config(path: Path) -> ConnectorConfig:
         msg = f"Connector config root must be a mapping, got {type(raw).__name__}"
         raise ValueError(msg)
 
-    interpolated = _interpolate(raw, source=str(path))
+    interpolated = _interpolate(raw, source=str(path), secret_store=secret_store)
     try:
         return ConnectorConfig(**interpolated)
     except Exception as exc:
@@ -77,24 +91,44 @@ def load_connector_config(path: Path) -> ConnectorConfig:
         raise ValueError(msg) from exc
 
 
-def _interpolate(value: Any, *, source: str) -> Any:
-    """Walk a parsed YAML structure and replace ``${VAR}`` in strings.
+def _interpolate(value: Any, *, source: str, secret_store: SecretStore | None) -> Any:
+    """Walk a parsed YAML structure and replace ``${...}`` refs in strings.
 
-    Strict: unset env vars raise ``ValueError`` rather than substituting
-    empty strings — silently producing an empty token field is the
-    exact footgun an operator would never catch.
+    Strict: unset env vars / missing secrets raise ``ValueError`` rather than
+    substituting empty strings — silently producing an empty token field is
+    the exact footgun an operator would never catch.
     """
     if isinstance(value, str):
-        return _interpolate_string(value, source=source)
+        return _interpolate_string(value, source=source, secret_store=secret_store)
     if isinstance(value, dict):
-        return {k: _interpolate(v, source=source) for k, v in value.items()}
+        return {
+            k: _interpolate(v, source=source, secret_store=secret_store) for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_interpolate(v, source=source) for v in value]
+        return [_interpolate(v, source=source, secret_store=secret_store) for v in value]
     return value
 
 
-def _interpolate_string(value: str, *, source: str) -> str:
-    def repl(match: re.Match[str]) -> str:
+def _interpolate_string(value: str, *, source: str, secret_store: SecretStore | None) -> str:
+    def secret_repl(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if secret_store is None:
+            msg = (
+                f"Secret '{name}' referenced in {source} but no secret store is "
+                "available. Set LEMMA_SECRET_PASSPHRASE and add it via "
+                "`lemma connector set-secret`."
+            )
+            raise ValueError(msg)
+        secret_value = secret_store.get(name)
+        if secret_value is None:
+            msg = (
+                f"Secret '{name}' referenced in {source} is not in the secret "
+                "store; add it via `lemma connector set-secret` or remove the reference."
+            )
+            raise ValueError(msg)
+        return secret_value
+
+    def env_repl(match: re.Match[str]) -> str:
         name = match.group(1)
         env_value = os.environ.get(name)
         if env_value is None:
@@ -105,4 +139,7 @@ def _interpolate_string(value: str, *, source: str) -> str:
             raise ValueError(msg)
         return env_value
 
-    return _ENV_VAR_RE.sub(repl, value)
+    # Resolve ${secret:...} first so a literal env name like `secret` can't
+    # shadow it, then the plain ${ENV_VAR} pass.
+    value = _SECRET_REF_RE.sub(secret_repl, value)
+    return _ENV_VAR_RE.sub(env_repl, value)

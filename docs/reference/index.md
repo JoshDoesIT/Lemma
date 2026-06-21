@@ -65,6 +65,26 @@ lemma validate catalog.json
 
 ---
 
+## `lemma whoami`
+
+Show the acting principal's RBAC role and the permissions it grants — the visible surface of the role-based access-control layer ([#38](https://github.com/JoshDoesIT/Lemma/issues/38) Multi-Tenancy & Access Control).
+
+```bash
+lemma whoami
+```
+
+The role is read from the `LEMMA_ROLE` environment variable (case-insensitive: `owner`, `engineer`, or read-only `auditor`); when unset it defaults to `owner`, so existing single-operator workflows keep full access (enforcement is opt-in until a multi-tenant principal store lands). The command prints the role and a permission grant table. An unrecognized `LEMMA_ROLE` exits `1` naming the valid roles.
+
+| Role | Holds |
+|------|-------|
+| `auditor` | Read-only: `read`, `export`, `verify_evidence`. |
+| `engineer` | Auditor's reads + `write_mapping`, `review_decision`, `manage_scopes`, `collect_evidence`, `manage_keys`. |
+| `owner` | Everything, including `manage_users`. |
+
+Roles are strictly privilege-ordered (`auditor ⊆ engineer ⊆ owner`). The same `authorize` / `require` checks back write-gating: `lemma map` already enforces `write_mapping`, so `LEMMA_ROLE=auditor lemma map …` exits `1` ("not permitted") while the default owner is unaffected. Further write commands adopt the same gate as multi-tenancy lands.
+
+---
+
 ## `lemma framework`
 
 Manage compliance frameworks. Has three subcommands.
@@ -88,6 +108,8 @@ lemma framework add <NAME>
 | `nist-800-53` | NIST SP 800-53 Rev 5 | 1,196 |
 | `nist-csf-2.0` | NIST Cybersecurity Framework 2.0 | 219 |
 | `nist-800-171` | NIST SP 800-171 Rev 3 | 130 |
+| `hipaa-security-rule` | HIPAA Security Rule (45 CFR Part 164, Subpart C) | 61 |
+| `cmmc-level-1` | CMMC Level 1 (Foundational, derived from FAR 52.204-21) | 17 |
 
 **Example:**
 
@@ -310,6 +332,26 @@ lemma coverage [OPTIONS]
 
 ---
 
+## `lemma debt`
+
+Report **Compliance Debt** — the controls that should be satisfied but aren't, framed as debt to burn down and ranked worst-first ([#40](https://github.com/JoshDoesIT/Lemma/issues/40) Reporting & Analytics). Computed from the same `CheckResult` as [`lemma check`](#lemma-check), so the CI gate and the debt metric always agree — distinct from `lemma coverage` (which measures cross-framework harmonization overlap).
+
+```bash
+lemma debt [--framework <ID>] [--format text|json] [--min-confidence FLOAT] [--snapshot] [--history]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--framework` | all frameworks in the graph | Restrict the metric to a single framework. |
+| `--format` | `text` | Output format: `text` (Rich summary + per-framework table) or `json` (machine-readable). |
+| `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as `lemma check`. |
+| `--snapshot` | `false` | Append the current debt to the history log (`.lemma/analytics/debt-history.jsonl`) for burn-down tracking; reports the delta since the last snapshot. |
+| `--history` | `false` | Show the recorded debt-snapshot trend (timestamp / uncovered / total / debt % / Δ) and exit. |
+
+The summary reports total controls, the uncovered count, and the overall debt percentage; the table breaks debt down per framework (uncovered / total / debt %), worst first, so the next thing to pay down is at the top. Zero uncovered controls reports zero debt. JSON output (`total_controls`, `covered`, `uncovered`, `debt_pct`, `frameworks[]`) is stable for machine consumption. **Burn-down tracking**: run `lemma debt --snapshot` (e.g. on every CI run or release) to append a timestamped snapshot, then `lemma debt --history` for the timeline-based posture view — debt tracked over time, like technical debt. Exit `1` on an unknown `--framework` or outside a Lemma project.
+
+---
+
 ## `lemma gaps`
 
 Identify unmapped controls for a specific framework.
@@ -422,6 +464,63 @@ lemma connector test <PATH>
 
 Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
 
+### `lemma connector registry`
+
+List the available first-party connectors and their required configuration — the queryable connector catalog ([#34](https://github.com/JoshDoesIT/Lemma/issues/34) Connector Registry).
+
+```bash
+lemma connector registry
+```
+
+Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
+
+### `lemma connector run`
+
+Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).
+
+```bash
+lemma connector run --config lemma_connector_config.yaml --once        # one collection, then exit
+lemma connector run --config lemma_connector_config.yaml               # loop on the config's `schedule`
+lemma connector run --config lemma_connector_config.yaml --max-runs 24 # stop after N scheduled runs
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config` | (required) | Path to the connector config file. |
+| `--once` | `false` | Run a single collection immediately and exit (ignores `schedule`). |
+| `--max-runs` | `0` | Stop after this many scheduled runs (`0` = run indefinitely). |
+
+The schedule comes from the config's `schedule:` field, a standard 5-field cron expression (`minute hour day-of-month month day-of-week`) supporting `*`, ranges (`9-17`), lists (`1,2,3`), and steps (`*/30`). Without a `schedule` (and without `--once`) the command errors. `enabled: false` skips the run. For external schedulers (systemd timers, Kubernetes CronJobs, the platform cron), use `--once` per fire instead of the built-in loop.
+
+**Push vs. pull.** `lemma connector run` is the *pull* model (Lemma samples the source on a schedule). The complementary *push* model — an upstream/agent firing signed evidence at Lemma — is the Control Plane receiver's `POST /v1/evidence` (see [`lemma control-plane`](#lemma-control-plane)), which authenticates each envelope by its Ed25519 producer signature and appends it identically to a direct `collect()`. Use pull for systems best sampled periodically (config snapshots, ticket queues); push for systems that emit events as they happen.
+
+### `lemma connector set-secret`
+
+Store or rotate a connector credential in the project's **encrypted secret store** (`.lemma/secrets.json`), an alternative to (or companion of) plain environment variables. The store is encrypted at rest with a key derived (PBKDF2-HMAC-SHA256, 600k iterations) from a passphrase in `LEMMA_SECRET_PASSPHRASE`; neither secret names nor values appear in plaintext on disk, and the file is written `0600`.
+
+```bash
+export LEMMA_SECRET_PASSPHRASE='…'        # required for every secret op
+lemma connector set-secret GITHUB_TOKEN   # value read from LEMMA_SECRET_VALUE or a hidden prompt
+```
+
+The secret **value** is never taken as a command-line argument (it can't leak into shell history or process listings) — it comes from `LEMMA_SECRET_VALUE` or an interactive hidden prompt. Reference a stored secret in `lemma_connector_config.yaml` with `${secret:NAME}` (see the [`lemma evidence collect` config-file mode](#lemma-evidence-collect)). Re-running `set-secret` for an existing name **rotates** it; because each `lemma evidence collect` run re-reads the store, the new value is picked up on the next run with no service restart. See the [connector credentials security guide](../security/connector-secrets.md) for the threat model and leaked-token incident-response playbook.
+
+### `lemma connector list-secrets`
+
+List the names of stored connector secrets (never the values). Requires `LEMMA_SECRET_PASSPHRASE`.
+
+```bash
+lemma connector list-secrets
+```
+
+### `lemma connector rm-secret`
+
+Remove a stored connector secret.
+
+```bash
+lemma connector rm-secret GITHUB_TOKEN
+```
+
 **Status — v0 slice (#26):** Python SDK, reference JSONL connector, `init`/`test` CLIs. Deferred to follow-ups:
 - TypeScript SDK → [#108](https://github.com/JoshDoesIT/Lemma/issues/108)
 - `lemma connector publish` → [#109](https://github.com/JoshDoesIT/Lemma/issues/109)
@@ -482,6 +581,21 @@ lemma evidence log
 ```
 
 Output is a Rich table with columns for time, OCSF class name, producer, truncated entry hash, a **Graph** indicator (`✓` / `✗` — whether the entry has been loaded into the compliance graph via `lemma evidence load`), and the integrity verdict.
+
+### `lemma evidence export`
+
+Export the evidence log's OCSF events for ingestion into a SIEM / analytics pipeline ([#41](https://github.com/JoshDoesIT/Lemma/issues/41) Advanced Integrations). Unwraps the signed envelopes and emits the raw OCSF events — the shape a SIEM ingests.
+
+```bash
+lemma evidence export [--format ndjson|json] [--output <PATH>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--format` | `ndjson` | `ndjson` (one OCSF event per line — the Splunk HEC / Elasticsearch bulk convention) or `json` (a single array). |
+| `--output` | (stdout) | Write to this path (parent dirs created); otherwise stream to stdout for piping into a forwarder. |
+
+For example, `lemma evidence export | your-siem-forwarder` streams every signed finding into your SIEM, or `lemma evidence export --format json --output evidence.json` writes a portable array for a one-off load. An empty log produces empty output; exit `1` outside a Lemma project or on an unknown `--format`.
 
 ### `lemma evidence load`
 
@@ -770,7 +884,7 @@ config:                  # required; passed to the connector factory
   token: ${LEMMA_GITHUB_TOKEN}
 ```
 
-`${ENV_VAR}` references in string values are interpolated at load time from the environment; an unset env var raises a clean error rather than silently substituting an empty string. `enabled: false` skips the run cleanly (useful for temporarily disabling a connector without deleting its config). The config schema is strict — typo'd top-level keys are rejected with a clear message naming the offending key.
+`${ENV_VAR}` references in string values are interpolated at load time from the environment; an unset env var raises a clean error rather than silently substituting an empty string. `${secret:NAME}` references resolve from the project's encrypted secret store (see [`lemma connector`](#lemma-connector)) when `LEMMA_SECRET_PASSPHRASE` is set; a missing secret (or no passphrase) raises a clean error naming the reference. The two forms can be mixed in one config. `enabled: false` skips the run cleanly (useful for temporarily disabling a connector without deleting its config). The config schema is strict — typo'd top-level keys are rejected with a clear message naming the offending key.
 
 **First-party connectors**
 
@@ -791,7 +905,7 @@ Output reports how many events were ingested and how many were skipped as duplic
 Run the CI/CD compliance gate over the knowledge graph. Exits non-zero if any control in the selected framework has zero satisfying policies, so pipelines can fail builds on compliance regressions.
 
 ```bash
-lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOAT]
+lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOAT] [--policy-dir <PATH>]
 ```
 
 | Option | Default | Description |
@@ -799,8 +913,33 @@ lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOA
 | `--framework` | all frameworks in the graph | Restrict the check to a single framework (e.g. `nist-800-53`) |
 | `--format` | `text` | Output format: `text` (human-readable Rich table), `json` (machine-parseable), or `sarif` (SARIF 2.1.0 for GitHub Code Scanning / GitLab CI ingestion) |
 | `--min-confidence` | `0.0` | Only count `SATISFIES` edges whose `confidence` attribute is at or above this floor. Default `0.0` accepts every edge (preserves v0 behavior). Operators raise this in CI to demand a higher bar than the auto-accept threshold. |
+| `--policy-dir` | (none) | Directory of OPA/Rego (`.rego`) policies evaluated against the compliance graph and evidence log. Violations count toward the gate alongside coverage. Requires the `opa` binary on `PATH`. |
 
 **Pass criterion.** A control is `PASSED` if at least one policy has a `SATISFIES` edge pointing at it whose `confidence` ≥ `--min-confidence`; `FAILED` otherwise. Edges with no recorded confidence are treated as fully trusted (default `1.0`) so legacy / external-tool-written edges keep working.
+
+**Policy-as-Code (`--policy-dir`).** Built-in checks only answer "is every control covered?". For richer, organization-specific assertions — "no IAM user without MFA", "every change ticket was approved" — point `--policy-dir` at a directory of OPA/Rego policies. Lemma shells out to the `opa` binary (`opa eval`, same shell-out pattern as `lemma scope discover network` → `nmap`); a missing `opa` exits `1` with an install hint. Each `.rego` file in the directory (non-recursive) is evaluated; each violation it emits counts as one `failed` in the result and is rendered in `text` / `json` / `sarif` output. A policy that emits no violations records one `PASSED` policy outcome.
+
+Every policy declares `package lemma` and a `deny` rule that is a **set of violation message strings**; Lemma queries `data.lemma.deny` per file:
+
+```rego
+package lemma
+
+deny[msg] {
+    some node in input.graph.nodes
+    node.type == "Control"
+    count({src | input.graph.edges[_].relationship == "SATISFIES"; input.graph.edges[_].target == node.id}) == 0
+    msg := sprintf("control %s has no satisfying policy", [node.control_id])
+}
+```
+
+**Rego `input` document.** Policies read two well-documented top-level paths:
+
+| Path | Shape |
+|------|-------|
+| `input.graph` | The full compliance graph export — `{"nodes": [...], "edges": [...]}`, identical to `lemma graph export` / `ComplianceGraph.export_json()`. Node `type` is `Framework` / `Control` / `Policy` / `Resource` / …; edge `relationship` is `SATISFIES` / `SCOPED_TO` / … with an optional `confidence`. |
+| `input.evidence` | The signed evidence log as a list of OCSF event objects (`EvidenceLog.read_all()`), each a plain JSON dict (`class_uid`, `time`, `metadata`, …). Empty list when no evidence has been collected. |
+
+Invalid Rego (parse error) exits `1` with a message naming the offending file.
 
 **`--min-confidence` vs `ai.automation.thresholds.map`.** They're orthogonal: `ai.automation.thresholds.map` (default 0.85) governs whether `lemma map` *auto-accepts* a new mapping into the graph as a SATISFIES edge. `--min-confidence` filters which already-accepted edges *count toward `lemma check`'s pass/fail*. A mapping accepted at 0.85 can still be filtered out by `lemma check --min-confidence 0.95` for stricter CI gating.
 
@@ -821,12 +960,22 @@ lemma check [--framework <ID>] [--format text|json|sarif] [--min-confidence FLOA
       "satisfying_policies": []
     }
   ],
-  "total": 1,
+  "policy_outcomes": [
+    {
+      "policy_file": "mfa.rego",
+      "rule": "deny",
+      "status": "FAILED",
+      "message": "IAM user alice has no MFA"
+    }
+  ],
+  "total": 2,
   "passed": 0,
-  "failed": 1,
+  "failed": 2,
   "min_confidence_applied": 0.0
 }
 ```
+
+`policy_outcomes` is empty unless `--policy-dir` is given. Both control outcomes and policy outcomes fold into the aggregate `total` / `passed` / `failed` counts; a Rego violation increments `failed` and fails the gate just like an uncovered control.
 
 **SARIF output.** `--format sarif` emits SARIF 2.1.0 JSON for ingestion into GitHub Code Scanning (`github/codeql-action/upload-sarif@v3`) or GitLab's SAST report ingestion. Only `FAILED` controls become SARIF results — passing controls are not findings, so they don't clutter the Security tab. Each result carries:
 
@@ -852,6 +1001,24 @@ lemma check --format sarif --min-confidence 0.9          # strict CI gate, GitHu
 See `docs/guides/ci-cd-integration.md` for end-to-end GitHub Actions and GitLab CI snippets including the SARIF upload step.
 
 **Follow-ups tracked separately** — GitHub Action wrapper ([#120](https://github.com/JoshDoesIT/Lemma/issues/120)) and OPA/Rego policy-as-code ([#121](https://github.com/JoshDoesIT/Lemma/issues/121)). Drift detection and compliance-debt metrics stay inside the parent [#28](https://github.com/JoshDoesIT/Lemma/issues/28) task list.
+
+---
+
+## `lemma report`
+
+Generate a **standalone HTML compliance-posture dashboard** from the knowledge graph — the first slice of the engineer-first dashboard ([#32](https://github.com/JoshDoesIT/Lemma/issues/32)). No server and no JavaScript build: one portable, brand-styled (Void Black / Terminal Green) file you can open locally, attach to an audit, or publish behind any static host.
+
+```bash
+lemma report [--framework <ID>] [--output <PATH>] [--min-confidence FLOAT]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--framework` | all frameworks in the graph | Restrict the report to a single framework (e.g. `nist-800-53`). |
+| `--output` | (stdout) | Write the HTML to this path (parent dirs created); otherwise the document is printed to stdout for piping/redirection. |
+| `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as [`lemma check`](#lemma-check), so the report and the CI gate agree. |
+
+The report shows aggregate pass/fail counts, a per-framework coverage bar, and a findings table of failed controls. When an AI trace log exists (`.lemma/traces/`), it also appends an **AI Decisions** section — the dashboard's AI-trace viewer, listing each logged AI determination with its model, confidence (color-coded), determination, and human-review status. When a signed evidence log exists (`.lemma/evidence/`), it appends an **Evidence Timeline** section — the auditor-portal view ([#39](https://github.com/JoshDoesIT/Lemma/issues/39)) listing signed evidence chronologically with producer, event, and entry hash. It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles, framework names, and trace fields are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
 
 ---
 
@@ -1554,7 +1721,7 @@ lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure]
 | `--host` | (required) | vCenter hostname (e.g. `vcenter.example.com`). Whitespace-only values are rejected. |
 | `--port` | `443` | vCenter port. |
 | `--insecure` | `false` | Skip SSL verification. Lab/dev vCenters with self-signed certs only — production deployments should configure proper certs and leave this off. |
-| `--datacenter` | (all) | Datacenter name filter. v0 reserves the flag; the service walks every datacenter rooted at `content.rootFolder` regardless. Per-datacenter filtering at the `CreateContainerView` level is tracked in [#154](https://github.com/JoshDoesIT/Lemma/issues/154). |
+| `--datacenter` | (all) | Datacenter name filter. When set, each kind's `CreateContainerView` is rooted at the matching datacenter's per-kind inventory folder (`vmFolder` / `hostFolder` / `datastoreFolder`), so a multi-datacenter vCenter only yields the requested datacenter's fleet (datacenters nested inside folders are resolved). Absent the flag, the service walks every datacenter rooted at `content.rootFolder` (default). An unmatched name exits `1` listing the available datacenters. |
 | `--vsphere-kind` | `vm,host,datastore` | Comma-separated kinds to enumerate. Unknown kind exits `1`. |
 | `--dry-run` | `false` | Print matched resources as YAML; do not touch the graph. |
 
@@ -1563,7 +1730,9 @@ lemma scope discover vsphere --host <vcenter-hostname> [--port 443] [--insecure]
 - `LEMMA_VSPHERE_USER` (e.g. `administrator@vsphere.local`)
 - `LEMMA_VSPHERE_PASSWORD`
 
-**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs. Process-exit cleans up the SDK session; explicit `Disconnect()` is tracked in [#155](https://github.com/JoshDoesIT/Lemma/issues/155).
+**SSL handling.** Default verifies the vCenter cert chain. `--insecure` skips verification — use only for lab vCenters with self-signed certs.
+
+**Session cleanup.** The vCenter session opened for a discover run is closed with an explicit `Disconnect(si)` when the run finishes (success or error), so a long-running process — continuous validation, scheduled discovers in one process — does not leak a session per run rather than relying on process exit.
 
 **What gets discovered.** Three v0 kinds, mirroring the AWS / GCP / Azure three-pillar shape:
 
@@ -1590,7 +1759,16 @@ match_rules:
     value: prod
 ```
 
-vSphere 6.0+ Tags (the vAPI / `cis.tagging` REST endpoints) are a separate auth domain and are tracked in [#156](https://github.com/JoshDoesIT/Lemma/issues/156). Any tag scheme already migrated to Custom Attributes works in v0.
+**Modern Tags + Categories → `vsphere.cis_tags.<category>`.** vSphere 6.0+ Tags live behind the vSphere Automation REST API (vAPI / `cis.tagging`), which uses a session separate from the SOAP SDK. During a discover run Lemma opens a second vAPI session (HTTP Basic against `POST /api/session`, same `LEMMA_VSPHERE_USER` / `LEMMA_VSPHERE_PASSWORD` credentials), then for each managed object resolves its attached tags into a `{category: tag}` dict projected under `cis_tags` — namespaced separately from the legacy `tags` dict so the two never collide:
+
+```yaml
+match_rules:
+  - source: vsphere.cis_tags.Environment
+    operator: equals
+    value: prod
+```
+
+Tag and category names are cached per run, so a fleet-wide discover resolves each category once. Modern-tag enrichment is **best-effort**: a vCenter without the Automation API, or any vAPI auth/network failure, degrades to an empty `cis_tags` dict (logged as a warning) while the SOAP discovery and legacy Custom-Attribute projection still run. On a category with multiple attached tags the last one wins; multi-cardinality categories are better matched on the legacy Custom-Attribute projection.
 
 **Per-kind RBAC tolerance.** A `vim.fault.NoPermission` or `vim.fault.NotAuthenticated` on one kind logs a warning and continues to the next; a service-account that can read VMs but not Hosts still produces useful output.
 
@@ -2144,6 +2322,27 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 **Persistence-then-verify**: envelopes are appended to disk before verification runs, so a failed verification still leaves the suspicious envelope on disk for forensic review. Operators wanting a quarantine workflow can periodically scan and segregate VIOLATED envelopes; the receiver doesn't auto-delete.
 
 **Out of scope** (deferred to later #25 slices): per-agent rate limiting / backpressure, the policy-push direction (Control Plane → Agent), retry-friendly bulk ingestion, durable shutdown semantics. The receiver is intentionally minimal in v1 — it's the missing federation surface, not a fully-featured Control Plane.
+
+### `lemma control-plane install`
+
+Render a deployment artifact for the Control Plane receiver — the operator-facing side of Enterprise Deployment Options ([#42](https://github.com/JoshDoesIT/Lemma/issues/42)), mirroring [`lemma agent install`](#lemma-agent).
+
+```bash
+lemma control-plane install --shape <systemd|docker-compose> --output ./deploy [options]
+```
+
+| Option | Default | Applies to | Description |
+|--------|---------|------------|-------------|
+| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`) or `docker-compose`. |
+| `--output` | (required) | all | Directory the rendered artifact is written to. |
+| `--port` | `8443` | all | Port the receiver listens on. |
+| `--image` | the published image | docker-compose | Container image to run. |
+| `--binary` | `/usr/local/bin/lemma` | systemd | Path to the `lemma` binary on the host. |
+| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories. |
+| `--bind` | `127.0.0.1` | systemd | Bind address. |
+| `--force` | `false` | all | Overwrite an existing rendered artifact. |
+
+The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. Both are rendered with all placeholders substituted (no `{{…}}` left). An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
 
 ### `lemma control-plane aggregate`
 

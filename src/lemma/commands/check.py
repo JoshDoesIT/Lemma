@@ -33,6 +33,37 @@ def _require_lemma_project() -> Path:
     return cwd
 
 
+def _build_policy_input(project_dir: Path, graph: ComplianceGraph) -> dict:
+    """Assemble the Rego ``input`` document.
+
+    Two top-level keys Rego policies can assume:
+
+    - ``input.graph`` — the full compliance graph export (``nodes`` /
+      ``edges``), same shape as ``graph.export_json()``.
+    - ``input.evidence`` — the OCSF events in the signed evidence log
+      (``EvidenceLog.read_all()``), each as a plain dict. Empty list when
+      no evidence has been collected yet.
+    """
+    from lemma.services.evidence_log import EvidenceLog
+
+    evidence_dir = project_dir / ".lemma" / "evidence"
+    evidence: list[dict] = []
+    if evidence_dir.exists():
+        evidence = [event.model_dump(mode="json") for event in EvidenceLog(evidence_dir).read_all()]
+
+    return {"graph": graph.export_json(), "evidence": evidence}
+
+
+def _run_policies(project_dir: Path, graph: ComplianceGraph, policy_dir: str):
+    from lemma.services.policy_engine import evaluate_policies
+
+    input_document = _build_policy_input(project_dir, graph)
+    return evaluate_policies(
+        policy_dir=Path(policy_dir),
+        input_document=input_document,
+    )
+
+
 def check_command(
     framework: str = typer.Option(
         "",
@@ -56,6 +87,16 @@ def check_command(
         min=0.0,
         max=1.0,
     ),
+    policy_dir: str = typer.Option(
+        "",
+        "--policy-dir",
+        help=(
+            "Directory of OPA/Rego (.rego) policies to evaluate against the "
+            "compliance graph and evidence log. Each policy declares `package "
+            "lemma` and a `deny` set of violation strings; failures count "
+            "toward the gate alongside coverage. Requires the `opa` binary."
+        ),
+    ),
 ) -> None:
     """Evaluate compliance posture and exit non-zero on any uncovered control."""
     if output_format not in _VALID_FORMATS:
@@ -70,6 +111,8 @@ def check_command(
 
     try:
         result = run_check(graph, framework=framework or None, min_confidence=min_confidence)
+        if policy_dir:
+            result.policy_outcomes = _run_policies(project_dir, graph, policy_dir)
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -102,15 +145,25 @@ def check_command(
         console.print("[green]All controls have at least one satisfying policy.[/green]")
         return
 
-    table = Table(title=f"Failed Controls ({result.failed})")
-    table.add_column("Status")
-    table.add_column("Control", style="bold")
-    table.add_column("Framework", style="cyan")
-    table.add_column("Title")
-    for outcome in result.outcomes:
-        if outcome.status != CheckStatus.FAILED:
-            continue
-        table.add_row("[red]FAILED[/red]", outcome.short_id, outcome.framework, outcome.title)
-    console.print(table)
+    failed_controls = [o for o in result.outcomes if o.status == CheckStatus.FAILED]
+    if failed_controls:
+        table = Table(title=f"Failed Controls ({len(failed_controls)})")
+        table.add_column("Status")
+        table.add_column("Control", style="bold")
+        table.add_column("Framework", style="cyan")
+        table.add_column("Title")
+        for outcome in failed_controls:
+            table.add_row("[red]FAILED[/red]", outcome.short_id, outcome.framework, outcome.title)
+        console.print(table)
+
+    failed_policies = [o for o in result.policy_outcomes if o.status == CheckStatus.FAILED]
+    if failed_policies:
+        policy_table = Table(title=f"Failed Policies ({len(failed_policies)})")
+        policy_table.add_column("Status")
+        policy_table.add_column("Policy", style="bold")
+        policy_table.add_column("Violation")
+        for outcome in failed_policies:
+            policy_table.add_row("[red]FAILED[/red]", outcome.policy_file, outcome.message)
+        console.print(policy_table)
 
     raise typer.Exit(code=1)

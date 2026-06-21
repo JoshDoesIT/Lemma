@@ -150,3 +150,64 @@ def test_load_connector_config_disabled_skips_loading_into_run(tmp_path: Path) -
     cfg_path.write_text("connector: github\nenabled: false\nconfig:\n  repo: foo/bar\n")
     cfg = load_connector_config(cfg_path)
     assert cfg.enabled is False
+
+
+def _secret_store(tmp_path: Path):
+    from lemma.services.secret_store import SecretStore
+
+    return SecretStore(tmp_path / ".lemma" / "secrets.json", passphrase="test-pass")
+
+
+def test_load_connector_config_interpolates_secret_refs(tmp_path: Path) -> None:
+    """`${secret:NAME}` resolves from the encrypted secret store (#117)."""
+    from lemma.services.connector_config import load_connector_config
+
+    store = _secret_store(tmp_path)
+    store.set("JIRA_TOKEN", "shh-from-store")
+
+    cfg_path = tmp_path / "lemma_connector_config.yaml"
+    cfg_path.write_text(
+        "connector: jira\n"
+        "config:\n"
+        "  base_url: https://x.atlassian.net\n"
+        "  token: ${secret:JIRA_TOKEN}\n"
+    )
+
+    cfg = load_connector_config(cfg_path, secret_store=store)
+    assert cfg.config["token"] == "shh-from-store"
+
+
+def test_secret_ref_without_store_raises(tmp_path: Path) -> None:
+    from lemma.services.connector_config import load_connector_config
+
+    cfg_path = tmp_path / "lemma_connector_config.yaml"
+    cfg_path.write_text("connector: jira\nconfig:\n  token: ${secret:JIRA_TOKEN}\n")
+
+    with pytest.raises(ValueError, match=r"(?i)secret store|set-secret"):
+        load_connector_config(cfg_path)
+
+
+def test_secret_ref_missing_secret_raises(tmp_path: Path) -> None:
+    from lemma.services.connector_config import load_connector_config
+
+    cfg_path = tmp_path / "lemma_connector_config.yaml"
+    cfg_path.write_text("connector: jira\nconfig:\n  token: ${secret:ABSENT}\n")
+
+    with pytest.raises(ValueError, match=r"(?i)not in the secret store|ABSENT"):
+        load_connector_config(cfg_path, secret_store=_secret_store(tmp_path))
+
+
+def test_secret_and_env_refs_coexist(tmp_path: Path, monkeypatch) -> None:
+    from lemma.services.connector_config import load_connector_config
+
+    store = _secret_store(tmp_path)
+    store.set("TOK", "secret-tok")
+    monkeypatch.setenv("JIRA_EMAIL", "ci@example.com")
+
+    cfg_path = tmp_path / "lemma_connector_config.yaml"
+    cfg_path.write_text(
+        "connector: jira\nconfig:\n  email: ${JIRA_EMAIL}\n  token: ${secret:TOK}\n"
+    )
+
+    cfg = load_connector_config(cfg_path, secret_store=store)
+    assert cfg.config == {"email": "ci@example.com", "token": "secret-tok"}
