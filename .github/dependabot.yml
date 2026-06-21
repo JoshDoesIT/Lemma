@@ -10,6 +10,16 @@ updates:
       - "type: chore"
       - "scope: dependencies"
 
+  # Maintain Python dependencies (managed with uv; reads pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "type: chore"
+      - "scope: dependencies"
+
   # Maintain dependencies for npm (Phase 1 platform core/UI)
   - package-ecosystem: "npm"
     directory: "/"
