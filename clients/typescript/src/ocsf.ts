@@ -25,7 +25,9 @@ export interface OcsfEvent {
   category_name: string;
   type_uid: number;
   activity_id: number;
-  /** RFC 3339 / ISO-8601 timestamp. */
+  /** OCSF severity (Python defaults this to 1). */
+  severity_id: number;
+  /** RFC 3339 / ISO-8601 timestamp (no sub-second part, `Z` suffix — matches Python). */
   time: string;
   metadata: OcsfMetadata;
   message?: string;
@@ -44,26 +46,38 @@ export interface ComplianceFindingInput {
   producer: string;
   time?: string;
   vendorName?: string;
+  severityId?: number;
+}
+
+/** ISO-8601 with no sub-second part and a `Z` suffix — matches Python's serialization. */
+function utcSeconds(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /**
  * Construct a well-formed OCSF Compliance Finding (class_uid 2003), filling the
- * fixed taxonomy fields so connector authors only supply the signal.
+ * fixed taxonomy fields so connector authors only supply the signal. The output
+ * is byte-identical to Python's `ComplianceFinding` serialization for the same
+ * inputs (proven by the cross-language interop fixture).
  */
 export function complianceFinding(input: ComplianceFindingInput): ComplianceFinding {
+  const product: OcsfMetadata["product"] = input.vendorName
+    ? { name: input.producer, vendor_name: input.vendorName }
+    : { name: input.producer };
   return {
     class_uid: 2003,
     class_name: "Compliance Finding",
     category_uid: 2000,
     category_name: "Findings",
     type_uid: 200301,
+    severity_id: input.severityId ?? 1,
     activity_id: 1,
-    time: input.time ?? new Date().toISOString(),
+    time: input.time ?? utcSeconds(new Date()),
     message: input.message,
     status_id: input.statusId,
     metadata: {
       version: "1.3.0",
-      product: { name: input.producer, vendor_name: input.vendorName, uid: input.uid },
+      product,
       uid: input.uid,
     },
   };

@@ -45,3 +45,17 @@ def test_fixture_uses_the_real_evidence_log_canonical_form():
     assert fixture["prevHash"] == _GENESIS_HASH
     # Recompute independently and confirm equality (no drift).
     assert _python_chain_hash(_GENESIS_HASH, fixture["payload"]) == fixture["expectedEntryHash"]
+
+
+def test_fixture_event_round_trips_through_the_real_evidence_log_hash():
+    """Airtight parity: reconstruct the fixture's event through the *real*
+    Pydantic ``ComplianceFinding`` and the production ``_compute_entry_hash``,
+    and confirm it matches the fixture hash. Because the TS factory emits this
+    exact event (asserted on the TS side), a TS-built event verifies on the
+    production Python side."""
+    from lemma.models.ocsf import ComplianceFinding
+    from lemma.services.evidence_log import _GENESIS_HASH, _compute_entry_hash
+
+    fixture = json.loads(_FIXTURE.read_text())
+    event = ComplianceFinding(**fixture["payload"]["event"])
+    assert _compute_entry_hash(_GENESIS_HASH, event, []) == fixture["expectedEntryHash"]

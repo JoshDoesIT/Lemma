@@ -85,12 +85,14 @@ surfaces as `VIOLATED` / `DEGRADED` on `verify()`.
   (`collect()` / `run()`), a `ReferenceConnector`, Ed25519 signing
   (`generateKeyPair`, `signEvent`, `verifyEvent`, `canonicalize`), and a
   hash-chained `EvidenceLog` (`append`, `entries`, `verify`).
-- **Cross-language parity**: the chain-hash primitive (`chainHash`,
-  `canonicalize`) is **byte-identical to Python's**
-  `sha256(prev_hash + json.dumps(payload, sort_keys=True, separators=(",",":")))`
-  — proven by a shared fixture checked from both sides
-  (`test/interop.test.ts` + `tests/sdk/test_ts_interop.py`).
-- **Deferred** (tracked on #108): full event-schema serialization parity (so a
-  complete TS-produced envelope round-trips through the Python verifier without
-  field-mapping), `npm` publishing, and richer OCSF classes as connector work
-  demands them.
+- **Cross-language parity (verified)**: both the chain-hash primitive
+  (`chainHash`, `canonicalize`) **and** the `complianceFinding` event
+  serialization are **byte-identical to Python's**. A shared fixture generated
+  from a real Python `ComplianceFinding` via `EvidenceLog._compute_entry_hash`
+  is checked from both sides (`test/interop.test.ts` +
+  `tests/sdk/test_ts_interop.py`): the TS factory's output equals the Python
+  event byte-for-byte, and a TS-built event hashes — through the production
+  Python hash — to the same entry hash. A TS-produced event therefore verifies
+  on the Python side.
+- **Deferred** (tracked on #108): `npm` publishing and richer OCSF classes as
+  connector work demands them.
