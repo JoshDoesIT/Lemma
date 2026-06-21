@@ -8,15 +8,20 @@ on:
   schedule:
     - cron: '0 0 * * 1' # Run weekly on Mondays
 
+# All jobs only read the checkout and report to external services via secrets
+# (OpenSSF Token-Permissions).
+permissions:
+  contents: read
+
 jobs:
   snyk-scan:
     name: Snyk SCA & Code Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
 
       - name: Setup Python
         run: uv python install 3.12
@@ -25,7 +30,7 @@ jobs:
         run: uv venv && uv pip install -e ".[dev]"
 
       - name: Run Snyk SCA (Open Source)
-        uses: snyk/actions/python-3.10@master
+        uses: snyk/actions/python-3.10@8e119fbb6c251787721d34ba683ed48eba792766 # master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -33,7 +38,7 @@ jobs:
         continue-on-error: true
 
       - name: Run Snyk Code (SAST)
-        uses: snyk/actions/python-3.10@master
+        uses: snyk/actions/python-3.10@8e119fbb6c251787721d34ba683ed48eba792766 # master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -44,10 +49,10 @@ jobs:
     name: License Compliance Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
 
       - name: Setup Python
         run: uv python install 3.12
@@ -65,10 +70,10 @@ jobs:
     name: Generate SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
 
       - name: Setup Python
         run: uv python install 3.12

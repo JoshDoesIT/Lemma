@@ -30,12 +30,14 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
-    from lemma.services.secret_store import SecretStore
+    from lemma.services.secret_backends import SecretBackend
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
-# ``${secret:NAME}`` pulls from the encrypted SecretStore (#117) rather than
-# the environment. Names are case-insensitive in the regex but resolved as
-# written; resolved before the ${ENV_VAR} pass so the two never clash.
+# ``${secret:NAME}`` pulls from the selected secret backend (#117, #227) —
+# the local encrypted store by default, or Vault / AWS Secrets Manager / OS
+# keyring — rather than the environment. Names are case-insensitive in the
+# regex but resolved as written; resolved before the ${ENV_VAR} pass so the
+# two never clash.
 _SECRET_REF_RE = re.compile(r"\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -52,7 +54,7 @@ class ConnectorConfig(BaseModel):
 
 
 def load_connector_config(
-    path: Path, *, secret_store: SecretStore | None = None
+    path: Path, *, secret_store: SecretBackend | None = None
 ) -> ConnectorConfig:
     """Load, validate, and interpolate a connector config file.
 
@@ -91,7 +93,7 @@ def load_connector_config(
         raise ValueError(msg) from exc
 
 
-def _interpolate(value: Any, *, source: str, secret_store: SecretStore | None) -> Any:
+def _interpolate(value: Any, *, source: str, secret_store: SecretBackend | None) -> Any:
     """Walk a parsed YAML structure and replace ``${...}`` refs in strings.
 
     Strict: unset env vars / missing secrets raise ``ValueError`` rather than
@@ -109,7 +111,7 @@ def _interpolate(value: Any, *, source: str, secret_store: SecretStore | None) -
     return value
 
 
-def _interpolate_string(value: str, *, source: str, secret_store: SecretStore | None) -> str:
+def _interpolate_string(value: str, *, source: str, secret_store: SecretBackend | None) -> str:
     def secret_repl(match: re.Match[str]) -> str:
         name = match.group(1)
         if secret_store is None:
