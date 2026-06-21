@@ -181,6 +181,41 @@ def _envelope(
     )
 
 
+class TestDataFreshness:
+    def _env(self, ts):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            event=SimpleNamespace(
+                class_name="Compliance Finding",
+                class_uid=2003,
+                metadata={"product": {"name": "AWS"}, "uid": "x"},
+            ),
+            signed_at=ts,
+            entry_hash="a" * 16,
+            signer_key_id="k",
+        )
+
+    def test_no_evidence_has_no_freshness_indicator(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW, evidence=None)
+        assert "evidence as of" not in html.lower()
+
+    def test_freshness_uses_latest_evidence_timestamp(self):
+        from datetime import UTC, datetime
+
+        from lemma.services.report import render_html_report
+
+        old = self._env(datetime(2026, 6, 20, 8, 0, tzinfo=UTC))
+        latest = self._env(datetime(2026, 6, 20, 10, 30, tzinfo=UTC))
+        html = render_html_report(_result(), generated_at=_NOW, evidence=[old, latest])
+        # The most recent evidence timestamp drives the indicator, not the oldest.
+        assert "evidence as of 2026-06-20 10:30 UTC" in html
+        # Relative age against generated_at (12:00 - 10:30 = 90m -> "1h ago").
+        assert "1h ago" in html
+
+
 class TestEvidenceSection:
     def test_no_evidence_omits_section(self):
         from lemma.services.report import render_html_report
