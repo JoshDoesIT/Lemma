@@ -472,7 +472,21 @@ List the available first-party connectors and their required configuration — t
 lemma connector registry
 ```
 
-Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
+Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`, `gcp`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
+
+### `lemma connector validate`
+
+Validate a connector manifest against the registry schema — the local half of the Connector Registry's "enforce schema validation on manifests before accepting submissions" rule ([#34](https://github.com/JoshDoesIT/Lemma/issues/34)), so a third-party author can check a manifest before publishing ([#109](https://github.com/JoshDoesIT/Lemma/issues/109)).
+
+```bash
+lemma connector validate <FILE>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `FILE` | Yes | Path to a connector manifest (`.json` or `.yaml`). |
+
+On top of the base `ConnectorManifest` schema (required `name`, `version`, `producer`), it enforces registry-grade rules: `name` must be **path-safe** (lowercase letters, digits, `.`, `-`, `_` — no spaces or slashes, since it becomes a directory/URL segment); `version` must be **semantic** (`MAJOR.MINOR.PATCH`, optional `-prerelease`/`+build`); and `capabilities` must be a **non-empty** list of non-blank tags. Prints `✓ <name>: manifest is valid.` and exits `0`, or lists every error (`• …`) and exits `1`. The validator (`src/lemma/services/manifest_validation.py::validate_manifest`) is shared so a future registry-submission gate enforces the same rules.
 
 ### `lemma connector run`
 

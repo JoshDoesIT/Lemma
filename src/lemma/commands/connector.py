@@ -121,6 +121,39 @@ def registry_command() -> None:
     )
 
 
+@connector_app.command(
+    name="validate",
+    help=(
+        "Validate a connector manifest against the registry schema: path-safe "
+        "name, semantic version, and at least one declared capability."
+    ),
+)
+def validate_command(
+    file: str = typer.Argument(help="Path to a connector manifest (.json / .yaml)."),
+) -> None:
+    import yaml
+
+    from lemma.services.manifest_validation import validate_manifest
+
+    path = Path(file)
+    if not path.exists():
+        _fail(f"{path}: file not found.")
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        _fail(f"{path.name}: could not parse manifest ({exc}).")
+
+    errors = validate_manifest(data)
+    if errors:
+        console.print(f"[red]✗[/red] {path.name}: {len(errors)} validation error(s):")
+        for error in errors:
+            console.print(f"  • {error}")
+        raise typer.Exit(code=1)
+
+    name = data.get("name") if isinstance(data, dict) else path.name
+    console.print(f"[green]✓[/green] {name}: manifest is valid.")
+
+
 def _secret_store():
     """Open the project's encrypted secret store (Refs #117)."""
     import os
