@@ -4,15 +4,44 @@
   "description": "TypeScript SDK for building Lemma evidence connectors (OCSF output).",
   "type": "module",
   "license": "Apache-2.0",
-  "exports": {
-    ".": "./src/index.ts"
+  "author": "Lemma",
+  "homepage": "https://github.com/JoshDoesIT/Lemma/tree/main/clients/typescript#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JoshDoesIT/Lemma.git",
+    "directory": "clients/typescript"
   },
+  "bugs": {
+    "url": "https://github.com/JoshDoesIT/Lemma/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22.6"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\""
   },
   "keywords": ["lemma", "grc", "compliance", "ocsf", "connector"],
-  "dependencies": {}
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
 }
