@@ -48,7 +48,11 @@ def add_command(
     name: str = typer.Argument(help="Framework name (e.g., nist-800-53)"),
 ) -> None:
     """Index a bundled compliance framework by name."""
+    from lemma.commands._rbac import enforce
+    from lemma.models.rbac import Permission
+
     project_dir = _require_lemma_project()
+    enforce(Permission.WRITE_MAPPING)
 
     try:
         result = add_bundled_framework(name, project_dir=project_dir)

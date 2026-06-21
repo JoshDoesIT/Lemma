@@ -13,9 +13,11 @@ Sub-commands:
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import typer
 import yaml
@@ -62,10 +64,23 @@ from lemma.services.terraform_state import (
     discover_resources_from_state as tf_state_discover_resources,
 )
 from lemma.services.vsphere_discovery import (
+    TagResolver,
+)
+from lemma.services.vsphere_discovery import (
     discover_resources_from_vsphere as vsphere_discover_resources,
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
+
+
+class _VsphereClients(NamedTuple):
+    """The pair of vSphere clients a discover run uses: the SOAP SDK content
+    (pyVmomi) and an optional modern-tag resolver (vAPI / cis.tagging)."""
+
+    content: Any
+    tag_resolver: TagResolver | None
+
 
 scope_app = typer.Typer(
     name="scope",
@@ -208,7 +223,11 @@ def status_command() -> None:
     help="Load every declared scope into the compliance graph.",
 )
 def load_command() -> None:
+    from lemma.commands._rbac import enforce
+    from lemma.models.rbac import Permission
+
     project_dir = _require_lemma_project()
+    enforce(Permission.MANAGE_SCOPES)
     scopes_dir = project_dir / "scopes"
 
     try:
@@ -811,17 +830,23 @@ def _build_device42_client(url: str) -> Any:
     return client
 
 
-def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
-    """Connect to vCenter and return the ServiceInstanceContent.
+@contextlib.contextmanager
+def _build_vsphere_clients(host: str, port: int, insecure: bool):
+    """Connect to vCenter and yield the ServiceInstanceContent.
+
+    A context manager so the SDK session is dropped with an explicit
+    ``Disconnect(si)`` on exit (success or error). The short-lived CLI would
+    survive on process-exit cleanup, but a long-running process (continuous
+    validation, scheduled discovers in one process) would otherwise leak a
+    vCenter session per run.
 
     Auth via ``LEMMA_VSPHERE_USER`` / ``LEMMA_VSPHERE_PASSWORD`` env vars.
     ``insecure=True`` skips SSL verification (lab/dev vCenters with self-signed
     certs); production should configure proper certs and leave it ``False``.
-    Process exit cleans up the session — no explicit ``Disconnect()``.
     """
     import os
 
-    from pyVim.connect import SmartConnect
+    from pyVim.connect import Disconnect, SmartConnect
     from pyVmomi import vim
 
     user = os.environ.get("LEMMA_VSPHERE_USER")
@@ -851,7 +876,41 @@ def _build_vsphere_clients(host: str, port: int, insecure: bool) -> Any:
         msg = f"vCenter '{host}:{port}' is unreachable: {exc}"
         raise ValueError(msg) from exc
 
-    return si.RetrieveContent()
+    resolver = _build_vsphere_tag_resolver(host, port, user, password, insecure)
+    try:
+        yield _VsphereClients(
+            content=si.RetrieveContent(),
+            tag_resolver=resolver.tags_for if resolver is not None else None,
+        )
+    finally:
+        # Best-effort: a failed teardown must not mask a discovery error.
+        with contextlib.suppress(Exception):
+            Disconnect(si)
+        if resolver is not None:
+            with contextlib.suppress(Exception):
+                resolver.close()
+
+
+def _build_vsphere_tag_resolver(host: str, port: int, user: str, password: str, insecure: bool):
+    """Open a vAPI tag resolver (modern Tags + Categories), or ``None``.
+
+    The Automation REST API (vAPI / ``cis.tagging``) uses a separate session
+    from the SOAP SDK. Tag enrichment is best-effort: a vCenter without the
+    Automation API, or any auth/network failure, degrades to ``None`` so the
+    legacy Custom-Attribute projection (and the rest of discovery) still runs.
+    """
+    from lemma.services.vsphere_tags import VsphereTagResolver
+
+    try:
+        return VsphereTagResolver.connect(
+            base_url=f"https://{host}:{port}",
+            user=user,
+            password=password,
+            verify=not insecure,
+        )
+    except Exception as exc:
+        logger.warning("vSphere vAPI tag enrichment unavailable on %s: %s", host, exc)
+        return None
 
 
 def _build_network_scanner(
@@ -1163,22 +1222,19 @@ def _build_candidates_for_provider(provider: str, **flags: Any) -> tuple[list, s
             raise typer.Exit(code=1)
         kinds = [k.strip() for k in flags["vsphere_kind"].split(",") if k.strip()]
         try:
-            vsphere_content = _build_vsphere_clients(
+            with _build_vsphere_clients(
                 vc_host, flags["vsphere_port"], flags["insecure"]
-            )
-        except ValueError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(code=1) from exc
-        try:
-            return (
-                vsphere_discover_resources(
-                    content=vsphere_content,
-                    vc_host=vc_host,
-                    datacenter=flags["datacenter"] or None,
-                    kinds=kinds,
-                ),
-                "vsphere",
-            )
+            ) as vsphere_clients:
+                return (
+                    vsphere_discover_resources(
+                        content=vsphere_clients.content,
+                        vc_host=vc_host,
+                        datacenter=flags["datacenter"] or None,
+                        kinds=kinds,
+                        tag_resolver=vsphere_clients.tag_resolver,
+                    ),
+                    "vsphere",
+                )
         except ValueError as exc:
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc

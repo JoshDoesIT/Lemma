@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -505,6 +506,56 @@ def log_command() -> None:
     Console(width=120).print(table)
 
 
+@evidence_app.command(
+    name="export",
+    help="Export evidence-log OCSF events for SIEM/analytics ingestion (NDJSON or JSON).",
+)
+def export_command(
+    output_format: str = typer.Option(
+        "ndjson",
+        "--format",
+        help="ndjson (one OCSF event per line, for Splunk/Elastic ingestion) or json (array).",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        help="Write to this path (parent dirs created). Default: stdout.",
+    ),
+) -> None:
+    """Emit the evidence log's OCSF events for downstream SIEM/CSPM/ITSM ingestion (Refs #41).
+
+    Unwraps the signed envelopes and emits the raw OCSF events — the shape a
+    SIEM ingests — as newline-delimited JSON (the Splunk HEC / Elasticsearch
+    bulk convention) or a single JSON array.
+    """
+    if output_format not in ("ndjson", "json"):
+        console.print(
+            f"[red]Error:[/red] Unknown --format '{output_format}'. Choose ndjson or json."
+        )
+        raise typer.Exit(code=1)
+
+    project_dir = _require_lemma_project()
+    events = EvidenceLog(log_dir=project_dir / ".lemma" / "evidence").read_all()
+
+    if output_format == "ndjson":
+        body = "\n".join(e.model_dump_json() for e in events)
+        body = body + "\n" if body else ""
+    else:
+        body = "[" + ", ".join(e.model_dump_json() for e in events) + "]"
+
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+        console.print(
+            f"[green]Exported[/green] {len(events)} OCSF event(s) to {out_path} ({output_format})."
+        )
+        return
+
+    # Plain stdout so it can be piped into a SIEM forwarder.
+    print(body, end="")
+
+
 def _key_status_style(status_value: str) -> str:
     if status_value == "ACTIVE":
         return "[green]ACTIVE[/green]"
@@ -581,6 +632,8 @@ def _first_party_connector(
     client_id: str | None = None,
     client_secret: str | None = None,
     subscription_id: str | None = None,
+    project_id: str | None = None,
+    access_token: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -678,7 +731,18 @@ def _first_party_connector(
             kwargs4["client_secret"] = client_secret
         return AzureConnector(**kwargs4)
 
-    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure"]
+    if name == "gcp":
+        from lemma.sdk.connectors.gcp import GCPConnector
+
+        if not project_id:
+            msg = "The gcp connector requires project_id (the Google Cloud project name)."
+            raise ValueError(msg)
+        kwargs5: dict = {"project_id": project_id}
+        if access_token:
+            kwargs5["access_token"] = access_token
+        return GCPConnector(**kwargs5)
+
+    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure", "gcp"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -709,6 +773,8 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         client_id=config.get("client_id"),
         client_secret=config.get("client_secret"),
         subscription_id=config.get("subscription_id"),
+        project_id=config.get("project_id"),
+        access_token=config.get("access_token"),
     )
 
 
@@ -742,7 +808,11 @@ def collect_command(
         ),
     ),
 ) -> None:
+    from lemma.commands._rbac import enforce
+    from lemma.models.rbac import Permission
+
     project_dir = _require_lemma_project()
+    enforce(Permission.COLLECT_EVIDENCE)
 
     # --config wins when set: load the file, validate, interpolate
     # ${ENV_VAR}s, then construct the connector from the resulting
@@ -751,9 +821,16 @@ def collect_command(
     # file-declared and CLI-declared values).
     if config:
         from lemma.services.connector_config import load_connector_config
+        from lemma.services.secret_store import SecretStore
+
+        # Only hand the loader a secret store when a passphrase is present, so
+        # configs that use plain ${ENV_VAR} keep working with no passphrase.
+        secret_store = None
+        if os.environ.get("LEMMA_SECRET_PASSPHRASE"):
+            secret_store = SecretStore(project_dir / ".lemma" / "secrets.json")
 
         try:
-            cfg = load_connector_config(Path(config))
+            cfg = load_connector_config(Path(config), secret_store=secret_store)
         except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(code=1) from exc
