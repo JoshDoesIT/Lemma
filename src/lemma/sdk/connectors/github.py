@@ -64,8 +64,16 @@ class GitHubConnector(Connector):
             name="github",
             version="0.1.0",
             producer=_PRODUCER,
-            description="GitHub repository posture: branch protection, CODEOWNERS, Dependabot.",
-            capabilities=["branch-protection", "codeowners", "dependabot"],
+            description=(
+                "GitHub repository posture: branch protection, CODEOWNERS, "
+                "Dependabot alerts, and Actions workflow-token permissions."
+            ),
+            capabilities=[
+                "branch-protection",
+                "codeowners",
+                "dependabot",
+                "actions-permissions",
+            ],
         )
 
     def _headers(self) -> dict[str, str]:
@@ -183,7 +191,59 @@ class GitHubConnector(Connector):
             )
         return out
 
+    def _actions_posture_finding(self) -> ComplianceFinding:
+        response = self._get(f"/repos/{self._repo}/actions/permissions/workflow")
+        uid = f"github:actions-permissions:{self._repo}:{_today_utc_iso_date()}"
+        md = _metadata(self._repo, uid)
+
+        if not response.is_success:
+            message = (
+                f"Could not read Actions workflow permissions for {self._repo}: "
+                f"HTTP {response.status_code} (Actions may be disabled)."
+            )
+            status_id = 0
+        else:
+            data = response.json()
+            default_perms = data.get("default_workflow_permissions", "")
+            can_approve = bool(data.get("can_approve_pull_request_reviews", False))
+            md["default_workflow_permissions"] = default_perms
+            md["can_approve_pull_request_reviews"] = can_approve
+
+            if default_perms == "read" and not can_approve:
+                message = (
+                    f"GitHub Actions in {self._repo} uses least-privilege defaults: "
+                    "read-only GITHUB_TOKEN and Actions cannot approve pull requests."
+                )
+                status_id = 1
+            else:
+                issues = []
+                if default_perms != "read":
+                    issues.append(
+                        f"default GITHUB_TOKEN permission is '{default_perms}' (want 'read')"
+                    )
+                if can_approve:
+                    issues.append("Actions can approve pull requests")
+                message = (
+                    f"GitHub Actions in {self._repo} is over-permissioned: "
+                    + "; ".join(issues)
+                    + "."
+                )
+                status_id = 2
+
+        return ComplianceFinding(
+            class_name="Compliance Finding",
+            category_uid=2000,
+            category_name="Findings",
+            type_uid=200301,
+            activity_id=1,
+            time=datetime.now(UTC),
+            message=message,
+            status_id=status_id,
+            metadata=md,
+        )
+
     def collect(self) -> Iterable[OcsfBaseEvent]:
         yield self._branch_protection_finding()
         yield self._codeowners_finding()
+        yield self._actions_posture_finding()
         yield from self._dependabot_findings()
