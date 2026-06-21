@@ -71,9 +71,20 @@ def _fingerprint(result: dict, rule_id: str, uri: str | None, line: int | None) 
     return hashlib.sha256(seed.encode()).hexdigest()[:12]
 
 
-def sarif_to_findings(doc: Any, *, today: str | None = None) -> list[DetectionFinding]:
-    """Map every SARIF ``result`` across every run to a ``DetectionFinding``."""
+def sarif_to_findings(
+    doc: Any,
+    *,
+    today: str | None = None,
+    control_refs: list[str] | None = None,
+) -> list[DetectionFinding]:
+    """Map every SARIF ``result`` across every run to a ``DetectionFinding``.
+
+    When ``control_refs`` is supplied, every finding carries those control ids
+    in ``metadata.control_refs`` so ``lemma evidence load`` wires the ingested
+    findings to the named controls as ``EVIDENCES`` edges.
+    """
     date = today or _today()
+    refs = [r for r in (control_refs or []) if isinstance(r, str) and r.strip()]
     findings: list[DetectionFinding] = []
     if not isinstance(doc, dict):
         return findings
@@ -126,6 +137,8 @@ def sarif_to_findings(doc: Any, *, today: str | None = None) -> list[DetectionFi
                 location_suffix = f" ({uri}:{line})" if line is not None else f" ({uri})"
             if line is not None:
                 md["location_line"] = line
+            if refs:
+                md["control_refs"] = list(refs)
 
             message = f"{tool}: {rule_id}" + (f" — {text}" if text else "") + location_suffix
 

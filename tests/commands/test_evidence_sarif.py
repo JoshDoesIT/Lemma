@@ -65,6 +65,23 @@ def test_import_sarif_appends_signed_findings(tmp_path, monkeypatch):
     assert {"source", "transform"} <= stages
 
 
+def test_import_sarif_control_tags_findings(tmp_path, monkeypatch):
+    from lemma.services.evidence_log import EvidenceLog
+
+    _init_project(tmp_path, monkeypatch)
+    report = _write_sarif(tmp_path)
+
+    result = CliRunner().invoke(
+        app,
+        ["evidence", "import-sarif", str(report), "--controls", "AC-6, SI-2"],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    envelopes = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence").read_envelopes()
+    assert envelopes
+    assert all(env.event.metadata["control_refs"] == ["AC-6", "SI-2"] for env in envelopes)
+
+
 def test_import_sarif_dedupes_on_reimport(tmp_path, monkeypatch):
     _init_project(tmp_path, monkeypatch)
     report = _write_sarif(tmp_path)

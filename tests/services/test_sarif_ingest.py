@@ -106,6 +106,24 @@ def test_empty_or_resultless_documents_yield_nothing():
     )
 
 
+def test_control_refs_are_attached_to_every_finding():
+    from lemma.services.sarif_ingest import sarif_to_findings
+
+    findings = sarif_to_findings(_SARIF, today="2026-06-21", control_refs=["AC-6", "SI-2"])
+    assert findings
+    assert all(f.metadata["control_refs"] == ["AC-6", "SI-2"] for f in findings)
+
+
+def test_no_control_refs_leaves_metadata_clean():
+    from lemma.services.sarif_ingest import sarif_to_findings
+
+    findings = sarif_to_findings(_SARIF, today="2026-06-21")
+    assert all("control_refs" not in f.metadata for f in findings)
+    # Blank entries are dropped rather than carried through.
+    blanks = sarif_to_findings(_SARIF, today="2026-06-21", control_refs=["  ", ""])
+    assert all("control_refs" not in f.metadata for f in blanks)
+
+
 def test_missing_optional_fields_degrade_gracefully():
     from lemma.services.sarif_ingest import sarif_to_findings
 
