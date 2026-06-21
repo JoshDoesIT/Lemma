@@ -822,15 +822,13 @@ def collect_command(
     # file-declared and CLI-declared values).
     if config:
         from lemma.services.connector_config import load_connector_config
-        from lemma.services.secret_store import SecretStore
-
-        # Only hand the loader a secret store when a passphrase is present, so
-        # configs that use plain ${ENV_VAR} keep working with no passphrase.
-        secret_store = None
-        if os.environ.get("LEMMA_SECRET_PASSPHRASE"):
-            secret_store = SecretStore(project_dir / ".lemma" / "secrets.json")
+        from lemma.services.secret_backends import resolve_secret_backend
 
         try:
+            # Backend selected via LEMMA_SECRET_BACKEND (default: the local
+            # store, used only when LEMMA_SECRET_PASSPHRASE is set so plain
+            # ${ENV_VAR} configs keep working with no passphrase).
+            secret_store = resolve_secret_backend(project_root=project_dir, env=os.environ)
             cfg = load_connector_config(Path(config), secret_store=secret_store)
         except (FileNotFoundError, ValueError) as exc:
             console.print(f"[red]Error:[/red] {exc}")

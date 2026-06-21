@@ -316,3 +316,40 @@ class TestConnectorRun:
         assert result.exit_code == 0
         assert "disabled" in result.stdout.lower()
         assert calls == []
+
+    def test_run_resolves_secret_via_selected_backend(self, tmp_path: Path, monkeypatch):
+        """`connector run` honors LEMMA_SECRET_BACKEND and resolves
+        ``${secret:NAME}`` from the selected remote backend (#227)."""
+        from lemma.cli import app
+        from lemma.services import secret_backends
+
+        self._init_project(tmp_path, monkeypatch)
+
+        # Inject a fake OS keyring so CI never touches a live store.
+        class _FakeKeyring:
+            def get_password(self, service, name):
+                return "kr-secret" if (service, name) == ("lemma-connectors", "TOK") else None
+
+        monkeypatch.setattr(
+            secret_backends.KeyringSecretBackend,
+            "_ensure_keyring",
+            lambda self: _FakeKeyring(),
+        )
+        monkeypatch.setenv("LEMMA_SECRET_BACKEND", "keyring")
+
+        captured: dict = {}
+
+        def _capture(connector_name, config_dict):
+            captured["config"] = config_dict
+            return self._stub_connector([])
+
+        monkeypatch.setattr(
+            "lemma.commands.evidence._connector_from_config_dict", _capture
+        )
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("connector: stub\nconfig:\n  token: ${secret:TOK}\n")
+
+        result = runner.invoke(app, ["connector", "run", "--config", str(cfg), "--once"])
+        assert result.exit_code == 0, result.stdout
+        assert captured["config"] == {"token": "kr-secret"}
