@@ -33,7 +33,7 @@ regression test (`tests/tools/test_workflow_security.py`):
 | Vulnerabilities | Met | Snyk SCA runs on every PR (`security.yml`) |
 | License | Met | `LICENSE` (Apache-2.0) |
 | Branch-Protection | **Repo setting** | enable on `main` in Settings → Branches (see below) |
-| Signed-Releases | Open | sigstore/cosign provenance tracked in #47 |
+| Signed-Releases | Met | keyless cosign signatures + SLSA build provenance on every release ([Verifying Releases](verifying-releases.md)) |
 | Code-Review | Partial | structurally limited on a solo-maintainer repo; mitigated by mandatory PR + self-review |
 
 ### Repo settings that aren't a code change
@@ -93,7 +93,8 @@ Status of each criterion group; **Met** items cite the satisfying artifact,
 
 - Register the project and record the ID above.
 - Enable branch protection + Dependabot security updates (repo settings).
-- Signed releases / SLSA provenance — #47.
+- ~~Signed releases / SLSA provenance~~ — done (#47): keyless cosign + SLSA
+  build provenance, see [Verifying Releases](verifying-releases.md).
 
 Silver and gold tiers (formal patch review by a second maintainer, multiple
 unaffiliated maintainers) are structurally hard on a solo-maintainer project
