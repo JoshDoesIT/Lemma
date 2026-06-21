@@ -176,7 +176,9 @@ class TestConnectorTestFixture:
         result = runner.invoke(app, ["connector", "test", str(fixture)])
 
         assert result.exit_code == 1
-        assert "line 2" in result.stdout.lower()  # the second line is the bad one
+        # Normalize whitespace: rich wraps the long path across lines on a
+        # narrow (CI) console, which would otherwise split "line 2".
+        assert "line 2" in " ".join(result.stdout.split()).lower()  # 2nd line is the bad one
 
     def test_malformed_json_line_reports_line(self, tmp_path: Path):
         from lemma.cli import app
@@ -187,7 +189,8 @@ class TestConnectorTestFixture:
         result = runner.invoke(app, ["connector", "test", str(fixture)])
 
         assert result.exit_code == 1
-        assert "line 2" in result.stdout.lower()
+        # Normalize whitespace (see test_reports_offending_line_number).
+        assert "line 2" in " ".join(result.stdout.split()).lower()
 
     def test_empty_fixture_is_an_error(self, tmp_path: Path):
         from lemma.cli import app
