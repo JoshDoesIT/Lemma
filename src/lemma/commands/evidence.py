@@ -632,6 +632,8 @@ def _first_party_connector(
     client_id: str | None = None,
     client_secret: str | None = None,
     subscription_id: str | None = None,
+    project_id: str | None = None,
+    access_token: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -729,7 +731,18 @@ def _first_party_connector(
             kwargs4["client_secret"] = client_secret
         return AzureConnector(**kwargs4)
 
-    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure"]
+    if name == "gcp":
+        from lemma.sdk.connectors.gcp import GCPConnector
+
+        if not project_id:
+            msg = "The gcp connector requires project_id (the Google Cloud project name)."
+            raise ValueError(msg)
+        kwargs5: dict = {"project_id": project_id}
+        if access_token:
+            kwargs5["access_token"] = access_token
+        return GCPConnector(**kwargs5)
+
+    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure", "gcp"]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -760,6 +773,8 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         client_id=config.get("client_id"),
         client_secret=config.get("client_secret"),
         subscription_id=config.get("subscription_id"),
+        project_id=config.get("project_id"),
+        access_token=config.get("access_token"),
     )
 
 
