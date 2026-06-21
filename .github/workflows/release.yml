@@ -15,7 +15,9 @@ jobs:
     name: Build and Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # create the release + upload assets
+      contents: write      # create the release + upload assets
+      id-token: write      # keyless cosign signing + SLSA provenance (OIDC)
+      attestations: write  # SLSA build-provenance attestations
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -47,6 +49,23 @@ jobs:
       - name: Generate AI BOM (CycloneDX 1.6)
         run: uv run lemma ai bom > aibom.cdx.json
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign release artifacts (keyless cosign)
+        run: |
+          # Keyless: signing identity is this workflow's OIDC token (no private
+          # key). Each artifact gets a Sigstore bundle verifiable with
+          # `cosign verify-blob --bundle <f>.cosign.bundle ...`.
+          for f in dist/* sbom.json aibom.cdx.json ai-system-card.json; do
+            cosign sign-blob --yes --bundle "${f}.cosign.bundle" "$f"
+          done
+
+      - name: Attest SLSA build provenance (Python artifacts)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: dist/*
+
       - name: Capture AI System Card version
         id: card_version
         run: |
@@ -66,8 +85,11 @@ jobs:
           files: |
             dist/*
             sbom.json
+            sbom.json.cosign.bundle
             aibom.cdx.json
+            aibom.cdx.json.cosign.bundle
             ai-system-card.json
+            ai-system-card.json.cosign.bundle
             ai-system-card.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

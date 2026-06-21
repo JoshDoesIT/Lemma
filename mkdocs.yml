@@ -72,6 +72,7 @@ nav:
   - Security:
     - Evidence Integrity & Transport: security/evidence-and-transport.md
     - Connector Credentials: security/connector-secrets.md
+    - Verifying Releases: security/verifying-releases.md
     - OpenSSF Best Practices: security/openssf-best-practices.md
   - Contributing:
     - Developer Guide: contributing/index.md
