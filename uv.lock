@@ -1585,7 +1585,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "python-hcl2", specifier = ">=4.0" },
-    { name = "pyvmomi", specifier = ">=8.0" },
+    { name = "pyvmomi", specifier = ">=9.1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
@@ -3080,10 +3080,10 @@ wheels = [
 
 [[package]]
 name = "pyvmomi"
-version = "9.0.0.0"
+version = "9.1.0.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/e4/fbb539220f9d7647bf92543401f1b443cd43b25354237291e64618da3e4a/pyvmomi-9.0.0.0-py3-none-any.whl", hash = "sha256:7812642a62b6ce2b439d7e4856d27101ad102734bce41daf77bedfb3e2d9cbf2", size = 1993709, upload-time = "2025-06-17T16:54:05.865Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/5c/044debed55cf2ea6f7bdd7da7bb4c0b5feeb06158380dfd0b450b3b55611/pyvmomi-9.1.0.0-py3-none-any.whl", hash = "sha256:f4b024baa7e5179d14f350dd006b788365e4aaadf15850e36024945a114db92b", size = 552669, upload-time = "2026-05-12T10:23:45.268Z" },
 ]
 
 [[package]]
