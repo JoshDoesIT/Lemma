@@ -80,6 +80,30 @@ def _escape(text: str) -> str:
     return html.escape(text or "")
 
 
+def _freshness_label(evidence: list | None, now: datetime) -> str:
+    """Data-freshness indicator: when evidence was last collected (Refs #40).
+
+    Returns an empty string when there is no evidence, so the header degrades
+    cleanly. The relative age is best-effort — a naive/aware timestamp mismatch
+    falls back to the absolute timestamp without an "ago" suffix.
+    """
+    if not evidence:
+        return ""
+    latest = max(env.signed_at for env in evidence)
+    label = f" · evidence as of {latest:%Y-%m-%d %H:%M UTC}"
+    try:
+        seconds = max(0, int((now - latest).total_seconds()))
+    except TypeError:
+        return label
+    if seconds < 3600:
+        ago = f"{seconds // 60}m ago"
+    elif seconds < 86400:
+        ago = f"{seconds // 3600}h ago"
+    else:
+        ago = f"{seconds // 86400}d ago"
+    return f"{label} ({ago})"
+
+
 def render_html_report(
     result: CheckResult,
     *,
@@ -124,7 +148,8 @@ def render_html_report(
 <body>
 <div class="wrap">
   <h1>Lemma Compliance Posture <span class="dot">∴</span></h1>
-  <div class="meta">{scope_label} · generated {generated_at:%Y-%m-%d %H:%M UTC}</div>
+  <div class="meta">{scope_label} · generated {generated_at:%Y-%m-%d %H:%M UTC}\
+{_freshness_label(evidence, generated_at)}</div>
 
   <div class="summary">
     <div class="stat">
