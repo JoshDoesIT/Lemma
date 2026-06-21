@@ -44,7 +44,7 @@ dependencies = [
 [project.optional-dependencies]
 ingest = [
     "docling>=2.94.0",
-    "pandas>=2.0",
+    "pandas>=3.0.3",
     "openpyxl>=3.1",
 ]
 cloud = [
