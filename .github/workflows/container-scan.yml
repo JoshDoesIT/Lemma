@@ -31,8 +31,9 @@ jobs:
       - name: Build agent image
         run: docker build -t lemma-agent:scan -f agent/Dockerfile agent/
 
-      # First pass: emit SARIF for Code Scanning. exit-code 0 so the upload
-      # always runs even when findings exist.
+      # Scan the built image and emit SARIF. Report-mode (exit-code 0): findings
+      # surface in the Security → Code Scanning tab rather than hard-blocking the
+      # build, matching the repo's existing Snyk SCA/Code posture in security.yml.
       - name: Trivy scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -48,13 +49,3 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-container
-
-      # Second pass: fail the build on fixable CRITICAL/HIGH vulnerabilities.
-      - name: Trivy gate (fail on CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: lemma-agent:scan
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'
