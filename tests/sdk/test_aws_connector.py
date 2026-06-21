@@ -13,24 +13,42 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def _iam_mock() -> MagicMock:
+    """A fully-configured IAM client mock: root MFA on, a 14-char password policy,
+    two paginated users, and one fresh access key. Tests override the return value
+    for whichever signal they exercise."""
+    iam = MagicMock()
+    iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 1}}
+    iam.get_account_password_policy.return_value = {
+        "PasswordPolicy": {"MinimumPasswordLength": 14, "RequireSymbols": True}
+    }
+    iam.get_paginator.return_value.paginate.return_value = [
+        {"Users": [{"UserName": "alice"}, {"UserName": "bob"}]},
+    ]
+    iam.list_access_keys.return_value = {
+        "AccessKeyMetadata": [
+            {"AccessKeyId": "AKIAFRESH", "Status": "Active", "CreateDate": datetime.now(UTC)}
+        ]
+    }
+    return iam
+
+
 def _fake_session(
     *,
     account_id: str = "123456789012",
     iam_client: MagicMock | None = None,
     cloudtrail_client: MagicMock | None = None,
     sts_client: MagicMock | None = None,
+    config_client: MagicMock | None = None,
+    s3control_client: MagicMock | None = None,
+    ec2_client: MagicMock | None = None,
 ) -> MagicMock:
     """Build a MagicMock boto3 Session that returns the given clients."""
     session = MagicMock()
     sts = sts_client or MagicMock()
     if sts_client is None:
         sts.get_caller_identity.return_value = {"Account": account_id}
-    iam = iam_client or MagicMock()
-    if iam_client is None:
-        iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 1}}
-        iam.get_account_password_policy.return_value = {
-            "PasswordPolicy": {"MinimumPasswordLength": 14, "RequireSymbols": True}
-        }
+    iam = iam_client or _iam_mock()
     trail = cloudtrail_client or MagicMock()
     if cloudtrail_client is None:
         trail.describe_trails.return_value = {
@@ -38,9 +56,52 @@ def _fake_session(
                 {"Name": "org-trail", "IsMultiRegionTrail": True, "HomeRegion": "us-east-1"}
             ]
         }
+    config = config_client or MagicMock()
+    if config_client is None:
+        config.describe_configuration_recorders.return_value = {
+            "ConfigurationRecorders": [{"name": "default"}]
+        }
+        config.describe_configuration_recorder_status.return_value = {
+            "ConfigurationRecordersStatus": [
+                {"name": "default", "recording": True, "lastStatus": "SUCCESS"}
+            ]
+        }
+    s3c = s3control_client or MagicMock()
+    if s3control_client is None:
+        s3c.get_public_access_block.return_value = {
+            "PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
+            }
+        }
+    ec2 = ec2_client or MagicMock()
+    if ec2_client is None:
+        ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-1"}]}
+        ec2.describe_flow_logs.return_value = {"FlowLogs": [{"ResourceId": "vpc-1"}]}
+        ec2.describe_security_groups.return_value = {
+            "SecurityGroups": [
+                {
+                    "GroupName": "default",
+                    "GroupId": "sg-1",
+                    "IpPermissions": [],
+                    "IpPermissionsEgress": [],
+                }
+            ]
+        }
+
+    clients = {
+        "iam": iam,
+        "cloudtrail": trail,
+        "sts": sts,
+        "config": config,
+        "s3control": s3c,
+        "ec2": ec2,
+    }
 
     def _client(service_name: str, **_kwargs):
-        return {"iam": iam, "cloudtrail": trail, "sts": sts}[service_name]
+        return clients[service_name]
 
     session.client.side_effect = _client
     return session
@@ -77,11 +138,8 @@ class TestIAMRootMFA:
         from lemma.models.ocsf import ComplianceFinding
         from lemma.sdk.connectors.aws import AWSConnector
 
-        iam = MagicMock()
+        iam = _iam_mock()
         iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 0}}
-        iam.get_account_password_policy.return_value = {
-            "PasswordPolicy": {"MinimumPasswordLength": 14}
-        }
         connector = AWSConnector(region="us-east-1", session=_fake_session(iam_client=iam))
         mfa = [
             e
@@ -114,8 +172,7 @@ class TestIAMPasswordPolicy:
         from lemma.models.ocsf import ComplianceFinding
         from lemma.sdk.connectors.aws import AWSConnector
 
-        iam = MagicMock()
-        iam.get_account_summary.return_value = {"SummaryMap": {"AccountMFAEnabled": 1}}
+        iam = _iam_mock()
         iam.get_account_password_policy.side_effect = ClientError(
             {"Error": {"Code": "NoSuchEntity", "Message": "no policy"}},
             "GetAccountPasswordPolicy",
@@ -171,6 +228,206 @@ class TestCloudTrail:
         assert ct[0].status_id == 2
 
 
+def _uid_prefix(event, prefix: str) -> bool:
+    return event.metadata.get("product", {}).get("uid", "").startswith(prefix)
+
+
+class TestIAMInventory:
+    def test_paginated_user_inventory_counts_all_pages(self):
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        iam = _iam_mock()
+        # Two pages — a single-page reader would under-count (the capped-at-100 bug).
+        iam.get_paginator.return_value.paginate.return_value = [
+            {"Users": [{"UserName": "a"}, {"UserName": "b"}]},
+            {"Users": [{"UserName": "c"}]},
+        ]
+        iam.list_access_keys.return_value = {"AccessKeyMetadata": []}
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session(iam_client=iam))
+        inv = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:iam-inventory:")
+        ]
+        assert len(inv) == 1
+        assert inv[0].metadata["user_count"] == 3
+        iam.get_paginator.assert_called_with("list_users")
+
+    def test_stale_access_key_fails(self):
+        from datetime import timedelta
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        iam = _iam_mock()
+        iam.get_paginator.return_value.paginate.return_value = [{"Users": [{"UserName": "old"}]}]
+        iam.list_access_keys.return_value = {
+            "AccessKeyMetadata": [
+                {
+                    "AccessKeyId": "AKIAOLD",
+                    "Status": "Active",
+                    "CreateDate": datetime.now(UTC) - timedelta(days=400),
+                }
+            ]
+        }
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session(iam_client=iam))
+        inv = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:iam-inventory:")
+        )
+        assert inv.status_id == 2
+        assert inv.metadata["stale_access_key_count"] == 1
+
+
+class TestConfigRecorder:
+    def test_recording_recorder_passes(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session())
+        cfg = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:config-recorder:")
+        )
+        assert cfg.status_id == 1
+
+    def test_no_recorder_fails(self):
+        from unittest.mock import MagicMock
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        config = MagicMock()
+        config.describe_configuration_recorders.return_value = {"ConfigurationRecorders": []}
+        config.describe_configuration_recorder_status.return_value = {
+            "ConfigurationRecordersStatus": []
+        }
+        connector = AWSConnector(region="us-east-1", session=_fake_session(config_client=config))
+        cfg = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:config-recorder:")
+        )
+        assert cfg.status_id == 2
+
+
+class TestS3PublicAccessBlock:
+    def test_all_blocked_passes(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session())
+        s3 = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:s3-public-access-block:")
+        )
+        assert s3.status_id == 1
+
+    def test_missing_block_fails(self):
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        s3c = MagicMock()
+        s3c.get_public_access_block.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchPublicAccessBlockConfiguration"}}, "GetPublicAccessBlock"
+        )
+        connector = AWSConnector(region="us-east-1", session=_fake_session(s3control_client=s3c))
+        s3 = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:s3-public-access-block:")
+        )
+        assert s3.status_id == 2
+
+
+class TestVPCFlowLogs:
+    def test_all_vpcs_covered_passes(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session())
+        vpc = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:vpc-flow-logs:")
+        )
+        assert vpc.status_id == 1
+        assert vpc.metadata["vpcs_with_flow_logs"] == 1
+
+    def test_uncovered_vpc_fails(self):
+        from unittest.mock import MagicMock
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        ec2 = MagicMock()
+        ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-1"}, {"VpcId": "vpc-2"}]}
+        ec2.describe_flow_logs.return_value = {"FlowLogs": [{"ResourceId": "vpc-1"}]}
+        ec2.describe_security_groups.return_value = {"SecurityGroups": []}
+        connector = AWSConnector(region="us-east-1", session=_fake_session(ec2_client=ec2))
+        vpc = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:vpc-flow-logs:")
+        )
+        assert vpc.status_id == 2
+        assert vpc.metadata["vpc_count"] == 2
+        assert vpc.metadata["vpcs_with_flow_logs"] == 1
+
+
+class TestDefaultSecurityGroup:
+    def test_locked_down_default_sg_passes(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        connector = AWSConnector(region="us-east-1", session=_fake_session())
+        sg = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:default-sg:")
+        )
+        assert sg.status_id == 1
+
+    def test_default_sg_with_rules_fails(self):
+        from unittest.mock import MagicMock
+
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.aws import AWSConnector
+
+        ec2 = MagicMock()
+        ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-1"}]}
+        ec2.describe_flow_logs.return_value = {"FlowLogs": [{"ResourceId": "vpc-1"}]}
+        ec2.describe_security_groups.return_value = {
+            "SecurityGroups": [
+                {
+                    "GroupName": "default",
+                    "GroupId": "sg-open",
+                    "IpPermissions": [{"IpProtocol": "-1"}],
+                    "IpPermissionsEgress": [],
+                }
+            ]
+        }
+        connector = AWSConnector(region="us-east-1", session=_fake_session(ec2_client=ec2))
+        sg = next(
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding) and _uid_prefix(e, "aws:default-sg:")
+        )
+        assert sg.status_id == 2
+        assert sg.metadata["open_default_sg_count"] == 1
+
+
 class TestCredentialsMissing:
     def test_no_credentials_raises_clean_value_error(self):
         from botocore.exceptions import NoCredentialsError
@@ -217,7 +474,9 @@ class TestEndToEnd:
         log = EvidenceLog(log_dir=tmp_path / ".lemma" / "evidence")
         result = connector.run(log)
 
-        assert result.ingested == 3  # IAM root MFA + password policy + CloudTrail
+        # 8 signals: IAM root MFA + password policy + inventory, CloudTrail,
+        # Config recorder, S3 public-access block, VPC flow logs, default SG.
+        assert result.ingested == 8
         envelopes = log.read_envelopes()
         assert all(env.signer_key_id.startswith("ed25519:") for env in envelopes)
         for prior, current in pairwise(envelopes):
