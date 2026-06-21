@@ -36,8 +36,18 @@ export interface VerifyResult {
   reason: string;
 }
 
+/**
+ * The chain-hash primitive, byte-identical to Python's
+ * `sha256(prev_hash + json.dumps(payload, sort_keys=True, separators=(",",":")))`.
+ * `canonicalize` emits compact, recursively key-sorted JSON, matching Python's
+ * sorted compact form — proven by the cross-language fixture test.
+ */
+export function chainHash(prevHash: string, payload: unknown): string {
+  return createHash("sha256").update(prevHash + canonicalize(payload), "utf8").digest("hex");
+}
+
 function computeEntryHash(prevHash: string, event: OcsfEvent): string {
-  return createHash("sha256").update(prevHash + canonicalize(event), "utf8").digest("hex");
+  return chainHash(prevHash, event);
 }
 
 export class EvidenceLog {

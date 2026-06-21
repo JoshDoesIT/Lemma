@@ -85,7 +85,12 @@ surfaces as `VIOLATED` / `DEGRADED` on `verify()`.
   (`collect()` / `run()`), a `ReferenceConnector`, Ed25519 signing
   (`generateKeyPair`, `signEvent`, `verifyEvent`, `canonicalize`), and a
   hash-chained `EvidenceLog` (`append`, `entries`, `verify`).
-- **Deferred** (tracked on #108): byte-for-byte parity with the Python
-  entry-hash layout so a TS-produced envelope verifies on the Python side (the
-  chaining/verification semantics already match), `npm` publishing, and richer
-  OCSF classes as connector work demands them.
+- **Cross-language parity**: the chain-hash primitive (`chainHash`,
+  `canonicalize`) is **byte-identical to Python's**
+  `sha256(prev_hash + json.dumps(payload, sort_keys=True, separators=(",",":")))`
+  — proven by a shared fixture checked from both sides
+  (`test/interop.test.ts` + `tests/sdk/test_ts_interop.py`).
+- **Deferred** (tracked on #108): full event-schema serialization parity (so a
+  complete TS-produced envelope round-trips through the Python verifier without
+  field-mapping), `npm` publishing, and richer OCSF classes as connector work
+  demands them.
