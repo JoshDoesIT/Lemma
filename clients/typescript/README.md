@@ -5,13 +5,25 @@ The TypeScript counterpart of Lemma's Python connector SDK (Refs
 connectors in TypeScript that emit OCSF events byte-compatible with what
 `lemma evidence collect` ingests.
 
-This is the **v0 authoring slice**: OCSF types, a `Connector` base, and a
-runnable reference connector. It is dependency-free and runs under Node's
-built-in TypeScript support — no build step, no `tsc`, no `node_modules`.
+OCSF types, a `Connector` base, a runnable reference connector, Ed25519
+signing, and a hash-chained evidence log. The runtime is **dependency-free**
+and develops with **no build step** — source runs directly under Node's
+built-in TypeScript support. Publishing compiles `.js` + `.d.ts` into `dist/`
+so npm consumers get full type annotations.
 
 ## Requirements
 
 - Node.js ≥ 22.6 (uses `--experimental-strip-types`).
+
+## Install
+
+```bash
+npm install @lemma/connector-sdk
+```
+
+The package ships type declarations (`dist/*.d.ts`) and resolves under
+`moduleResolution: nodenext`/`bundler`, so imports are fully typed with no
+`@types` package needed.
 
 ## Build your first connector
 
@@ -43,7 +55,32 @@ export class AcmeConnector extends Connector {
 ```bash
 cd clients/typescript
 npm test          # node --test --experimental-strip-types test/
+npm run build     # emit dist/*.js + dist/*.d.ts (what gets published)
 ```
+
+## Validating output against Lemma's OCSF schema
+
+A connector authored here emits OCSF events; `lemma connector test` (the Python
+CLI) validates an emitted fixture against the **same** OCSF schema Python
+connectors are held to — the cross-language acceptance check:
+
+```bash
+# Dump your connector's events to a file, one JSON object per line…
+node --experimental-strip-types your-connector.ts > events.jsonl
+# …then validate them against the production OCSF schema.
+lemma connector test events.jsonl
+```
+
+`test/fixtures/ts-connector-events.jsonl` is a committed example: the TS test
+asserts the SDK reproduces it, and `tests/sdk/test_ts_interop.py` runs
+`lemma connector test` over it, so the two languages stay in lockstep.
+
+## Publishing
+
+Publishing is automated. Push a `connector-sdk-v<version>` tag (matching
+`package.json`'s `version`) and the `Connector SDK` workflow builds and runs
+`npm publish` using the `NPM_TOKEN` repository secret. `prepublishOnly`
+recompiles `dist/` first, so a release always carries fresh `.js` + `.d.ts`.
 
 ## Signing
 
@@ -94,5 +131,8 @@ surfaces as `VIOLATED` / `DEGRADED` on `verify()`.
   event byte-for-byte, and a TS-built event hashes — through the production
   Python hash — to the same entry hash. A TS-produced event therefore verifies
   on the Python side.
-- **Deferred** (tracked on #108): `npm` publishing and richer OCSF classes as
-  connector work demands them.
+- **Published to npm** (#228): `@lemma/connector-sdk` ships with compiled
+  `.d.ts` types, and `lemma connector test <fixture>` validates a TS
+  connector's emitted OCSF output against the production schema.
+- **Richer OCSF classes** are added as the lexicon expands — tracked in
+  [#89](https://github.com/JoshDoesIT/Lemma/issues/89).

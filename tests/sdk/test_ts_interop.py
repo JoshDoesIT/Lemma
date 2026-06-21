@@ -59,3 +59,29 @@ def test_fixture_event_round_trips_through_the_real_evidence_log_hash():
     fixture = json.loads(_FIXTURE.read_text())
     event = ComplianceFinding(**fixture["payload"]["event"])
     assert _compute_entry_hash(_GENESIS_HASH, event, []) == fixture["expectedEntryHash"]
+
+
+_TS_EVENTS_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "clients"
+    / "typescript"
+    / "test"
+    / "fixtures"
+    / "ts-connector-events.jsonl"
+)
+
+
+def test_lemma_connector_test_validates_ts_emitted_events():
+    """`lemma connector test <fixture>` accepts a TS-authored connector's
+    emitted OCSF events (#228). The fixture is the committed output of the TS
+    SDK's `complianceFinding()` (asserted byte-for-byte on the TS side); here
+    the production CLI validates it against the same OCSF schema Python
+    connectors are held to."""
+    from typer.testing import CliRunner
+
+    from lemma.cli import app
+
+    result = CliRunner().invoke(app, ["connector", "test", str(_TS_EVENTS_FIXTURE)])
+
+    assert result.exit_code == 0, result.stdout
+    assert "validated against the OCSF schema" in result.stdout

@@ -1,0 +1,69 @@
+name: Connector SDK (TypeScript)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths: [ "clients/typescript/**" ]
+    tags: [ "connector-sdk-v*" ]
+  pull_request:
+    branches: [ "main" ]
+    paths: [ "clients/typescript/**" ]
+
+defaults:
+  run:
+    working-directory: clients/typescript
+
+jobs:
+  test:
+    name: Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Run tests (zero-dependency, type-stripped)
+        run: npm test
+
+      - name: Build declarations + JS
+        run: npm run build
+
+      - name: Verify the published tarball ships .d.ts types
+        run: |
+          npm pack
+          tar -tf lemma-connector-sdk-*.tgz | grep -q 'package/dist/index.d.ts' \
+            || { echo "::error::dist/index.d.ts missing from package tarball"; exit 1; }
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/connector-sdk-v')
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      # `prepublishOnly` runs the build, so the published package always carries
+      # freshly compiled .js + .d.ts. Requires the NPM_TOKEN repo secret.
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

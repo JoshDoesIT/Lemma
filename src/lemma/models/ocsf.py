@@ -113,3 +113,30 @@ class AuthenticationEvent(_CategoryPinnedEvent):
 
     _expected_category: ClassVar[int] = OcsfCategory.IAM
     class_uid: Literal[3002] = 3002
+
+
+# Concrete OCSF classes keyed by ``class_uid``. Events whose class isn't pinned
+# here validate against ``OcsfBaseEvent`` (required-field + type checks) so the
+# validator is useful for any OCSF event while still enforcing the stricter,
+# category-pinned schema for the classes Lemma's connectors actually emit.
+_EVENT_CLASSES: dict[int, type[OcsfBaseEvent]] = {
+    2003: ComplianceFinding,
+    2004: DetectionFinding,
+    3002: AuthenticationEvent,
+}
+
+
+def validate_ocsf_event(data: dict[str, Any]) -> OcsfBaseEvent:
+    """Validate one raw OCSF event dict against the canonical Lemma schema.
+
+    Dispatches on ``class_uid`` to the concrete, category-pinned model
+    (``ComplianceFinding`` etc.), falling back to ``OcsfBaseEvent`` for classes
+    without a pinned model. This is the same validation a Python connector's
+    emitted events undergo, so a connector authored in another language (e.g.
+    the TypeScript SDK) is held to an identical bar.
+
+    Raises:
+        pydantic.ValidationError: If the event violates the schema.
+    """
+    model = _EVENT_CLASSES.get(data.get("class_uid"), OcsfBaseEvent)
+    return model(**data)

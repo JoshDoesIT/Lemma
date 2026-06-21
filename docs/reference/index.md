@@ -456,13 +456,17 @@ The scaffolded project is runnable out of the box — it subclasses the referenc
 
 ### `lemma connector test`
 
-Validate a connector project by importing it, running `collect()`, and checking every event against the OCSF schema.
+Validate connector output against the OCSF schema. `<PATH>` is either:
+
+- a **connector project directory** (from `lemma connector init`) — imported, `collect()` is run, and every emitted event is checked; or
+- a **fixture file** (`.jsonl` or `.json`) of already-emitted OCSF events — each is validated against the same schema. This is the cross-language path: a connector authored in the [TypeScript SDK](https://github.com/JoshDoesIT/Lemma/tree/main/clients/typescript) dumps its events to a file and validates them with the same bar Python connectors meet ([#228](https://github.com/JoshDoesIT/Lemma/issues/228)).
 
 ```bash
-lemma connector test <PATH>
+lemma connector test <PATH>           # project directory, or
+lemma connector test events.jsonl     # an emitted OCSF fixture file
 ```
 
-Exits `0` with an event-count summary on success, `1` on malformed output, import failure, missing fixture, or schema violation.
+Events are dispatched by `class_uid` to the matching pinned model (Compliance Finding, Detection Finding, Authentication) or the OCSF base schema otherwise. Exits `0` with a validated-count summary on success, `1` on malformed output, import failure, missing/empty fixture, or schema violation (reporting the offending line/event).
 
 ### `lemma connector registry`
 

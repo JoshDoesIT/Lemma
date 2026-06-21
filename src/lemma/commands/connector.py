@@ -8,6 +8,7 @@ Subcommands:
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -412,18 +413,87 @@ def _load_connector_module(project: Path):
     return module
 
 
+def _parse_events_file(path: Path) -> list[tuple[str, dict]]:
+    """Load OCSF events from a fixture file as ``(label, event_dict)`` pairs.
+
+    Accepts either a JSON document (a single event object or an array of them)
+    or JSON Lines (one event per line). ``label`` identifies the event in error
+    messages — ``line N`` for JSONL, ``event N`` for a JSON array — so a
+    failure points at the exact offending record.
+    """
+    text = path.read_text(encoding="utf-8")
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        doc = None
+    else:
+        if isinstance(doc, dict):
+            return [("event 1", doc)]
+        if isinstance(doc, list):
+            return [(f"event {i + 1}", e) for i, e in enumerate(doc)]
+        _fail(f"{path}: expected an OCSF event object or array, got {type(doc).__name__}.")
+
+    # JSON Lines: one event per non-blank line; line numbers track the file.
+    events: list[tuple[str, dict]] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            events.append((f"line {lineno}", json.loads(raw)))
+        except json.JSONDecodeError as exc:
+            _fail(f"{path} line {lineno}: not valid JSON ({exc.msg}).")
+    return events
+
+
+def _validate_events_fixture(path: Path) -> None:
+    """Validate an emitted OCSF event fixture against the canonical schema.
+
+    The cross-language path: a connector authored in any language (e.g. the
+    TypeScript SDK) emits its events to a file, and this validates them against
+    the same OCSF models a Python connector's output is held to (#228).
+    """
+    from pydantic import ValidationError
+
+    from lemma.models.ocsf import validate_ocsf_event
+
+    events = _parse_events_file(path)
+    if not events:
+        _fail(f"No events found in {path}.")
+
+    for label, event in events:
+        if not isinstance(event, dict):
+            _fail(f"{path} {label}: expected an OCSF event object, got {type(event).__name__}.")
+        try:
+            validate_ocsf_event(event)
+        except ValidationError as exc:
+            _fail(f"{path} {label}: invalid OCSF event.\n{exc}")
+
+    console.print(
+        f"[green]OK[/green] {len(events)} event(s) in [cyan]{path.name}[/cyan] "
+        "validated against the OCSF schema."
+    )
+
+
 @connector_app.command(
     name="test",
-    help="Validate a connector project's output against the OCSF schema.",
+    help="Validate a connector project's output (or an emitted OCSF fixture) against the schema.",
 )
 def test_command(
     path: str = typer.Argument(
-        help="Path to a connector project created by `lemma connector init`",
+        help=(
+            "A connector project created by `lemma connector init`, or a fixture "
+            "file (.jsonl/.json) of emitted OCSF events to validate."
+        ),
     ),
 ) -> None:
     project = Path(path)
-    if not project.exists() or not project.is_dir():
-        _fail(f"Connector project {project} does not exist.")
+    if not project.exists():
+        _fail(f"{project} does not exist.")
+    # A file is an emitted-events fixture (the cross-language validation path);
+    # a directory is a Python connector project.
+    if project.is_file():
+        _validate_events_fixture(project)
+        return
 
     module = _load_connector_module(project)
     connector_cls = getattr(module, "Connector", None)

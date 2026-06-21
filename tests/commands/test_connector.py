@@ -105,6 +105,121 @@ class TestConnectorTest:
         assert "line 1" in result.stdout.lower() or "json" in result.stdout.lower()
 
 
+class TestConnectorTestFixture:
+    """`lemma connector test <fixture>` validates an emitted OCSF event file —
+    the cross-language path so a TS connector's output is validated against the
+    same OCSF schema as Python connectors (#228)."""
+
+    def test_validates_jsonl_fixture_of_valid_events(self, tmp_path: Path):
+        from lemma.cli import app
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(
+            json.dumps(_valid_payload("e-1")) + "\n" + json.dumps(_valid_payload("e-2")) + "\n"
+        )
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 0, result.stdout
+        assert "2" in result.stdout  # validated event count surfaces
+
+    def test_validates_json_array_fixture(self, tmp_path: Path):
+        from lemma.cli import app
+
+        fixture = tmp_path / "events.json"
+        fixture.write_text(json.dumps([_valid_payload("e-1"), _valid_payload("e-2")]))
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 0, result.stdout
+        assert "2" in result.stdout
+
+    def test_rejects_event_violating_ocsf_schema(self, tmp_path: Path):
+        """A 2003 (Compliance Finding) event with a mismatched category_uid must
+        fail against the same category-pinned model Python connectors use."""
+        from lemma.cli import app
+
+        bad = _valid_payload("e-bad")
+        bad["category_uid"] = 9999  # 2003 pins category 2000
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(json.dumps(bad) + "\n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 1
+        out = result.stdout.lower()
+        assert "category" in out or "schema" in out or "invalid" in out
+
+    def test_rejects_event_missing_required_field(self, tmp_path: Path):
+        from lemma.cli import app
+
+        bad = _valid_payload("e-bad")
+        del bad["activity_id"]  # required by OcsfBaseEvent
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(json.dumps(bad) + "\n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 1
+        assert "activity_id" in result.stdout or "invalid" in result.stdout.lower()
+
+    def test_reports_offending_line_number(self, tmp_path: Path):
+        from lemma.cli import app
+
+        good = json.dumps(_valid_payload("ok"))
+        bad = json.dumps({**_valid_payload("bad"), "category_uid": 1})
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(good + "\n" + bad + "\n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 1
+        assert "line 2" in result.stdout.lower()  # the second line is the bad one
+
+    def test_malformed_json_line_reports_line(self, tmp_path: Path):
+        from lemma.cli import app
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(json.dumps(_valid_payload("ok")) + "\n{not json\n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 1
+        assert "line 2" in result.stdout.lower()
+
+    def test_empty_fixture_is_an_error(self, tmp_path: Path):
+        from lemma.cli import app
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text("\n   \n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 1
+        assert "no events" in result.stdout.lower()
+
+    def test_unknown_class_uid_validates_against_base_schema(self, tmp_path: Path):
+        """An OCSF event whose class isn't one of the pinned concrete classes
+        still validates against the base schema (required fields present)."""
+        from lemma.cli import app
+
+        event = _valid_payload("e-base")
+        event["class_uid"] = 4001  # not a pinned concrete class
+        event["class_name"] = "Network Activity"
+        event["category_uid"] = 4000
+        event["category_name"] = "Network Activity"
+        event["type_uid"] = 400101
+
+        fixture = tmp_path / "events.jsonl"
+        fixture.write_text(json.dumps(event) + "\n")
+
+        result = runner.invoke(app, ["connector", "test", str(fixture)])
+
+        assert result.exit_code == 0, result.stdout
+
+
 class TestConnectorSecrets:
     def _init_project(self, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
