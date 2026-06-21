@@ -84,9 +84,7 @@ class TestVaultBackend:
         from lemma.services.secret_backends import VaultSecretBackend
 
         client = _FakeHvacClient({"lemma/connectors": {"JIRA_TOKEN": "vault-tok"}})
-        backend = VaultSecretBackend(
-            client=client, mount_point="secret", path="lemma/connectors"
-        )
+        backend = VaultSecretBackend(client=client, mount_point="secret", path="lemma/connectors")
         assert backend.get("JIRA_TOKEN") == "vault-tok"
         # Read from the configured mount + path, not a hard-coded default.
         assert client.secrets.kv.v2.calls == [("secret", "lemma/connectors")]
@@ -115,9 +113,7 @@ class TestAwsSecretsManagerBackend:
     def test_get_returns_value_from_json_secret(self) -> None:
         from lemma.services.secret_backends import AwsSecretsManagerBackend
 
-        client = _FakeSecretsManager(
-            {"lemma/connectors": json.dumps({"JIRA_TOKEN": "aws-tok"})}
-        )
+        client = _FakeSecretsManager({"lemma/connectors": json.dumps({"JIRA_TOKEN": "aws-tok"})})
         backend = AwsSecretsManagerBackend(client=client, secret_id="lemma/connectors")
         assert backend.get("JIRA_TOKEN") == "aws-tok"
         assert client.calls == ["lemma/connectors"]
@@ -181,9 +177,7 @@ class TestProtocol:
         )
 
         assert isinstance(VaultSecretBackend(client=_FakeHvacClient({})), SecretBackend)
-        assert isinstance(
-            AwsSecretsManagerBackend(client=_FakeSecretsManager({})), SecretBackend
-        )
+        assert isinstance(AwsSecretsManagerBackend(client=_FakeSecretsManager({})), SecretBackend)
         assert isinstance(KeyringSecretBackend(keyring=_FakeKeyring({})), SecretBackend)
 
 
@@ -259,9 +253,7 @@ class TestResolveBackend:
         from lemma.services.secret_backends import resolve_secret_backend
 
         with pytest.raises(ValueError, match=r"(?i)LEMMA_SECRET_BACKEND|unknown|nope"):
-            resolve_secret_backend(
-                project_root=tmp_path, env={"LEMMA_SECRET_BACKEND": "nope"}
-            )
+            resolve_secret_backend(project_root=tmp_path, env={"LEMMA_SECRET_BACKEND": "nope"})
 
     def test_selection_is_case_insensitive(self, tmp_path: Path) -> None:
         from lemma.services.secret_backends import VaultSecretBackend, resolve_secret_backend

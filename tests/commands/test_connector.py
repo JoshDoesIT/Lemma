@@ -343,9 +343,7 @@ class TestConnectorRun:
             captured["config"] = config_dict
             return self._stub_connector([])
 
-        monkeypatch.setattr(
-            "lemma.commands.evidence._connector_from_config_dict", _capture
-        )
+        monkeypatch.setattr("lemma.commands.evidence._connector_from_config_dict", _capture)
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text("connector: stub\nconfig:\n  token: ${secret:TOK}\n")

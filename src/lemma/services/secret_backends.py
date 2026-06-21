@@ -182,9 +182,7 @@ class KeyringSecretBackend:
         return cls(service=env.get("LEMMA_KEYRING_SERVICE", _KEYRING_DEFAULT_SERVICE))
 
 
-def resolve_secret_backend(
-    *, project_root: Path, env: Mapping[str, str]
-) -> SecretBackend | None:
+def resolve_secret_backend(*, project_root: Path, env: Mapping[str, str]) -> SecretBackend | None:
     """Pick a secret backend from ``LEMMA_SECRET_BACKEND`` (default ``local``).
 
     Returns ``None`` for the local backend when no ``LEMMA_SECRET_PASSPHRASE``
