@@ -47,6 +47,14 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 {"state": "open", "security_advisory": {"severity": "medium"}},
             ],
         )
+    if "/actions/permissions/workflow" in url:
+        return httpx.Response(
+            200,
+            json={
+                "default_workflow_permissions": "read",
+                "can_approve_pull_request_reviews": False,
+            },
+        )
     return httpx.Response(404, json={"message": "Not Found"})
 
 
@@ -152,6 +160,63 @@ class TestDependabot:
         assert "medium" in by_severity
         assert by_severity["high"].metadata["alert_count"] == 1
         assert by_severity["medium"].metadata["alert_count"] == 2
+
+
+class TestActionsPosture:
+    def _actions(self, connector):
+        from lemma.models.ocsf import ComplianceFinding
+
+        return [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {})
+            .get("uid", "")
+            .startswith("github:actions-permissions:")
+        ]
+
+    def test_least_privilege_token_passes(self):
+        from lemma.sdk.connectors.github import GitHubConnector
+
+        connector = GitHubConnector(repo="JoshDoesIT/Lemma", client=_mock_client(_default_handler))
+        acts = self._actions(connector)
+        assert len(acts) == 1
+        assert acts[0].status_id == 1
+        assert acts[0].metadata["default_workflow_permissions"] == "read"
+        assert acts[0].metadata["can_approve_pull_request_reviews"] is False
+
+    def test_write_default_token_fails(self):
+        from lemma.sdk.connectors.github import GitHubConnector
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/actions/permissions/workflow" in str(req.url):
+                return httpx.Response(
+                    200,
+                    json={
+                        "default_workflow_permissions": "write",
+                        "can_approve_pull_request_reviews": True,
+                    },
+                )
+            return _default_handler(req)
+
+        connector = GitHubConnector(repo="JoshDoesIT/Lemma", client=_mock_client(handler))
+        acts = self._actions(connector)
+        assert len(acts) == 1
+        assert acts[0].status_id == 2
+        assert "write" in acts[0].message.lower() or "over-permission" in acts[0].message.lower()
+
+    def test_actions_permissions_unavailable_degrades(self):
+        from lemma.sdk.connectors.github import GitHubConnector
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/actions/permissions/workflow" in str(req.url):
+                return httpx.Response(404, json={"message": "Not Found"})
+            return _default_handler(req)
+
+        connector = GitHubConnector(repo="JoshDoesIT/Lemma", client=_mock_client(handler))
+        acts = self._actions(connector)
+        assert len(acts) == 1
+        assert acts[0].status_id == 0
 
 
 class TestAuth:
