@@ -48,7 +48,7 @@ ingest = [
     "openpyxl>=3.1",
 ]
 cloud = [
-    "openai>=1.0",
+    "openai>=2.43.0",
 ]
 secrets = [
     # Remote secret backends for connector credentials (#227). The AWS Secrets
