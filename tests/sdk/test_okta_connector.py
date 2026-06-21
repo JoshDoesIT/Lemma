@@ -31,6 +31,13 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 }
             ],
         )
+    if "/api/v1/policies" in url and "type=PASSWORD" in url:
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "00p2pwd", "name": "Default Password Policy", "status": "ACTIVE"},
+            ],
+        )
     if "/api/v1/apps" in url:
         return httpx.Response(
             200,
@@ -38,6 +45,42 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 {"id": "0oa1", "status": "ACTIVE", "label": "Workday"},
                 {"id": "0oa2", "status": "ACTIVE", "label": "GitHub"},
                 {"id": "0oa3", "status": "INACTIVE", "label": "Legacy"},
+            ],
+        )
+    if "/api/v1/users" in url:
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "u1", "status": "ACTIVE"},
+                {"id": "u2", "status": "ACTIVE"},
+                {"id": "u3", "status": "SUSPENDED"},
+                {"id": "u4", "status": "DEPROVISIONED"},
+            ],
+        )
+    if "/api/v1/groups" in url:
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "g1", "type": "OKTA_GROUP", "profile": {"name": "Everyone"}},
+                {"id": "g2", "type": "OKTA_GROUP", "profile": {"name": "Admins"}},
+                {"id": "g3", "type": "BUILT_IN", "profile": {"name": "Super Admins"}},
+            ],
+        )
+    if "/api/v1/logs" in url:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "uuid": "e1",
+                    "eventType": "user.authentication.sso",
+                    "outcome": {"result": "SUCCESS"},
+                },
+                {"uuid": "e2", "eventType": "user.session.start", "outcome": {"result": "FAILURE"}},
+                {
+                    "uuid": "e3",
+                    "eventType": "user.authentication.sso",
+                    "outcome": {"result": "SUCCESS"},
+                },
             ],
         )
     return httpx.Response(404, json={"errorSummary": "Not Found"})
@@ -122,6 +165,155 @@ class TestSSOApps:
         # Default handler returns 2 active + 1 inactive — message or metadata reflects that.
         assert apps[0].metadata.get("active_count") == 2
         assert apps[0].metadata.get("total_count") == 3
+
+
+class TestUserInventory:
+    def test_user_inventory_counts_by_lifecycle_status(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        connector = OktaConnector(
+            domain="example.okta.com",
+            client=_mock_client(_default_handler),
+            token="ssws-test",
+        )
+        users = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {}).get("uid", "").startswith("okta:user-inventory:")
+        ]
+        assert len(users) == 1
+        md = users[0].metadata
+        assert md["active_count"] == 2
+        assert md["suspended_count"] == 1
+        assert md["deprovisioned_count"] == 1
+        assert md["total_count"] == 4
+        assert users[0].status_id == 1
+
+    def test_user_inventory_unknown_when_call_fails(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/api/v1/users" in str(req.url):
+                return httpx.Response(500, json={"errorSummary": "boom"})
+            return _default_handler(req)
+
+        connector = OktaConnector(
+            domain="example.okta.com", client=_mock_client(handler), token="t"
+        )
+        users = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {}).get("uid", "").startswith("okta:user-inventory:")
+        ]
+        assert len(users) == 1
+        assert users[0].status_id == 0
+
+
+class TestGroups:
+    def test_groups_finding_flags_admin_groups(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        connector = OktaConnector(
+            domain="example.okta.com",
+            client=_mock_client(_default_handler),
+            token="ssws-test",
+        )
+        groups = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {}).get("uid", "").startswith("okta:groups:")
+        ]
+        assert len(groups) == 1
+        md = groups[0].metadata
+        assert md["group_count"] == 3
+        assert md["admin_group_count"] == 2
+        assert "Admins" in md["admin_groups"]
+        assert "Super Admins" in md["admin_groups"]
+
+
+class TestPasswordPolicy:
+    def test_active_password_policy_passes(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        connector = OktaConnector(
+            domain="example.okta.com",
+            client=_mock_client(_default_handler),
+            token="ssws-test",
+        )
+        pw = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {}).get("uid", "").startswith("okta:password-policy:")
+        ]
+        assert len(pw) == 1
+        assert pw[0].status_id == 1
+        assert pw[0].metadata["active_policy_count"] == 1
+
+    def test_no_password_policy_fails(self):
+        from lemma.models.ocsf import ComplianceFinding
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/api/v1/policies" in str(req.url) and "type=PASSWORD" in str(req.url):
+                return httpx.Response(200, json=[])
+            return _default_handler(req)
+
+        connector = OktaConnector(
+            domain="example.okta.com", client=_mock_client(handler), token="t"
+        )
+        pw = [
+            e
+            for e in connector.collect()
+            if isinstance(e, ComplianceFinding)
+            and e.metadata.get("product", {}).get("uid", "").startswith("okta:password-policy:")
+        ]
+        assert len(pw) == 1
+        assert pw[0].status_id == 2
+
+
+class TestAuthEvents:
+    def test_auth_events_emit_authentication_event_class_3002(self):
+        from lemma.models.ocsf import AuthenticationEvent
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        connector = OktaConnector(
+            domain="example.okta.com",
+            client=_mock_client(_default_handler),
+            token="ssws-test",
+        )
+        auth = [e for e in connector.collect() if isinstance(e, AuthenticationEvent)]
+        assert len(auth) == 1
+        ev = auth[0]
+        assert ev.class_uid == 3002
+        assert ev.category_uid == 3000
+        assert ev.metadata["success_count"] == 2
+        assert ev.metadata["failure_count"] == 1
+        assert ev.metadata["product"]["uid"].startswith("okta:auth-events:")
+
+    def test_auth_events_degrade_when_log_api_unavailable(self):
+        from lemma.models.ocsf import AuthenticationEvent
+        from lemma.sdk.connectors.okta import OktaConnector
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if "/api/v1/logs" in str(req.url):
+                return httpx.Response(403, json={"errorSummary": "no log scope"})
+            return _default_handler(req)
+
+        connector = OktaConnector(
+            domain="example.okta.com", client=_mock_client(handler), token="t"
+        )
+        auth = [e for e in connector.collect() if isinstance(e, AuthenticationEvent)]
+        assert len(auth) == 1
+        assert auth[0].status_id == 0
+        assert auth[0].metadata["success_count"] == 0
 
 
 class TestAuth:
