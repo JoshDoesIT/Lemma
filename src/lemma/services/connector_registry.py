@@ -89,6 +89,14 @@ FIRST_PARTY_REGISTRY: list[ConnectorDescriptor] = [
         required_secret="LEMMA_PAGERDUTY_TOKEN",
         capabilities=["incident-response"],
     ),
+    ConnectorDescriptor(
+        name="splunk",
+        producer="Splunk",
+        description="Security-monitoring posture (SOC 2 CC7.2): enabled scheduled alert searches.",
+        config_keys=["base_url"],
+        required_secret="LEMMA_SPLUNK_TOKEN",
+        capabilities=["security-monitoring"],
+    ),
 ]
 
 

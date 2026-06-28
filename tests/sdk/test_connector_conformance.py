@@ -108,6 +108,16 @@ def _pagerduty():
     )
 
 
+def _splunk():
+    from lemma.sdk.connectors.splunk import SplunkConnector
+
+    return SplunkConnector(
+        base_url="https://splunk.acme.com:8089",
+        token="t",
+        client=_client("https://splunk.acme.com:8089"),
+    )
+
+
 _FACTORIES = {
     "github": _github,
     "okta": _okta,
@@ -116,6 +126,7 @@ _FACTORIES = {
     "azure-devops": _azure_devops,
     "azure": _azure,
     "pagerduty": _pagerduty,
+    "splunk": _splunk,
 }
 
 
