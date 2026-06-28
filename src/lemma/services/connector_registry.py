@@ -81,6 +81,14 @@ FIRST_PARTY_REGISTRY: list[ConnectorDescriptor] = [
         required_secret="LEMMA_AZURE_CLIENT_SECRET",
         capabilities=["entra-mfa", "activity-log", "azure-policy"],
     ),
+    ConnectorDescriptor(
+        name="pagerduty",
+        producer="PagerDuty",
+        description="Incident-response posture (SOC 2 CC7.x): escalation policies + on-call.",
+        config_keys=["subdomain"],
+        required_secret="LEMMA_PAGERDUTY_TOKEN",
+        capabilities=["incident-response"],
+    ),
 ]
 
 

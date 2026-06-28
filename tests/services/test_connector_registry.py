@@ -9,7 +9,16 @@ def test_registry_matches_first_party_factory():
     from lemma.services.connector_registry import registry_names
 
     # The factory's known list (kept in sync with _first_party_connector).
-    known = ["aws", "azure", "azure-devops", "github", "jira", "okta", "servicenow"]
+    known = [
+        "aws",
+        "azure",
+        "azure-devops",
+        "github",
+        "jira",
+        "okta",
+        "pagerduty",
+        "servicenow",
+    ]
     assert registry_names() == sorted(known)
 
 

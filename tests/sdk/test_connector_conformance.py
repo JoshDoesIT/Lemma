@@ -100,6 +100,14 @@ def _azure():
     )
 
 
+def _pagerduty():
+    from lemma.sdk.connectors.pagerduty import PagerDutyConnector
+
+    return PagerDutyConnector(
+        subdomain="acme", token="t", client=_client("https://api.pagerduty.com")
+    )
+
+
 _FACTORIES = {
     "github": _github,
     "okta": _okta,
@@ -107,6 +115,7 @@ _FACTORIES = {
     "servicenow": _servicenow,
     "azure-devops": _azure_devops,
     "azure": _azure,
+    "pagerduty": _pagerduty,
 }
 
 

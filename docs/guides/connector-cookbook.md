@@ -2,7 +2,7 @@
 
 Recipes for authors building production connectors, distilled from Lemma's
 first-party connectors (GitHub, Okta, AWS, Jira, ServiceNow, Azure DevOps,
-Azure). If you haven't written a connector yet, start with
+Azure, PagerDuty). If you haven't written a connector yet, start with
 [Build Your First Connector](build-your-first-connector.md); this page is the
 reference you reach for once you're integrating a real upstream API.
 

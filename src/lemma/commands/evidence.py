@@ -635,6 +635,7 @@ def _first_party_connector(
     subscription_id: str | None = None,
     project_id: str | None = None,
     access_token: str | None = None,
+    subdomain: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -743,7 +744,25 @@ def _first_party_connector(
             kwargs5["access_token"] = access_token
         return GCPConnector(**kwargs5)
 
-    known = ["github", "okta", "aws", "jira", "servicenow", "azure-devops", "azure", "gcp"]
+    if name == "pagerduty":
+        from lemma.sdk.connectors.pagerduty import PagerDutyConnector
+
+        kwargs6: dict = {}
+        if subdomain:
+            kwargs6["subdomain"] = subdomain
+        return PagerDutyConnector(**kwargs6)
+
+    known = [
+        "github",
+        "okta",
+        "aws",
+        "jira",
+        "servicenow",
+        "azure-devops",
+        "azure",
+        "gcp",
+        "pagerduty",
+    ]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
 
@@ -776,6 +795,7 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         subscription_id=config.get("subscription_id"),
         project_id=config.get("project_id"),
         access_token=config.get("access_token"),
+        subdomain=config.get("subdomain"),
     )
 
 
