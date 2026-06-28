@@ -97,6 +97,14 @@ FIRST_PARTY_REGISTRY: list[ConnectorDescriptor] = [
         required_secret="LEMMA_SPLUNK_TOKEN",
         capabilities=["security-monitoring"],
     ),
+    ConnectorDescriptor(
+        name="wiz",
+        producer="Wiz",
+        description="Cloud-security posture (CSPM): count of open CRITICAL/HIGH issues.",
+        config_keys=["api_url", "client_id"],
+        required_secret="LEMMA_WIZ_CLIENT_SECRET",
+        capabilities=["cloud-posture"],
+    ),
 ]
 
 
