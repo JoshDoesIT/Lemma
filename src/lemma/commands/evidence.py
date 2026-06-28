@@ -752,6 +752,17 @@ def _first_party_connector(
             kwargs6["subdomain"] = subdomain
         return PagerDutyConnector(**kwargs6)
 
+    if name == "splunk":
+        from lemma.sdk.connectors.splunk import SplunkConnector
+
+        if not base_url:
+            msg = (
+                "The splunk connector requires base_url=https://<host>:8089 "
+                "(the Splunk management endpoint)."
+            )
+            raise ValueError(msg)
+        return SplunkConnector(base_url=base_url)
+
     known = [
         "github",
         "okta",
@@ -762,6 +773,7 @@ def _first_party_connector(
         "azure",
         "gcp",
         "pagerduty",
+        "splunk",
     ]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
