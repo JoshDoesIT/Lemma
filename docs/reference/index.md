@@ -476,7 +476,7 @@ List the available first-party connectors and their required configuration — t
 lemma connector registry
 ```
 
-Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`, `gcp`, `pagerduty`, `splunk`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
+Prints a table of each first-party connector (`github`, `okta`, `aws`, `jira`, `servicenow`, `azure-devops`, `azure`, `gcp`, `pagerduty`, `splunk`, `wiz`) with its producer, config keys, the environment variable holding its credential (if any), and a one-line description — so operators can discover what's available without reading code. A drift-guard test keeps this catalog in sync with the connector factory. Run a listed connector via [`lemma evidence collect`](#lemma-evidence-collect) or a `lemma_connector_config.yaml`.
 
 ### `lemma connector validate`
 

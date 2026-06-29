@@ -19,6 +19,7 @@ def test_registry_matches_first_party_factory():
         "pagerduty",
         "servicenow",
         "splunk",
+        "wiz",
     ]
     assert registry_names() == sorted(known)
 

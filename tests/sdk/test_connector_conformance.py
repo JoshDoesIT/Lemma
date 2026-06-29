@@ -118,6 +118,17 @@ def _splunk():
     )
 
 
+def _wiz():
+    from lemma.sdk.connectors.wiz import WizConnector
+
+    return WizConnector(
+        api_url="https://api.test.app.wiz.io/graphql",
+        client_id="c",
+        client_secret="s",
+        client=_client("https://api.test.app.wiz.io"),
+    )
+
+
 _FACTORIES = {
     "github": _github,
     "okta": _okta,
@@ -127,6 +138,7 @@ _FACTORIES = {
     "azure": _azure,
     "pagerduty": _pagerduty,
     "splunk": _splunk,
+    "wiz": _wiz,
 }
 
 

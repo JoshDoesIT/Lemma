@@ -636,6 +636,7 @@ def _first_party_connector(
     project_id: str | None = None,
     access_token: str | None = None,
     subdomain: str | None = None,
+    api_url: str | None = None,
 ) -> Connector:
     """Instantiate a first-party connector by short name.
 
@@ -763,6 +764,20 @@ def _first_party_connector(
             raise ValueError(msg)
         return SplunkConnector(base_url=base_url)
 
+    if name == "wiz":
+        from lemma.sdk.connectors.wiz import WizConnector
+
+        if not api_url:
+            msg = "The wiz connector requires api_url=https://api.<region>.app.wiz.io/graphql."
+            raise ValueError(msg)
+        if not client_id:
+            msg = "The wiz connector requires client_id (the Wiz service-account id)."
+            raise ValueError(msg)
+        kwargs7: dict = {"api_url": api_url, "client_id": client_id}
+        if client_secret:
+            kwargs7["client_secret"] = client_secret
+        return WizConnector(**kwargs7)
+
     known = [
         "github",
         "okta",
@@ -774,6 +789,7 @@ def _first_party_connector(
         "gcp",
         "pagerduty",
         "splunk",
+        "wiz",
     ]
     msg = f"Unknown connector '{name}'. Known first-party connectors: {', '.join(known)}."
     raise ValueError(msg)
@@ -808,6 +824,7 @@ def _connector_from_config_dict(name: str, config: dict) -> Connector:
         project_id=config.get("project_id"),
         access_token=config.get("access_token"),
         subdomain=config.get("subdomain"),
+        api_url=config.get("api_url"),
     )
 
 
