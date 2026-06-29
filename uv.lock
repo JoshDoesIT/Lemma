@@ -1177,7 +1177,7 @@ wheels = [
 
 [[package]]
 name = "google-cloud-asset"
-version = "4.3.0"
+version = "4.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-api-core", extra = ["grpc"] },
@@ -1190,9 +1190,9 @@ dependencies = [
     { name = "proto-plus" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/34/5c/3b736091575e727acae5025927e1c5be33f0a46b1626ae09adaf84862476/google_cloud_asset-4.3.0.tar.gz", hash = "sha256:c025127b5f1a8a7e83b74c85417255628ee455bf1a3648cd2afe5d4113d05739", size = 306691, upload-time = "2026-03-30T22:50:10.198Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/d4/92b37789e99dc416b2d17f6d3be5a32a50049ffe6c350953abda85c4a0fd/google_cloud_asset-4.4.0.tar.gz", hash = "sha256:350d564db6edb2d9521d4776fc44d559765fecd06bdb7284017cf24261039c8d", size = 305139, upload-time = "2026-06-03T14:52:44.763Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/05/faedf669770111c2e0b2bef5b9c23fc3b85aae5c9ebb7dd5a3f39c372d16/google_cloud_asset-4.3.0-py3-none-any.whl", hash = "sha256:f8b4a31c3a522bf826e131dbcb81de8c2d6cdb5541390f988166c89489246d32", size = 284995, upload-time = "2026-03-30T20:02:51.035Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/be/0b5e6e4b0b9622380a0f2b2e4e8c577c52fe1047e4ecbaabd9398459ad14/google_cloud_asset-4.4.0-py3-none-any.whl", hash = "sha256:8b1c5916939995ad3e42210b189785056d80fa6fa3c2109fece3ba2b462ae49d", size = 284169, upload-time = "2026-06-03T14:52:00.824Z" },
 ]
 
 [[package]]
@@ -1782,7 +1782,7 @@ requires-dist = [
     { name = "chromadb", specifier = ">=1.5.9" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "docling", marker = "extra == 'ingest'", specifier = ">=2.105.0" },
-    { name = "google-cloud-asset", specifier = ">=3.20" },
+    { name = "google-cloud-asset", specifier = ">=4.4.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "hvac", marker = "extra == 'secrets'", specifier = ">=2.0" },
     { name = "jsonschema", specifier = ">=4.0" },
