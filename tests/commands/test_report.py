@@ -43,6 +43,47 @@ def test_report_to_stdout(tmp_path: Path, monkeypatch):
     assert "Account Management" in result.stdout  # the failed control
 
 
+def _seed_debt_history(project_dir: Path, ages_in_days: list[int]) -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    analytics = project_dir / ".lemma" / "analytics"
+    analytics.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for age in ages_in_days:
+        ts = (datetime.now(UTC) - timedelta(days=age)).isoformat()
+        lines.append(
+            json.dumps(
+                {
+                    "timestamp": ts,
+                    "total_controls": 10,
+                    "covered": 10 - age,
+                    "uncovered": age,
+                    "debt_pct": age * 10.0,
+                }
+            )
+        )
+    (analytics / "debt-history.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_report_trend_days_filters_snapshot_window(tmp_path: Path, monkeypatch):
+    from lemma.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    _seed_graph(tmp_path, all_pass=False)
+    # Two recent snapshots (1 and 2 days old) + one outside a 3-day window (10 days).
+    _seed_debt_history(tmp_path, ages_in_days=[10, 2, 1])
+
+    full = runner.invoke(app, ["report"])
+    assert full.exit_code == 0, full.stdout
+    assert "3 snapshots" in full.stdout
+
+    windowed = runner.invoke(app, ["report", "--trend-days", "3"])
+    assert windowed.exit_code == 0, windowed.stdout
+    # Only the two in-window snapshots remain in the trend.
+    assert "2 snapshots" in windowed.stdout
+
+
 def test_report_to_file(tmp_path: Path, monkeypatch):
     from lemma.cli import app
 

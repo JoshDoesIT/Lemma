@@ -8,7 +8,7 @@ any static host.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -19,6 +19,27 @@ from lemma.services.knowledge_graph import ComplianceGraph
 from lemma.services.report import render_html_report
 
 console = Console()
+
+
+def _within_days(history: list[dict], days: int) -> list[dict]:
+    """Keep only debt snapshots whose timestamp is within the last ``days`` (Refs #40).
+
+    Snapshots without a parseable timestamp are dropped; naive timestamps are
+    treated as UTC.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    kept: list[dict] = []
+    for snap in history:
+        raw = snap.get("timestamp", "") if isinstance(snap, dict) else ""
+        try:
+            when = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        if when >= cutoff:
+            kept.append(snap)
+    return kept
 
 
 def _require_lemma_project() -> Path:
@@ -47,6 +68,14 @@ def report_command(
         help="Only count SATISFIES edges at or above this confidence (matches `lemma check`).",
         min=0.0,
         max=1.0,
+    ),
+    trend_days: int = typer.Option(
+        0,
+        "--trend-days",
+        help=(
+            "Limit the posture-trend sparkline to snapshots from the last N days (0 = all history)."
+        ),
+        min=0,
     ),
 ) -> None:
     """Generate a static HTML compliance-posture dashboard."""
@@ -83,6 +112,8 @@ def report_command(
         from lemma.services.analytics import read_debt_history
 
         debt_history = read_debt_history(analytics_dir)
+        if debt_history and trend_days > 0:
+            debt_history = _within_days(debt_history, trend_days)
 
     html = render_html_report(
         result,
