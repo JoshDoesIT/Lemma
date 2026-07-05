@@ -94,6 +94,17 @@ _CSS = f"""
   }}
   .hbar > span {{ display: block; height: 100%; }}
   .hp {{ font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: #888; }}
+  .trend {{
+    display: flex; align-items: flex-end; gap: 3px; height: 96px;
+    margin: .5rem 0 .35rem; padding: .5rem; background: #050505;
+    border: 1px solid #222; border-radius: 6px;
+  }}
+  .tbar {{
+    flex: 1 1 auto; min-width: 4px; max-width: 30px; height: 100%;
+    background: #111; display: flex; align-items: flex-end; border-radius: 2px;
+    overflow: hidden;
+  }}
+  .tbar > span {{ display: block; width: 100%; }}
   footer {{ margin-top: 3rem; color: #555; font-size: .75rem; }}
 """
 
@@ -167,6 +178,53 @@ def _heatmap_block(by_fw: dict[str, list]) -> str:
     return "\n  <h2>Coverage heat map by control family</h2>\n" + "\n".join(fw_rows) + "\n"
 
 
+_MAX_TREND_POINTS = 30
+
+
+def _trend_block(debt_history: list | None) -> str:
+    """Posture-trend sparkline from `lemma debt --snapshot` history (Refs #40).
+
+    Needs at least two snapshots to be a trend; renders one vertical bar per
+    snapshot (height = coverage %, banded red/yellow/green) plus a summary line
+    with the count, date span, and latest coverage — so it never reads by color
+    alone. Empty / single-point histories degrade to nothing.
+    """
+    points = [s for s in (debt_history or []) if isinstance(s, dict)][-_MAX_TREND_POINTS:]
+    if len(points) < 2:
+        return ""
+
+    def _coverage(snap: dict) -> float:
+        total = snap.get("total_controls") or 0
+        covered = snap.get("covered") or 0
+        return (covered / total) if total else 0.0
+
+    bars = []
+    for snap in points:
+        cov = _coverage(snap)
+        pct = round(cov * 100)
+        day = str(snap.get("timestamp", ""))[:10]
+        debt = snap.get("debt_pct", round(100 - cov * 100, 1))
+        bars.append(
+            f'    <div class="tbar" title="{_escape(day)}: {pct}% covered, '
+            f'{debt}% debt"><span style="height:{pct}%;'
+            f'background:{_heat_color(cov)}"></span></div>'
+        )
+
+    first_day = str(points[0].get("timestamp", ""))[:10]
+    last_day = str(points[-1].get("timestamp", ""))[:10]
+    latest_pct = round(_coverage(points[-1]) * 100)
+    summary = (
+        f"{len(points)} snapshot{'s' if len(points) != 1 else ''}"
+        f" · {_escape(first_day)} → {_escape(last_day)}"
+        f" · latest {latest_pct}% covered"
+    )
+    return (
+        "\n  <h2>Posture trend</h2>\n"
+        '  <div class="trend">\n' + "\n".join(bars) + "\n  </div>\n"
+        f'  <div class="meta">{summary}</div>\n'
+    )
+
+
 def _freshness_label(evidence: list | None, now: datetime) -> str:
     """Data-freshness indicator: when evidence was last collected (Refs #40).
 
@@ -197,6 +255,7 @@ def render_html_report(
     generated_at: datetime,
     traces: list | None = None,
     evidence: list | None = None,
+    debt_history: list | None = None,
 ) -> str:
     """Render a ``CheckResult`` into a standalone HTML posture report.
 
@@ -207,6 +266,9 @@ def render_html_report(
     When ``evidence`` (a list of ``SignedEvidence`` envelopes) is supplied, an
     "Evidence Timeline" section is appended — the auditor-portal view, listing
     signed evidence chronologically with producer, event, and entry hash.
+
+    When ``debt_history`` (the `lemma debt --snapshot` records) has two or more
+    snapshots, a "Posture trend" sparkline is appended (Refs #40).
     """
     scope_label = f"framework {_escape(result.framework)}" if result.framework else "all frameworks"
     by_fw: dict[str, list] = defaultdict(list)
@@ -252,7 +314,7 @@ def render_html_report(
 
   <h2>Coverage by framework</h2>
   {fw_sections}
-{_heatmap_block(by_fw)}
+{_heatmap_block(by_fw)}{_trend_block(debt_history)}
   <h2>Findings</h2>
   {failed_section}
 {_traces_block(traces)}{_evidence_block(evidence)}
