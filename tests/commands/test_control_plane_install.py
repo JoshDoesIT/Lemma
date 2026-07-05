@@ -52,6 +52,57 @@ def test_install_docker_compose(tmp_path: Path):
     assert "{{" not in body
 
 
+def test_install_helm_writes_a_renderable_chart(tmp_path: Path):
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "install",
+            "--shape",
+            "helm",
+            "--output",
+            str(out),
+            "--port",
+            "9443",
+            "--image",
+            "myreg/lemma:2.0",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    chart = out / "lemma-control-plane"
+    assert (chart / "Chart.yaml").is_file()
+
+    values = (chart / "values.yaml").read_text()
+    assert "myreg/lemma:2.0" in values
+    assert "9443" in values
+    # The command's {{KEY}} placeholders are fully substituted in values.yaml.
+    for placeholder in ("{{IMAGE}}", "{{PORT}}", "{{EVIDENCE_DIR}}", "{{KEYS_DIR}}"):
+        assert placeholder not in values
+
+    deployment = (chart / "templates" / "deployment.yaml").read_text()
+    assert "kind: Deployment" in deployment
+    assert "control-plane" in deployment and "serve" in deployment
+    # Helm's own templating is preserved (not clobbered by {{KEY}} substitution).
+    assert "{{ .Values.service.port }}" in deployment
+    assert (chart / "templates" / "service.yaml").read_text().startswith("apiVersion")
+
+
+def test_install_helm_refuses_overwrite_without_force(tmp_path: Path):
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    args = ["control-plane", "install", "--shape", "helm", "--output", str(out)]
+    assert runner.invoke(app, args).exit_code == 0
+    second = runner.invoke(app, args)
+    assert second.exit_code == 1
+    assert "force" in second.stdout.lower()
+    assert runner.invoke(app, [*args, "--force"]).exit_code == 0
+
+
 def test_install_unknown_shape_errors(tmp_path: Path):
     from lemma.cli import app
 
