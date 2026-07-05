@@ -123,3 +123,59 @@ def test_install_refuses_overwrite_without_force(tmp_path: Path):
     assert second.exit_code == 1
     assert "force" in second.stdout.lower()
     assert runner.invoke(app, [*args, "--force"]).exit_code == 0
+
+
+def test_install_terraform_writes_a_parseable_module(tmp_path: Path):
+    import hcl2
+
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "install",
+            "--shape",
+            "terraform",
+            "--output",
+            str(out),
+            "--port",
+            "9443",
+            "--image",
+            "myreg/lemma:2.0",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    module = out / "terraform"
+    tf_files = ["versions.tf", "variables.tf", "main.tf", "outputs.tf"]
+    for name in tf_files:
+        assert (module / name).is_file()
+
+    variables = (module / "variables.tf").read_text()
+    assert "myreg/lemma:2.0" in variables
+    assert "9443" in variables
+    # The command's {{KEY}} placeholders are fully substituted in variables.tf.
+    for placeholder in ("{{IMAGE}}", "{{PORT}}", "{{EVIDENCE_DIR}}", "{{KEYS_DIR}}"):
+        assert placeholder not in variables
+
+    # Every .tf file parses as valid HCL2 (raises on malformed HCL).
+    for name in tf_files:
+        hcl2.loads((module / name).read_text())
+
+    main = (module / "main.tf").read_text()
+    assert "aws_instance" in main
+    assert "aws_security_group" in main
+
+
+def test_install_terraform_refuses_overwrite_without_force(tmp_path: Path):
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    args = ["control-plane", "install", "--shape", "terraform", "--output", str(out)]
+    assert runner.invoke(app, args).exit_code == 0
+    second = runner.invoke(app, args)
+    assert second.exit_code == 1
+    assert "force" in second.stdout.lower()
+    assert runner.invoke(app, [*args, "--force"]).exit_code == 0
