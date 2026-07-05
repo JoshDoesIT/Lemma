@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 
 def _result(*, failing: bool = True):
@@ -201,6 +202,53 @@ class TestCoverageHeatMap:
 
         html = render_html_report(CheckResult(framework=None, outcomes=[]), generated_at=_NOW)
         assert "heat map" not in html.lower()
+
+
+class TestPostureTrend:
+    _HISTORY: ClassVar[list] = [
+        {
+            "timestamp": "2026-06-18T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 4,
+            "debt_pct": 60.0,
+        },
+        {
+            "timestamp": "2026-06-19T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 6,
+            "debt_pct": 40.0,
+        },
+        {
+            "timestamp": "2026-06-20T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 8,
+            "debt_pct": 20.0,
+        },
+    ]
+
+    def test_trend_renders_with_multiple_snapshots(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW, debt_history=self._HISTORY)
+        lower = html.lower()
+        assert "posture trend" in lower
+        # Latest snapshot: 8/10 covered = 80%.
+        assert "80%" in html
+        assert "3 snapshot" in lower
+
+    def test_single_or_no_snapshot_omits_trend(self):
+        from lemma.services.report import render_html_report
+
+        assert (
+            "posture trend"
+            not in render_html_report(_result(), generated_at=_NOW, debt_history=[]).lower()
+        )
+        assert (
+            "posture trend"
+            not in render_html_report(
+                _result(), generated_at=_NOW, debt_history=[self._HISTORY[0]]
+            ).lower()
+        )
 
 
 class TestControlFamily:

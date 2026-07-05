@@ -76,8 +76,20 @@ def report_command(
 
         evidence = EvidenceLog(log_dir=evidence_dir).read_envelopes()
 
+    # Include the compliance-debt snapshot history (posture trend) when present.
+    debt_history = None
+    analytics_dir = project_dir / ".lemma" / "analytics"
+    if analytics_dir.exists():
+        from lemma.services.analytics import read_debt_history
+
+        debt_history = read_debt_history(analytics_dir)
+
     html = render_html_report(
-        result, generated_at=datetime.now(UTC), traces=traces, evidence=evidence
+        result,
+        generated_at=datetime.now(UTC),
+        traces=traces,
+        evidence=evidence,
+        debt_history=debt_history,
     )
 
     if output:
