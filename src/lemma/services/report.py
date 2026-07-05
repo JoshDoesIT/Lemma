@@ -14,10 +14,15 @@ portable. All upstream text (control titles, framework names) is HTML-escaped.
 from __future__ import annotations
 
 import html
+import re
 from collections import defaultdict
 from datetime import datetime
 
 from lemma.models.check_result import CheckResult, CheckStatus
+
+# Coverage bands for the per-control-family heat map (green ≥ 80%, yellow ≥ 50%, else red).
+_HEAT_GREEN = 0.8
+_HEAT_YELLOW = 0.5
 
 _VOID_BLACK = "#0A0A0A"
 _TERMINAL_GREEN = "#00FF41"
@@ -72,12 +77,152 @@ _CSS = f"""
   }}
   .badge-fail {{ color: {_FAIL_RED}; font-family: 'JetBrains Mono', monospace; }}
   .clean {{ color: {_TERMINAL_GREEN}; }}
+  .heat-fw {{ margin-bottom: 1.25rem; }}
+  .heat-fw-name {{
+    font-family: 'JetBrains Mono', monospace; color: {_TERMINAL_GREEN};
+    font-size: .85rem; margin-bottom: .4rem;
+  }}
+  .heat-row {{ display: flex; flex-wrap: wrap; gap: .5rem; }}
+  .hcell {{
+    border: 1px solid #222; border-radius: 5px; padding: .4rem .55rem;
+    min-width: 96px; background: #050505;
+  }}
+  .hf {{ font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: {_CHALK}; }}
+  .hbar {{
+    height: 6px; background: #1a1a1a; border-radius: 3px;
+    overflow: hidden; margin: .3rem 0 .25rem;
+  }}
+  .hbar > span {{ display: block; height: 100%; }}
+  .hp {{ font-family: 'JetBrains Mono', monospace; font-size: .72rem; color: #888; }}
+  .trend {{
+    display: flex; align-items: flex-end; gap: 3px; height: 96px;
+    margin: .5rem 0 .35rem; padding: .5rem; background: #050505;
+    border: 1px solid #222; border-radius: 6px;
+  }}
+  .tbar {{
+    flex: 1 1 auto; min-width: 4px; max-width: 30px; height: 100%;
+    background: #111; display: flex; align-items: flex-end; border-radius: 2px;
+    overflow: hidden;
+  }}
+  .tbar > span {{ display: block; width: 100%; }}
   footer {{ margin-top: 3rem; color: #555; font-size: .75rem; }}
 """
 
 
 def _escape(text: str) -> str:
     return html.escape(text or "")
+
+
+def _control_family(short_id: str) -> str:
+    """Group key for the heat map: the control-family prefix of a short id.
+
+    Leading letters win (``ac-1`` → ``AC``, ``PR.AC-1`` → ``PR``); for numeric
+    ids the head before the first ``-`` / ``(`` is used (``164.312(b)`` →
+    ``164.312``); empty ids fall back to ``other``.
+    """
+    stripped = (short_id or "").strip()
+    letters = re.match(r"[A-Za-z]+", stripped)
+    if letters:
+        return letters.group().upper()
+    head = re.split(r"[-(]", stripped, maxsplit=1)[0].strip()
+    return head or "other"
+
+
+def _heat_color(coverage: float) -> str:
+    if coverage >= _HEAT_GREEN:
+        return _TERMINAL_GREEN
+    if coverage >= _HEAT_YELLOW:
+        return _THEOREM_YELLOW
+    return _FAIL_RED
+
+
+def _heatmap_block(by_fw: dict[str, list]) -> str:
+    """Per-control-family coverage heat map (Refs #40).
+
+    One row per framework; one banded cell per control family showing the
+    coverage bar (red/yellow/green), family label, and ``pct · passed/total``
+    — density is conveyed by both color band and bar length, and every cell
+    carries the numbers so it never reads by color alone.
+    """
+    if not by_fw:
+        return ""
+
+    fw_rows = []
+    for framework in sorted(by_fw):
+        families: dict[str, list] = defaultdict(list)
+        for outcome in by_fw[framework]:
+            families[_control_family(outcome.short_id)].append(outcome)
+
+        cells = []
+        for family in sorted(families):
+            group = families[family]
+            passed = sum(1 for o in group if o.status == CheckStatus.PASSED)
+            total = len(group)
+            coverage = passed / total if total else 0.0
+            pct = round(coverage * 100)
+            cells.append(
+                f'      <div class="hcell" title="{_escape(family)} — '
+                f'{passed}/{total} satisfied">\n'
+                f'        <div class="hf">{_escape(family)}</div>\n'
+                f'        <div class="hbar"><span style="width:{pct}%;'
+                f'background:{_heat_color(coverage)}"></span></div>\n'
+                f'        <div class="hp">{pct}% · {passed}/{total}</div>\n'
+                f"      </div>"
+            )
+        fw_rows.append(
+            f'  <div class="heat-fw">\n'
+            f'    <div class="heat-fw-name">{_escape(framework)}</div>\n'
+            f'    <div class="heat-row">\n' + "\n".join(cells) + "\n    </div>\n  </div>"
+        )
+
+    return "\n  <h2>Coverage heat map by control family</h2>\n" + "\n".join(fw_rows) + "\n"
+
+
+_MAX_TREND_POINTS = 30
+
+
+def _trend_block(debt_history: list | None) -> str:
+    """Posture-trend sparkline from `lemma debt --snapshot` history (Refs #40).
+
+    Needs at least two snapshots to be a trend; renders one vertical bar per
+    snapshot (height = coverage %, banded red/yellow/green) plus a summary line
+    with the count, date span, and latest coverage — so it never reads by color
+    alone. Empty / single-point histories degrade to nothing.
+    """
+    points = [s for s in (debt_history or []) if isinstance(s, dict)][-_MAX_TREND_POINTS:]
+    if len(points) < 2:
+        return ""
+
+    def _coverage(snap: dict) -> float:
+        total = snap.get("total_controls") or 0
+        covered = snap.get("covered") or 0
+        return (covered / total) if total else 0.0
+
+    bars = []
+    for snap in points:
+        cov = _coverage(snap)
+        pct = round(cov * 100)
+        day = str(snap.get("timestamp", ""))[:10]
+        debt = snap.get("debt_pct", round(100 - cov * 100, 1))
+        bars.append(
+            f'    <div class="tbar" title="{_escape(day)}: {pct}% covered, '
+            f'{debt}% debt"><span style="height:{pct}%;'
+            f'background:{_heat_color(cov)}"></span></div>'
+        )
+
+    first_day = str(points[0].get("timestamp", ""))[:10]
+    last_day = str(points[-1].get("timestamp", ""))[:10]
+    latest_pct = round(_coverage(points[-1]) * 100)
+    summary = (
+        f"{len(points)} snapshot{'s' if len(points) != 1 else ''}"
+        f" · {_escape(first_day)} → {_escape(last_day)}"
+        f" · latest {latest_pct}% covered"
+    )
+    return (
+        "\n  <h2>Posture trend</h2>\n"
+        '  <div class="trend">\n' + "\n".join(bars) + "\n  </div>\n"
+        f'  <div class="meta">{summary}</div>\n'
+    )
 
 
 def _freshness_label(evidence: list | None, now: datetime) -> str:
@@ -110,6 +255,7 @@ def render_html_report(
     generated_at: datetime,
     traces: list | None = None,
     evidence: list | None = None,
+    debt_history: list | None = None,
 ) -> str:
     """Render a ``CheckResult`` into a standalone HTML posture report.
 
@@ -120,6 +266,9 @@ def render_html_report(
     When ``evidence`` (a list of ``SignedEvidence`` envelopes) is supplied, an
     "Evidence Timeline" section is appended — the auditor-portal view, listing
     signed evidence chronologically with producer, event, and entry hash.
+
+    When ``debt_history`` (the `lemma debt --snapshot` records) has two or more
+    snapshots, a "Posture trend" sparkline is appended (Refs #40).
     """
     scope_label = f"framework {_escape(result.framework)}" if result.framework else "all frameworks"
     by_fw: dict[str, list] = defaultdict(list)
@@ -165,7 +314,7 @@ def render_html_report(
 
   <h2>Coverage by framework</h2>
   {fw_sections}
-
+{_heatmap_block(by_fw)}{_trend_block(debt_history)}
   <h2>Findings</h2>
   {failed_section}
 {_traces_block(traces)}{_evidence_block(evidence)}

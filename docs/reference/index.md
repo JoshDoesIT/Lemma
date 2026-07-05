@@ -1069,7 +1069,7 @@ lemma report [--framework <ID>] [--output <PATH>] [--min-confidence FLOAT]
 | `--output` | (stdout) | Write the HTML to this path (parent dirs created); otherwise the document is printed to stdout for piping/redirection. |
 | `--min-confidence` | `0.0` | Only count `SATISFIES` edges at or above this confidence — same semantics as [`lemma check`](#lemma-check), so the report and the CI gate agree. |
 
-The report shows aggregate pass/fail counts, a per-framework coverage bar, and a findings table of failed controls. When an AI trace log exists (`.lemma/traces/`), it also appends an **AI Decisions** section — the dashboard's AI-trace viewer, listing each logged AI determination with its model, confidence (color-coded), determination, and human-review status. When a signed evidence log exists (`.lemma/evidence/`), it appends an **Evidence Timeline** section — the auditor-portal view ([#39](https://github.com/JoshDoesIT/Lemma/issues/39)) listing signed evidence chronologically with producer, event, and entry hash — and the header shows a **data-freshness indicator** ([#40](https://github.com/JoshDoesIT/Lemma/issues/40)): `evidence as of <latest signed_at> (Nh ago)`, computed from the most recent evidence entry so a reader can see at a glance how stale the posture is. It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles, framework names, and trace fields are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
+The report shows aggregate pass/fail counts, a per-framework coverage bar, a **per-control-family coverage heat map** ([#40](https://github.com/JoshDoesIT/Lemma/issues/40) — one banded cell per control family, e.g. `AC`/`AU`/`PR`, red/yellow/green by coverage density with the `pct · passed/total` numbers so it never reads by color alone), and a findings table of failed controls. When an AI trace log exists (`.lemma/traces/`), it also appends an **AI Decisions** section — the dashboard's AI-trace viewer, listing each logged AI determination with its model, confidence (color-coded), determination, and human-review status. When a signed evidence log exists (`.lemma/evidence/`), it appends an **Evidence Timeline** section — the auditor-portal view ([#39](https://github.com/JoshDoesIT/Lemma/issues/39)) listing signed evidence chronologically with producer, event, and entry hash — and the header shows a **data-freshness indicator** ([#40](https://github.com/JoshDoesIT/Lemma/issues/40)): `evidence as of <latest signed_at> (Nh ago)`, computed from the most recent evidence entry so a reader can see at a glance how stale the posture is. When a compliance-debt snapshot history exists (`.lemma/analytics/debt-history.jsonl`, written by [`lemma debt --snapshot`](#lemma-debt)) with two or more points, it appends a **Posture trend** sparkline ([#40](https://github.com/JoshDoesIT/Lemma/issues/40)) — one banded bar per snapshot (height = coverage %) plus a summary line with the snapshot count, date span, and latest coverage. Pass `--trend-days N` to limit the trend to snapshots from the last N days (0 = all history). It is rendered from the same `CheckResult` as `lemma check`, so what the gate fails on is exactly what the dashboard surfaces. All control titles, framework names, and trace fields are HTML-escaped. Exit `1` on an unknown `--framework` or outside a Lemma project. Interactive graph views remain tracked on the parent [#32](https://github.com/JoshDoesIT/Lemma/issues/32) epic.
 
 ---
 
@@ -2379,21 +2379,21 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 Render a deployment artifact for the Control Plane receiver — the operator-facing side of Enterprise Deployment Options ([#42](https://github.com/JoshDoesIT/Lemma/issues/42)), mirroring [`lemma agent install`](#lemma-agent).
 
 ```bash
-lemma control-plane install --shape <systemd|docker-compose> --output ./deploy [options]
+lemma control-plane install --shape <systemd|docker-compose|helm> --output ./deploy [options]
 ```
 
 | Option | Default | Applies to | Description |
 |--------|---------|------------|-------------|
-| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`) or `docker-compose`. |
+| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`), `docker-compose`, or `helm` (a Kubernetes Helm chart). |
 | `--output` | (required) | all | Directory the rendered artifact is written to. |
-| `--port` | `8443` | all | Port the receiver listens on. |
-| `--image` | the published image | docker-compose | Container image to run. |
+| `--port` | `8443` | all | Port the receiver listens on (Service port for `helm`). |
+| `--image` | the published image | docker-compose, helm | Container image to run. |
 | `--binary` | `/usr/local/bin/lemma` | systemd | Path to the `lemma` binary on the host. |
-| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories. |
+| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories (container mount paths for `helm`). |
 | `--bind` | `127.0.0.1` | systemd | Bind address. |
 | `--force` | `false` | all | Overwrite an existing rendered artifact. |
 
-The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. Both are rendered with all placeholders substituted (no `{{…}}` left). An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
+The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. The **helm** shape writes a self-contained chart under `<output>/lemma-control-plane/` (`Chart.yaml`, `values.yaml`, and `templates/` for the Deployment, Service, PVCs, and NOTES) — install with `helm install lemma-control-plane <output>/lemma-control-plane`. The Deployment runs non-root (`runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped) with the evidence and keys directories on PersistentVolumeClaims; only `values.yaml` carries the substituted values (image, port, paths), so the `templates/` keep Helm's own `{{ .Values.* }}` syntax intact. An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
 
 ### `lemma control-plane aggregate`
 

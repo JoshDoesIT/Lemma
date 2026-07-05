@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 
 def _result(*, failing: bool = True):
@@ -179,6 +180,86 @@ def _envelope(
         entry_hash=entry_hash,
         signer_key_id="key-1",
     )
+
+
+class TestCoverageHeatMap:
+    def test_heatmap_groups_by_control_family_with_coverage(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW)
+        lower = html.lower()
+        assert "heat map" in lower
+        # nist-800-53 has AC-1 (pass) + AC-2 (fail) -> family AC at 50%.
+        assert ">AC<" in html or "AC" in html
+        assert "50%" in html
+        # hipaa control 164.312(b) -> numeric family "164.312" at 100%.
+        assert "164.312" in html
+        assert "100%" in html
+
+    def test_no_outcomes_omits_heatmap(self):
+        from lemma.models.check_result import CheckResult
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(CheckResult(framework=None, outcomes=[]), generated_at=_NOW)
+        assert "heat map" not in html.lower()
+
+
+class TestPostureTrend:
+    _HISTORY: ClassVar[list] = [
+        {
+            "timestamp": "2026-06-18T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 4,
+            "debt_pct": 60.0,
+        },
+        {
+            "timestamp": "2026-06-19T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 6,
+            "debt_pct": 40.0,
+        },
+        {
+            "timestamp": "2026-06-20T12:00:00+00:00",
+            "total_controls": 10,
+            "covered": 8,
+            "debt_pct": 20.0,
+        },
+    ]
+
+    def test_trend_renders_with_multiple_snapshots(self):
+        from lemma.services.report import render_html_report
+
+        html = render_html_report(_result(), generated_at=_NOW, debt_history=self._HISTORY)
+        lower = html.lower()
+        assert "posture trend" in lower
+        # Latest snapshot: 8/10 covered = 80%.
+        assert "80%" in html
+        assert "3 snapshot" in lower
+
+    def test_single_or_no_snapshot_omits_trend(self):
+        from lemma.services.report import render_html_report
+
+        assert (
+            "posture trend"
+            not in render_html_report(_result(), generated_at=_NOW, debt_history=[]).lower()
+        )
+        assert (
+            "posture trend"
+            not in render_html_report(
+                _result(), generated_at=_NOW, debt_history=[self._HISTORY[0]]
+            ).lower()
+        )
+
+
+class TestControlFamily:
+    def test_family_derivation(self):
+        from lemma.services.report import _control_family
+
+        assert _control_family("ac-1") == "AC"
+        assert _control_family("AU-6(1)") == "AU"
+        assert _control_family("PR.AC-1") == "PR"
+        assert _control_family("164.312(b)") == "164.312"
+        assert _control_family("") == "other"
 
 
 class TestDataFreshness:
