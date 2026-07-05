@@ -2379,21 +2379,21 @@ lemma control-plane serve --port <N> --evidence-dir <dir> --keys-dir <dir> \
 Render a deployment artifact for the Control Plane receiver — the operator-facing side of Enterprise Deployment Options ([#42](https://github.com/JoshDoesIT/Lemma/issues/42)), mirroring [`lemma agent install`](#lemma-agent).
 
 ```bash
-lemma control-plane install --shape <systemd|docker-compose|helm> --output ./deploy [options]
+lemma control-plane install --shape <systemd|docker-compose|helm|terraform> --output ./deploy [options]
 ```
 
 | Option | Default | Applies to | Description |
 |--------|---------|------------|-------------|
-| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`), `docker-compose`, or `helm` (a Kubernetes Helm chart). |
+| `--shape` | (required) | all | `systemd` (a hardened unit running `control-plane serve`), `docker-compose`, `helm` (a Kubernetes Helm chart), or `terraform` (an AWS module). |
 | `--output` | (required) | all | Directory the rendered artifact is written to. |
-| `--port` | `8443` | all | Port the receiver listens on (Service port for `helm`). |
-| `--image` | the published image | docker-compose, helm | Container image to run. |
+| `--port` | `8443` | all | Port the receiver listens on (Service port for `helm`; `var.port` for `terraform`). |
+| `--image` | the published image | docker-compose, helm, terraform | Container image to run. |
 | `--binary` | `/usr/local/bin/lemma` | systemd | Path to the `lemma` binary on the host. |
-| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories (container mount paths for `helm`). |
+| `--evidence-dir` / `--keys-dir` | `/var/lib/lemma-control-plane/{evidence,keys}` | all | Receiver data directories (container mount paths for `helm`/`terraform`). |
 | `--bind` | `127.0.0.1` | systemd | Bind address. |
 | `--force` | `false` | all | Overwrite an existing rendered artifact. |
 
-The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. The **helm** shape writes a self-contained chart under `<output>/lemma-control-plane/` (`Chart.yaml`, `values.yaml`, and `templates/` for the Deployment, Service, PVCs, and NOTES) — install with `helm install lemma-control-plane <output>/lemma-control-plane`. The Deployment runs non-root (`runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped) with the evidence and keys directories on PersistentVolumeClaims; only `values.yaml` carries the substituted values (image, port, paths), so the `templates/` keep Helm's own `{{ .Values.* }}` syntax intact. An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
+The **systemd** unit runs under `DynamicUser` with `NoNewPrivileges` / `ProtectSystem=strict` and restarts on failure; the **docker-compose** file mounts named volumes for the evidence and keys directories. The **helm** shape writes a self-contained chart under `<output>/lemma-control-plane/` (`Chart.yaml`, `values.yaml`, and `templates/` for the Deployment, Service, PVCs, and NOTES) — install with `helm install lemma-control-plane <output>/lemma-control-plane`. The Deployment runs non-root (`runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped) with the evidence and keys directories on PersistentVolumeClaims; only `values.yaml` carries the substituted values (image, port, paths), so the `templates/` keep Helm's own `{{ .Values.* }}` syntax intact. The **terraform** shape writes an AWS module under `<output>/terraform/` (`versions.tf`, `variables.tf`, `main.tf`, `outputs.tf`, `README.md`) that provisions the receiver as a single EC2 instance running the container via a Docker user-data bootstrap, behind a security group exposing only the receiver port — `cd <output>/terraform && terraform init && terraform apply -var "ami_id=<ami>"`; outputs the public IP and the `/v1/evidence` endpoint. Only `variables.tf` carries the substituted defaults (image, port, paths), so the other files keep Terraform's `${var.*}` interpolation. An unknown shape exits `1`. Pair with TLS/mTLS flags on `serve` (`--cert` / `--key` / `--client-ca`) for production.
 
 ### `lemma control-plane aggregate`
 
