@@ -179,3 +179,58 @@ def test_install_terraform_refuses_overwrite_without_force(tmp_path: Path):
     assert second.exit_code == 1
     assert "force" in second.stdout.lower()
     assert runner.invoke(app, [*args, "--force"]).exit_code == 0
+
+
+def test_install_airgap_writes_valid_bundle_scripts(tmp_path: Path):
+    import subprocess
+
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    result = runner.invoke(
+        app,
+        [
+            "control-plane",
+            "install",
+            "--shape",
+            "airgap",
+            "--output",
+            str(out),
+            "--image",
+            "myreg/lemma:2.0",
+            "--models",
+            "llama3.2, mistral",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    bundle = out / "airgap"
+    for name in ["build-bundle.sh", "load-bundle.sh", "MANIFEST.md", "README.md"]:
+        assert (bundle / name).is_file()
+
+    build = (bundle / "build-bundle.sh").read_text()
+    assert "myreg/lemma:2.0" in build
+    # Comma-separated models become a space-separated bash array init.
+    assert "LLM_MODELS=(llama3.2 mistral)" in build
+    for placeholder in ("{{IMAGE}}", "{{LLM_MODELS}}", "{{EMBEDDING_MODEL}}"):
+        assert placeholder not in build
+
+    # Both scripts are valid bash (syntax check, no execution).
+    for name in ["build-bundle.sh", "load-bundle.sh"]:
+        proc = subprocess.run(["bash", "-n", str(bundle / name)], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+
+    manifest = (bundle / "MANIFEST.md").read_text()
+    assert "sentence-transformers/all-MiniLM-L6-v2" in manifest
+
+
+def test_install_airgap_refuses_overwrite_without_force(tmp_path: Path):
+    from lemma.cli import app
+
+    out = tmp_path / "deploy"
+    args = ["control-plane", "install", "--shape", "airgap", "--output", str(out)]
+    assert runner.invoke(app, args).exit_code == 0
+    second = runner.invoke(app, args)
+    assert second.exit_code == 1
+    assert "force" in second.stdout.lower()
+    assert runner.invoke(app, [*args, "--force"]).exit_code == 0
