@@ -513,3 +513,64 @@ def test_command(
         f"[green]OK[/green] Connector [cyan]{connector.manifest.name}[/cyan] "
         f"emitted {len(events)} event(s). All events validated against the OCSF schema."
     )
+
+
+@connector_app.command(
+    name="package",
+    help="Bundle a connector project into a signed, verifiable <name>-<version>.tar.gz.",
+)
+def package_command(
+    path: str = typer.Argument(
+        help="A connector project directory (as created by `lemma connector init`).",
+    ),
+    output: str = typer.Option(
+        "",
+        "--output",
+        "-o",
+        help="Directory to write the tarball into (default: the project's parent).",
+    ),
+    key_dir: str = typer.Option(
+        "",
+        "--key-dir",
+        help="Keystore for the signing identity (default: <project>/.keys).",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing package tarball."),
+) -> None:
+    from lemma.services.connector_package import build_package
+
+    project = Path(path)
+    if not project.is_dir():
+        _fail(f"{project} is not a connector project directory.")
+
+    try:
+        tarball, manifest = build_package(
+            project,
+            output_dir=Path(output) if output else None,
+            key_dir=Path(key_dir) if key_dir else None,
+            force=force,
+        )
+    except FileExistsError as exc:
+        _fail(str(exc))
+    except (FileNotFoundError, ValueError) as exc:
+        _fail(str(exc))
+
+    console.print(
+        f"[green]Packaged[/green] [cyan]{manifest.name}[/cyan] v{manifest.version} "
+        f"→ {tarball} ({len(manifest.files)} files, signed by {manifest.producer})."
+    )
+
+
+@connector_app.command(
+    name="verify-package",
+    help="Verify a connector package's signature and per-file integrity.",
+)
+def verify_package_command(
+    path: str = typer.Argument(help="Path to a connector package (.tar.gz)."),
+) -> None:
+    from lemma.services.connector_package import verify_package
+
+    result = verify_package(Path(path))
+    if not result.ok:
+        where = f" ({result.failed_path})" if result.failed_path else ""
+        _fail(f"{result.detail}{where}")
+    console.print(f"[green]OK[/green] {result.detail}")

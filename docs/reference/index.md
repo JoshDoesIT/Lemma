@@ -492,6 +492,40 @@ lemma connector validate <FILE>
 
 On top of the base `ConnectorManifest` schema (required `name`, `version`, `producer`), it enforces registry-grade rules: `name` must be **path-safe** (lowercase letters, digits, `.`, `-`, `_` — no spaces or slashes, since it becomes a directory/URL segment); `version` must be **semantic** (`MAJOR.MINOR.PATCH`, optional `-prerelease`/`+build`); and `capabilities` must be a **non-empty** list of non-blank tags. Prints `✓ <name>: manifest is valid.` and exits `0`, or lists every error (`• …`) and exits `1`. The validator (`src/lemma/services/manifest_validation.py::validate_manifest`) is shared so a future registry-submission gate enforces the same rules.
 
+### `lemma connector package`
+
+Bundle a connector project into a portable, signed `<name>-<version>.tar.gz` — the local half of the connector publish flow ([#109](https://github.com/JoshDoesIT/Lemma/issues/109)), so a connector can be distributed and verified without shipping raw source.
+
+```bash
+lemma connector package <PATH> [--output <DIR>] [--key-dir <DIR>] [--force]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `PATH` | Yes | A connector project directory (as created by `lemma connector init`). |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output`, `-o` | project's parent dir | Directory to write the tarball into. |
+| `--key-dir` | `<project>/.keys` | Keystore for the signing identity; the producer's Ed25519 keypair is generated here on first use. |
+| `--force` | off | Overwrite an existing package tarball. |
+
+The manifest must pass the same registry-grade validation as [`lemma connector validate`](#lemma-connector-validate) — an invalid connector is not publishable. The tarball carries every project file plus a `package.json` integrity manifest (per-file SHA-256 + signer identity), a detached `package.sig` (Ed25519 over `package.json`), and the signer's public PEM under `keys/<producer>/`, so the package verifies offline. Build + verify live in `src/lemma/services/connector_package.py`.
+
+### `lemma connector verify-package`
+
+Verify a connector package's signature and per-file integrity — the download-side counterpart of `lemma connector package`.
+
+```bash
+lemma connector verify-package <PATH>
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `PATH` | Yes | Path to a connector package (`.tar.gz`). |
+
+Extracts the archive with tarfile's `data` filter (rejecting path-traversal / absolute members), checks the Ed25519 signature over `package.json` against the bundled public key, and re-hashes every listed file. Prints `OK Package verified: …` and exits `0`, or reports the first failing file and exits `1`.
+
 ### `lemma connector run`
 
 Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).
