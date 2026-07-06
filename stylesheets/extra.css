@@ -1,0 +1,49 @@
+:root {
+  /* Lemma Terminal Green Accent */
+  --md-primary-fg-color:        #0A0A0A;
+  --md-primary-fg-color--light: #333333;
+  --md-primary-fg-color--dark:  #000000;
+  --md-primary-bg-color:        #FFFFFF;
+  --md-primary-bg-color--light: #FFFFFF;
+  
+  --md-accent-fg-color:         #00FF41;
+  --md-accent-fg-color--transparent: rgba(0, 255, 65, 0.1);
+  --md-accent-bg-color:         #0A0A0A;
+  --md-accent-bg-color--light:  #0A0A0A;
+
+  /* Fonts */
+  --md-text-font: "Inter", sans-serif;
+  --md-code-font: "JetBrains Mono", monospace;
+  
+  /* Corners */
+  --md-border-radius: 0px;
+}
+
+[data-md-color-scheme="slate"] {
+  /* Void Black Background override for Slate */
+  --md-default-bg-color: #0A0A0A;
+  --md-default-bg-color--light: #111111;
+  --md-default-bg-color--lighter: #1A1A1A;
+  --md-default-bg-color--lightest: #222222;
+  
+  --md-code-bg-color: #000000;
+  --md-code-hl-color: rgba(0, 255, 65, 0.2);
+  
+  --md-typeset-a-color: #00FF41;
+  
+  /* Structural elements */
+  --md-default-fg-color--light: #333333;
+  --md-default-fg-color--lighter: #444444;
+  --md-default-fg-color--lightest: #555555;
+}
+
+/* Sharp UI Edges */
+.md-button {
+  border-radius: 0px;
+}
+.md-search__input {
+  border-radius: 0px;
+}
+.md-content pre > code {
+  border-radius: 0px;
+}

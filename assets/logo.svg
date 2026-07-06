@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Outer brackets representing code/structure -->
+  <path d="M 160 128 L 128 128 L 128 384 L 160 384" stroke="#333333" stroke-width="24" stroke-linecap="square" />
+  <path d="M 352 128 L 384 128 L 384 384 L 352 384" stroke="#333333" stroke-width="24" stroke-linecap="square" />
+
+  <!-- Turnstile elements (⊢) -->
+  <path d="M 192 192 L 192 320" stroke="#FFFFFF" stroke-width="32" stroke-linecap="square" />
+  <path d="M 192 256 L 256 256" stroke="#FFFFFF" stroke-width="32" stroke-linecap="square" />
+
+  <!-- Therefore dots (∴) -->
+  <circle cx="320" cy="224" r="20" fill="#00FF41" />
+  <circle cx="280" cy="288" r="20" fill="#00FF41" />
+  <circle cx="360" cy="288" r="20" fill="#00FF41" />
+</svg>
