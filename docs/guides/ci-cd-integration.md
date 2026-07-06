@@ -10,7 +10,40 @@ All three commands exit `0` when posture is good and non-zero when it isn't — 
 
 ## GitHub Actions
 
-The minimal setup runs `lemma check` on every PR. Save as `.github/workflows/compliance.yml`:
+### Reusable action (`lemma-check`)
+
+The quickest path is the shipped composite action — it installs Lemma, runs
+`lemma check`, gates the job on the exit code, and posts the result as a PR
+comment. No hand-written install/run steps:
+
+```yaml
+name: Compliance
+on: [pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write   # required for the PR comment
+
+jobs:
+  lemma:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: joshdoesit/lemma/actions/lemma-check@main
+        with:
+          framework: nist-800-53
+          min-confidence: "0.7"
+```
+
+Inputs: `framework`, `min-confidence`, `format`, `policy-dir`,
+`working-directory`, `version`, `comment-on-pr`, `github-token`. Pin a release
+with `version: lemma-grc==<x.y.z>`. The action definition and full input table
+live at `actions/lemma-check/`.
+
+### Hand-rolled workflow
+
+If you'd rather wire the steps yourself, the minimal setup runs `lemma check`
+on every PR. Save as `.github/workflows/compliance.yml`:
 
 ```yaml
 name: Compliance
@@ -127,7 +160,31 @@ on:
 
 ## GitLab CI
 
-Equivalent shape in `.gitlab-ci.yml`:
+### Reusable template (`lemma-ci`)
+
+Include the shipped template and override the `LEMMA_*` variables — no
+hand-written install/run steps:
+
+```yaml
+include:
+  - project: 'your-group/lemma'
+    ref: main
+    file: '/ci/gitlab/lemma-check.yml'
+
+lemma-check:
+  variables:
+    LEMMA_FRAMEWORK: nist-800-53
+    LEMMA_MIN_CONFIDENCE: "0.7"
+```
+
+The `lemma-check` job exits non-zero on violations, failing the pipeline.
+Variables: `LEMMA_VERSION`, `LEMMA_FRAMEWORK`, `LEMMA_MIN_CONFIDENCE`,
+`LEMMA_FORMAT`, `LEMMA_POLICY_DIR`. The template lives at
+`ci/gitlab/lemma-check.yml`.
+
+### Hand-rolled job
+
+Equivalent shape written inline in `.gitlab-ci.yml`:
 
 ```yaml
 stages:
@@ -247,5 +304,5 @@ lemma_check:
 
 ## What's NOT here
 
-- **Native GitHub Action** — a `lemma-ai/lemma-action` wrapper that posts results as PR comments (instead of via the SARIF upload path) is tracked at [#120](https://github.com/JoshDoesIT/Lemma/issues/120). The SARIF route above already covers Code Scanning ingestion; the wrapper adds PR-comment summaries on top.
+- **Standalone `lemma-ai/lemma-action` repo** — the reusable composite action now ships in-repo at `actions/lemma-check/` (see [Reusable action](#reusable-action-lemma-check) above), which runs `lemma check`, gates the job, and posts a PR comment. Publishing it as a standalone, versioned Marketplace action under `lemma-ai/lemma-action` remains tracked at [#120](https://github.com/JoshDoesIT/Lemma/issues/120).
 - **Self-hosted runner setup for `--run-eval`** — running the RAG evaluation harness in CI requires a runner with Ollama installed. Out of scope for this guide; see [`docs/guides/rag-evaluation.md`](./rag-evaluation.md) for the local-only setup that exists today.

@@ -1,0 +1,33 @@
+# Lemma compliance gate for GitLab CI (the `lemma-ci` reusable template, Refs #28).
+#
+# Include it from your .gitlab-ci.yml and override the LEMMA_* variables:
+#
+#   include:
+#     - project: 'your-group/lemma'
+#       ref: main
+#       file: '/ci/gitlab/lemma-check.yml'
+#
+#   lemma-check:
+#     variables:
+#       LEMMA_FRAMEWORK: nist-800-53
+#       LEMMA_MIN_CONFIDENCE: "0.7"
+#
+# The job exits non-zero when compliance violations are detected, failing the
+# pipeline. `lemma check` runs against the project's .lemma/ in the repo root.
+
+lemma-check:
+  stage: test
+  image: python:3.12-slim
+  variables:
+    LEMMA_VERSION: "lemma-grc"
+    LEMMA_FRAMEWORK: ""
+    LEMMA_MIN_CONFIDENCE: "0.0"
+    LEMMA_FORMAT: "text"
+    LEMMA_POLICY_DIR: ""
+  script:
+    - pip install "$LEMMA_VERSION"
+    - |
+      args="check --min-confidence $LEMMA_MIN_CONFIDENCE --format $LEMMA_FORMAT"
+      if [ -n "$LEMMA_FRAMEWORK" ]; then args="$args --framework $LEMMA_FRAMEWORK"; fi
+      if [ -n "$LEMMA_POLICY_DIR" ]; then args="$args --policy-dir $LEMMA_POLICY_DIR"; fi
+      lemma $args

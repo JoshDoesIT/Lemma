@@ -1,0 +1,92 @@
+name: "Lemma Compliance Check"
+description: "Run `lemma check` to gate a pipeline on compliance posture, and post the result as a PR comment."
+branding:
+  icon: "shield"
+  color: "green"
+
+inputs:
+  framework:
+    description: "Restrict the check to a single framework (e.g. nist-800-53). Empty = all."
+    required: false
+    default: ""
+  min-confidence:
+    description: "Only count SATISFIES edges at or above this confidence (0.0-1.0)."
+    required: false
+    default: "0.0"
+  format:
+    description: "Output format: text, json, or sarif."
+    required: false
+    default: "text"
+  policy-dir:
+    description: "Directory of .rego policies to evaluate alongside coverage (optional)."
+    required: false
+    default: ""
+  working-directory:
+    description: "Directory containing the Lemma project (its .lemma/ folder)."
+    required: false
+    default: "."
+  version:
+    description: "pip requirement to install (e.g. lemma-grc, lemma-grc==1.2.3)."
+    required: false
+    default: "lemma-grc"
+  comment-on-pr:
+    description: "Post the check result as a comment on the pull request."
+    required: false
+    default: "true"
+  github-token:
+    description: "Token used to post the PR comment."
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install Lemma
+      shell: bash
+      run: pip install "${{ inputs.version }}"
+
+    - name: Run lemma check
+      id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set +e
+        args=(check --min-confidence "${{ inputs.min-confidence }}" --format "${{ inputs.format }}")
+        if [ -n "${{ inputs.framework }}" ]; then args+=(--framework "${{ inputs.framework }}"); fi
+        if [ -n "${{ inputs.policy-dir }}" ]; then args+=(--policy-dir "${{ inputs.policy-dir }}"); fi
+        lemma "${args[@]}" | tee "$RUNNER_TEMP/lemma-check.out"
+        echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on PR
+      if: ${{ always() && inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const path = process.env.RUNNER_TEMP + '/lemma-check.out';
+          const out = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '(no output captured)';
+          const code = '${{ steps.check.outputs.exit_code }}';
+          const status = code === '0' ? '✅ passed' : '❌ failed';
+          const body = [
+            '### Lemma compliance check ' + status,
+            '',
+            '```',
+            out.slice(0, 60000),
+            '```',
+          ].join('\n');
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body,
+          });
+
+    - name: Gate on result
+      shell: bash
+      run: exit ${{ steps.check.outputs.exit_code }}
