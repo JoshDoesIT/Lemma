@@ -1067,7 +1067,8 @@ def ingest_command(
     name="import-sarif",
     help=(
         "Ingest a SARIF 2.1.0 static-analysis report (CodeQL, Snyk, Trivy, "
-        "Semgrep, …) as signed OCSF Detection Findings in the evidence log."
+        "Semgrep, …) as signed OCSF findings in the evidence log — CVE results "
+        "become Vulnerability Findings, others Detection Findings."
     ),
 )
 def import_sarif_command(

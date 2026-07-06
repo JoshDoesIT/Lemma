@@ -143,13 +143,16 @@ OCSF provides a vendor-agnostic taxonomy of security telemetry maintained by a b
 
 ### Classes modeled today
 
-This release ships the minimum lexicon needed to prove the schema and unblock connector work. All three classes live in `src/lemma/models/ocsf.py`.
+The lexicon grows demand-driven — a class is added when a connector or importer actually needs it, never speculatively. The classes below live in `src/lemma/models/ocsf.py`.
 
 | Class | `class_uid` | Category | Why it's here |
 |---|---|---|---|
 | `ComplianceFinding` | 2003 | Findings (2000) | Direct representation of an evaluated compliance control outcome — the most natural OCSF class for GRC evidence. |
 | `DetectionFinding` | 2004 | Findings (2000) | The modern replacement for the deprecated Security Finding (2001) class in OCSF 1.1+. Used when a connector emits a generic detection result that still maps to a control. |
+| `VulnerabilityFinding` | 2002 | Findings (2000) | CVE-lifecycle telemetry from SCA / container / CSPM scanners (Trivy, Snyk, Grype). Carries a first-class `vulnerabilities` list (each with its `cve` object). `lemma evidence import-sarif` emits it — instead of a generic `DetectionFinding` — whenever a SARIF result identifies a CVE. |
 | `AuthenticationEvent` | 3002 | IAM (3000) | Evidence of identity and access activity (MFA use, SSO logins, privilege escalations) — a common compliance signal. Also proves the base-class design generalizes across categories. |
+
+The Findings-category classes share the OCSF `FindingActivity` enum for `activity_id` (`CREATE=1`, `UPDATE=2`, `CLOSE=3`); `VulnerabilityFinding` types its `activity_id` field with it.
 
 ### Design notes
 
@@ -163,7 +166,7 @@ Normalized OCSF events land in an append-only log at `.lemma/evidence/YYYY-MM-DD
 
 Two services drive ingestion:
 
-- **`normalize(payload)`** (`src/lemma/services/ocsf_normalizer.py`) — takes an OCSF-shaped dict and returns the correct concrete model (`ComplianceFinding`, `DetectionFinding`, `AuthenticationEvent`) via a Pydantic discriminated union. Rejects payloads with a missing or unknown `class_uid`, and rejects naive datetimes on `time` since OCSF is UTC on the wire.
+- **`normalize(payload)`** (`src/lemma/services/ocsf_normalizer.py`) — takes an OCSF-shaped dict and returns the correct concrete model (`ComplianceFinding`, `DetectionFinding`, `VulnerabilityFinding`, `AuthenticationEvent`) via a Pydantic discriminated union. Rejects payloads with a missing or unknown `class_uid`, and rejects naive datetimes on `time` since OCSF is UTC on the wire.
 - **`EvidenceLog`** (`src/lemma/services/evidence_log.py`) — `append`, `read_all`, `filter_by_class`, `filter_by_time_range`. Dedupe happens at append time: if the event's `metadata.uid` (or, when absent, a content hash of the model) already appears in today's log file, the second `append` is a no-op and returns `False`. Dedupe scope is intentionally today's file only; cross-midnight duplicates are rare enough not to justify scanning the full log on every write.
 
 ### What's deferred

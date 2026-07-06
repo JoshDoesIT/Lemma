@@ -39,6 +39,22 @@ class OcsfSeverity(IntEnum):
     FATAL = 6
 
 
+class FindingActivity(IntEnum):
+    """OCSF ``activity_id`` values shared by the Findings-category classes.
+
+    OCSF defines the same lifecycle activities for Compliance / Detection /
+    Vulnerability findings: a finding is opened (``CREATE``), re-observed with
+    changed state (``UPDATE``), or resolved (``CLOSE``). See
+    https://schema.ocsf.io/ (Vulnerability Finding, class_uid 2002).
+    """
+
+    UNKNOWN = 0
+    CREATE = 1
+    UPDATE = 2
+    CLOSE = 3
+    OTHER = 99
+
+
 class OcsfBaseEvent(BaseModel):
     """Shared fields for every OCSF event.
 
@@ -108,6 +124,23 @@ class DetectionFinding(_CategoryPinnedEvent):
     class_uid: Literal[2004] = 2004
 
 
+class VulnerabilityFinding(_CategoryPinnedEvent):
+    """OCSF Vulnerability Finding (class_uid=2002, Findings category).
+
+    The class for CVE-lifecycle telemetry emitted by CSPM / SCA / container
+    scanners (Trivy, Snyk, Grype, …). Distinct from the generic
+    ``DetectionFinding`` in that it carries a first-class ``vulnerabilities``
+    list — each entry describes an identified vulnerability (its ``cve``
+    object, affected package, fix availability). ``activity_id`` is typed as
+    the OCSF ``FindingActivity`` enum.
+    """
+
+    _expected_category: ClassVar[int] = OcsfCategory.FINDINGS
+    class_uid: Literal[2002] = 2002
+    activity_id: FindingActivity = FindingActivity.CREATE
+    vulnerabilities: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AuthenticationEvent(_CategoryPinnedEvent):
     """OCSF Authentication (class_uid=3002, IAM category)."""
 
@@ -120,6 +153,7 @@ class AuthenticationEvent(_CategoryPinnedEvent):
 # validator is useful for any OCSF event while still enforcing the stricter,
 # category-pinned schema for the classes Lemma's connectors actually emit.
 _EVENT_CLASSES: dict[int, type[OcsfBaseEvent]] = {
+    2002: VulnerabilityFinding,
     2003: ComplianceFinding,
     2004: DetectionFinding,
     3002: AuthenticationEvent,

@@ -1,6 +1,31 @@
-"""Tests for the SARIF → OCSF DetectionFinding ingest (Refs #41)."""
+"""Tests for the SARIF → OCSF finding ingest (Refs #41, #89)."""
 
 from __future__ import annotations
+
+# A Trivy-style SCA report whose results identify CVEs — these must become
+# VulnerabilityFindings, not generic DetectionFindings.
+_CVE_SARIF = {
+    "version": "2.1.0",
+    "runs": [
+        {
+            "tool": {"driver": {"name": "Trivy"}},
+            "results": [
+                {
+                    "ruleId": "CVE-2023-45853",
+                    "level": "error",
+                    "message": {"text": "zlib heap buffer overflow in libz1"},
+                },
+                {
+                    "ruleId": "trivy-vuln",
+                    "level": "warning",
+                    "message": {"text": "package foo affected by CVE-2024-1234"},
+                },
+                # A non-CVE lint result in the same run stays a DetectionFinding.
+                {"ruleId": "config/insecure", "level": "warning", "message": {"text": "no CVE"}},
+            ],
+        }
+    ],
+}
 
 _SARIF = {
     "version": "2.1.0",
@@ -136,3 +161,71 @@ def test_missing_optional_fields_degrade_gracefully():
     assert f.metadata["rule_id"]
     # No location keys present when SARIF omits them.
     assert "location_uri" not in f.metadata
+
+
+def test_cve_bearing_results_become_vulnerability_findings():
+    from lemma.models.ocsf import DetectionFinding, VulnerabilityFinding
+    from lemma.services.sarif_ingest import sarif_to_findings
+
+    findings = sarif_to_findings(_CVE_SARIF, today="2026-06-21")
+    assert len(findings) == 3
+    by_rule = {f.metadata["rule_id"]: f for f in findings}
+
+    # CVE in ruleId → VulnerabilityFinding (class_uid 2002).
+    ruleid_cve = by_rule["CVE-2023-45853"]
+    assert isinstance(ruleid_cve, VulnerabilityFinding)
+    assert ruleid_cve.class_uid == 2002
+    assert ruleid_cve.metadata["cve_ids"] == ["CVE-2023-45853"]
+    assert ruleid_cve.vulnerabilities == [{"cve": {"uid": "CVE-2023-45853"}}]
+
+    # CVE only in the message text is still detected.
+    msg_cve = by_rule["trivy-vuln"]
+    assert isinstance(msg_cve, VulnerabilityFinding)
+    assert msg_cve.metadata["cve_ids"] == ["CVE-2024-1234"]
+
+    # A result with no CVE anywhere stays a generic DetectionFinding.
+    non_cve = by_rule["config/insecure"]
+    assert isinstance(non_cve, DetectionFinding)
+    assert non_cve.class_uid == 2004
+    assert "cve_ids" not in non_cve.metadata
+
+
+def test_vulnerability_finding_preserves_severity_and_control_refs():
+    from lemma.models.ocsf import VulnerabilityFinding
+    from lemma.services.sarif_ingest import sarif_to_findings
+
+    findings = sarif_to_findings(_CVE_SARIF, today="2026-06-21", control_refs=["SI-2"])
+    vulns = [f for f in findings if isinstance(f, VulnerabilityFinding)]
+    assert vulns
+    # error level → HIGH (4)/Fail (2), same mapping as detection findings.
+    top = next(f for f in vulns if f.metadata["rule_id"] == "CVE-2023-45853")
+    assert top.severity_id == 4
+    assert top.status_id == 2
+    # control_refs flow onto vulnerability findings too.
+    assert all(f.metadata["control_refs"] == ["SI-2"] for f in vulns)
+
+
+def test_case_insensitive_and_deduped_cve_extraction():
+    from lemma.models.ocsf import VulnerabilityFinding
+    from lemma.services.sarif_ingest import sarif_to_findings
+
+    doc = {
+        "runs": [
+            {
+                "tool": {"driver": {"name": "Grype"}},
+                "results": [
+                    {
+                        "ruleId": "cve-2022-0001",
+                        "level": "error",
+                        "message": {"text": "also mentions CVE-2022-0001 and CVE-2022-9999"},
+                    }
+                ],
+            }
+        ]
+    }
+    findings = sarif_to_findings(doc, today="2026-06-21")
+    assert len(findings) == 1
+    f = findings[0]
+    assert isinstance(f, VulnerabilityFinding)
+    # Upper-cased and de-duplicated, preserving first-seen order.
+    assert f.metadata["cve_ids"] == ["CVE-2022-0001", "CVE-2022-9999"]

@@ -38,6 +38,19 @@ def test_normalize_dispatches_detection_finding():
     assert event.class_uid == 2004
 
 
+def test_normalize_dispatches_vulnerability_finding():
+    from lemma.models.ocsf import VulnerabilityFinding
+    from lemma.services.ocsf_normalizer import normalize
+
+    payload = _base_payload(2002, "Vulnerability Finding", 2000, "Findings")
+    payload["vulnerabilities"] = [{"cve": {"uid": "CVE-2023-45853"}}]
+    event = normalize(payload)
+
+    assert isinstance(event, VulnerabilityFinding)
+    assert event.class_uid == 2002
+    assert event.vulnerabilities[0]["cve"]["uid"] == "CVE-2023-45853"
+
+
 def test_normalize_dispatches_authentication_event():
     from lemma.models.ocsf import AuthenticationEvent
     from lemma.services.ocsf_normalizer import normalize
