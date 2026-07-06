@@ -23,13 +23,14 @@ from lemma.models.ocsf import (
     DetectionFinding,
     OcsfBaseEvent,
     OcsfSeverity,
+    VulnerabilityFinding,
 )
 from lemma.models.signed_evidence import ProvenanceRecord
 
 NORMALIZER_VERSION = "lemma.ocsf_normalizer/1"
 
 OcsfEvent = Annotated[
-    ComplianceFinding | DetectionFinding | AuthenticationEvent,
+    VulnerabilityFinding | ComplianceFinding | DetectionFinding | AuthenticationEvent,
     Field(discriminator="class_uid"),
 ]
 

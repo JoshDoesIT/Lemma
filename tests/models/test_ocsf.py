@@ -167,3 +167,82 @@ def test_ocsf_event_serializes_to_json_with_snake_case_keys():
     assert data["severity_id"] == 1  # default INFORMATIONAL
     assert "time" in data
     assert "metadata" in data
+
+
+def test_finding_activity_enum_matches_ocsf_spec():
+    from lemma.models.ocsf import FindingActivity
+
+    assert int(FindingActivity.UNKNOWN) == 0
+    assert int(FindingActivity.CREATE) == 1
+    assert int(FindingActivity.UPDATE) == 2
+    assert int(FindingActivity.CLOSE) == 3
+    assert int(FindingActivity.OTHER) == 99
+
+
+def test_vulnerability_finding_pins_class_uid_2002():
+    from lemma.models.ocsf import FindingActivity, VulnerabilityFinding
+
+    finding = VulnerabilityFinding(
+        class_name="Vulnerability Finding",
+        category_uid=2000,
+        category_name="Findings",
+        type_uid=200201,
+        vulnerabilities=[{"cve": {"uid": "CVE-2023-45853"}}],
+    )
+    assert finding.class_uid == 2002
+    assert finding.category_uid == 2000
+    # activity_id defaults to CREATE and is typed as the FindingActivity enum.
+    assert finding.activity_id is FindingActivity.CREATE
+    assert finding.vulnerabilities[0]["cve"]["uid"] == "CVE-2023-45853"
+
+
+def test_vulnerability_finding_validates_category_consistency():
+    import pytest
+    from pydantic import ValidationError
+
+    from lemma.models.ocsf import VulnerabilityFinding
+
+    with pytest.raises(ValidationError):
+        VulnerabilityFinding(
+            class_name="Vulnerability Finding",
+            category_uid=3000,  # IAM — wrong category for a Finding
+            category_name="IAM",
+            type_uid=200201,
+            activity_id=1,
+        )
+
+
+def test_vulnerability_finding_types_activity_id_as_enum():
+    from lemma.models.ocsf import FindingActivity, VulnerabilityFinding
+
+    finding = VulnerabilityFinding(
+        class_name="Vulnerability Finding",
+        category_uid=2000,
+        category_name="Findings",
+        type_uid=200203,
+        activity_id=3,
+    )
+    assert finding.activity_id is FindingActivity.CLOSE
+
+
+def test_vulnerability_finding_parses_sample_ocsf_payload():
+    """Sample payload adapted from https://schema.ocsf.io/ (Apache-2.0)."""
+    from lemma.models.ocsf import VulnerabilityFinding
+
+    payload = _load_fixture("vulnerability_finding_sample.json")
+    finding = VulnerabilityFinding.model_validate(payload)
+
+    assert finding.class_uid == 2002
+    assert finding.category_uid == 2000
+    assert finding.vulnerabilities[0]["cve"]["uid"] == "CVE-2023-45853"
+    assert finding.metadata["cve_ids"] == ["CVE-2023-45853"]
+
+
+def test_validate_ocsf_event_dispatches_vulnerability_finding():
+    from lemma.models.ocsf import VulnerabilityFinding, validate_ocsf_event
+
+    payload = _load_fixture("vulnerability_finding_sample.json")
+    event = validate_ocsf_event(payload)
+
+    assert isinstance(event, VulnerabilityFinding)
+    assert event.class_uid == 2002

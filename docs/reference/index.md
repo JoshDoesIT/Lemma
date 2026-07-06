@@ -466,7 +466,7 @@ lemma connector test <PATH>           # project directory, or
 lemma connector test events.jsonl     # an emitted OCSF fixture file
 ```
 
-Events are dispatched by `class_uid` to the matching pinned model (Compliance Finding, Detection Finding, Authentication) or the OCSF base schema otherwise. Exits `0` with a validated-count summary on success, `1` on malformed output, import failure, missing/empty fixture, or schema violation (reporting the offending line/event).
+Events are dispatched by `class_uid` to the matching pinned model (Compliance Finding, Detection Finding, Vulnerability Finding, Authentication) or the OCSF base schema otherwise. Exits `0` with a validated-count summary on success, `1` on malformed output, import failure, missing/empty fixture, or schema violation (reporting the offending line/event).
 
 ### `lemma connector registry`
 
@@ -872,7 +872,7 @@ lemma evidence ingest smoke.jsonl
 
 ### `lemma evidence import-sarif`
 
-Ingest a SARIF 2.1.0 static-analysis report — the output of CodeQL, Snyk, Trivy, Semgrep, and most security scanners — as signed OCSF `DetectionFinding` evidence. This is the inbound counterpart to [`lemma evidence export`](#lemma-evidence-export): security-tool findings become first-class, tamper-evident entries in the same hash-chained evidence log as connector output.
+Ingest a SARIF 2.1.0 static-analysis report — the output of CodeQL, Snyk, Trivy, Semgrep, and most security scanners — as signed OCSF finding evidence. This is the inbound counterpart to [`lemma evidence export`](#lemma-evidence-export): security-tool findings become first-class, tamper-evident entries in the same hash-chained evidence log as connector output.
 
 ```bash
 lemma evidence import-sarif <FILE> [--dry-run]
@@ -887,7 +887,7 @@ lemma evidence import-sarif <FILE> [--dry-run]
 | `--controls` | (none) | Comma-separated control id(s) to tag every ingested finding with (e.g. `AC-6,SI-2`). Sets `metadata.control_refs` so [`lemma evidence load`](#lemma-evidence-load) wires the findings to those controls as `EVIDENCES` edges. |
 | `--dry-run` | off | Parse and count findings without writing to the evidence log. |
 
-**Mapping.** Each SARIF `result` across every `run` becomes one `DetectionFinding` (class_uid 2004). The tool name (`runs[].tool.driver.name`) is the producer; the SARIF `level` sets OCSF severity and status (`error` → HIGH/Fail, `warning` → MEDIUM/Fail, `note` → LOW/informational, `none` → INFORMATIONAL). `metadata` carries `rule_id`, `level`, `tool`, and the first location (`location_uri`, `location_line`).
+**Mapping.** Each SARIF `result` across every `run` becomes one OCSF finding. A result that identifies a CVE (in its `ruleId`, message, `taxa`, or `properties` — the SCA / container / CSPM case, e.g. Trivy, Snyk, Grype) becomes a `VulnerabilityFinding` (class_uid 2002) carrying the CVE ids in `metadata.cve_ids` and a `vulnerabilities` list (each `{"cve": {"uid": …}}`); every other result becomes a generic `DetectionFinding` (class_uid 2004). The tool name (`runs[].tool.driver.name`) is the producer; the SARIF `level` sets OCSF severity and status (`error` → HIGH/Fail, `warning` → MEDIUM/Fail, `note` → LOW/informational, `none` → INFORMATIONAL). `metadata` carries `rule_id`, `level`, `tool`, and the first location (`location_uri`, `location_line`).
 
 **Dedupe.** `metadata.uid` is `sarif:<tool>:<ruleId>:<fingerprint>:<UTC date>`, where the fingerprint prefers SARIF's own `fingerprints`/`partialFingerprints` and otherwise hashes the rule + location. Re-importing the same report on the same day skips every finding as a duplicate.
 

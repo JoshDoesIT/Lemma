@@ -1,10 +1,14 @@
-"""Convert SARIF 2.1.0 static-analysis output into OCSF Detection Findings (Refs #41).
+"""Convert SARIF 2.1.0 static-analysis output into OCSF findings (Refs #41, #89).
 
 Security tools (CodeQL, Snyk, Trivy, Semgrep, …) emit findings in SARIF.
-``sarif_to_findings`` maps each SARIF ``result`` to an OCSF
-``DetectionFinding`` (class_uid 2004) so scanner output can be appended to
-the signed evidence log as first-class, tamper-evident compliance evidence —
-the inbound counterpart to ``lemma evidence export``.
+``sarif_to_findings`` maps each SARIF ``result`` to an OCSF finding so scanner
+output can be appended to the signed evidence log as first-class,
+tamper-evident compliance evidence — the inbound counterpart to
+``lemma evidence export``. A result that identifies one or more CVEs (SCA /
+container / CSPM scanners like Trivy, Snyk, Grype) becomes a
+``VulnerabilityFinding`` (class_uid 2002) carrying the CVE ids in its
+``vulnerabilities`` list; every other result stays a generic
+``DetectionFinding`` (class_uid 2004).
 
 Pure and dependency-free: the CLI command (`lemma evidence import-sarif`)
 handles file I/O and appends the findings to the ``EvidenceLog``. Mapping a
@@ -17,13 +21,19 @@ here.
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from typing import Any
 
-from lemma.models.ocsf import DetectionFinding
+from lemma.models.ocsf import DetectionFinding, FindingActivity, VulnerabilityFinding
 
 _FALLBACK_TOOL = "sarif"
 _NO_RULE = "(no-rule)"
+
+# CVE identifiers (CVE-YYYY-NNNN+) appear in a scanner result's ruleId, message,
+# taxa, or tool-specific properties. Their presence is what distinguishes a
+# vulnerability finding from a generic code-scanning detection.
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 
 # SARIF level → (OCSF severity_id, OCSF status_id). An open error/warning is a
 # failing finding; note/none are informational.
@@ -71,13 +81,34 @@ def _fingerprint(result: dict, rule_id: str, uri: str | None, line: int | None) 
     return hashlib.sha256(seed.encode()).hexdigest()[:12]
 
 
+def _cve_ids(result: dict, rule_id: str, text: str) -> list[str]:
+    """Return the unique, upper-cased CVE ids referenced by a SARIF result.
+
+    Scans the ruleId, the message text, and the (tool-specific) ``taxa`` and
+    ``properties`` blobs — Trivy puts the CVE in ``ruleId``, some scanners tag
+    it under ``properties`` or a ``taxa`` reference. Empty when the result is
+    not vulnerability-shaped.
+    """
+    haystack = " ".join(
+        str(part) for part in (rule_id, text, result.get("taxa"), result.get("properties")) if part
+    )
+    seen: dict[str, None] = {}
+    for match in _CVE_RE.findall(haystack):
+        seen.setdefault(match.upper(), None)
+    return list(seen)
+
+
 def sarif_to_findings(
     doc: Any,
     *,
     today: str | None = None,
     control_refs: list[str] | None = None,
-) -> list[DetectionFinding]:
-    """Map every SARIF ``result`` across every run to a ``DetectionFinding``.
+) -> list[DetectionFinding | VulnerabilityFinding]:
+    """Map every SARIF ``result`` across every run to an OCSF finding.
+
+    A result identifying one or more CVEs becomes a ``VulnerabilityFinding``
+    (class_uid 2002) with the CVE ids in its ``vulnerabilities`` list; every
+    other result becomes a ``DetectionFinding`` (class_uid 2004).
 
     When ``control_refs`` is supplied, every finding carries those control ids
     in ``metadata.control_refs`` so ``lemma evidence load`` wires the ingested
@@ -85,7 +116,7 @@ def sarif_to_findings(
     """
     date = today or _today()
     refs = [r for r in (control_refs or []) if isinstance(r, str) and r.strip()]
-    findings: list[DetectionFinding] = []
+    findings: list[DetectionFinding | VulnerabilityFinding] = []
     if not isinstance(doc, dict):
         return findings
 
@@ -142,18 +173,37 @@ def sarif_to_findings(
 
             message = f"{tool}: {rule_id}" + (f" — {text}" if text else "") + location_suffix
 
-            findings.append(
-                DetectionFinding(
-                    class_name="Detection Finding",
-                    category_uid=2000,
-                    category_name="Findings",
-                    type_uid=200401,
-                    activity_id=1,
-                    severity_id=severity_id,
-                    time=datetime.now(UTC),
-                    message=message,
-                    status_id=status_id,
-                    metadata=md,
+            cves = _cve_ids(result, rule_id, text)
+            if cves:
+                md["cve_ids"] = cves
+                findings.append(
+                    VulnerabilityFinding(
+                        class_name="Vulnerability Finding",
+                        category_uid=2000,
+                        category_name="Findings",
+                        type_uid=200200 + int(FindingActivity.CREATE),
+                        activity_id=FindingActivity.CREATE,
+                        severity_id=severity_id,
+                        time=datetime.now(UTC),
+                        message=message,
+                        status_id=status_id,
+                        metadata=md,
+                        vulnerabilities=[{"cve": {"uid": cve}} for cve in cves],
+                    )
                 )
-            )
+            else:
+                findings.append(
+                    DetectionFinding(
+                        class_name="Detection Finding",
+                        category_uid=2000,
+                        category_name="Findings",
+                        type_uid=200401,
+                        activity_id=1,
+                        severity_id=severity_id,
+                        time=datetime.now(UTC),
+                        message=message,
+                        status_id=status_id,
+                        metadata=md,
+                    )
+                )
     return findings
