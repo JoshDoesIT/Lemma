@@ -526,6 +526,34 @@ lemma connector verify-package <PATH>
 
 Extracts the archive with tarfile's `data` filter (rejecting path-traversal / absolute members), checks the Ed25519 signature over `package.json` against the bundled public key, and re-hashes every listed file. Prints `OK Package verified: …` and exits `0`, or reports the first failing file and exits `1`.
 
+### `lemma connector certify`
+
+Run the **certification harness** against a connector package and, optionally, emit a signed certification record — the maintainer-side gate for the registry's `certified` tier ([#110](https://github.com/JoshDoesIT/Lemma/issues/110)).
+
+```bash
+lemma connector certify <PATH> [--output cert.json] [--certifier <ID>] [--key-dir <DIR>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `PATH` | Yes | Path to a connector package (`.tar.gz`). |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output`, `-o` | (none) | On pass, write a signed `CertificationRecord` (JSON) to this path. |
+| `--certifier` | `Lemma` | Maintainer identity that signs the record. |
+| `--key-dir` | `./.lemma/keys` | Keystore for the certifier's signing key. |
+
+The harness runs every check (no short-circuit, so the report lists every reason a candidate fails) and prints a per-check pass/fail line:
+
+- **package-integrity** — the package's signature + per-file hashes verify (via `verify-package`).
+- **required-files** — `connector.py`, `manifest.json`, `README.md`, and `fixtures/` are present.
+- **manifest-valid** — the manifest passes the same registry-grade rules as [`lemma connector validate`](#lemma-connector-validate).
+- **documentation** — `README.md` meets the documentation minimum.
+- **fixtures-valid-ocsf** — every sample event in `fixtures/` validates against the OCSF schema.
+
+Exits `0` when every check passes, `1` otherwise. With `--output`, a passing candidate produces a `CertificationRecord` **bound to the package's SHA-256** and signed by the certifier's Ed25519 key, so it cannot be transplanted onto a different build. **Trust assumptions:** a `certified` record attests only that these mechanical checks passed for this exact package build at certification time — it is not a guarantee of runtime behavior against a live source. Certifications are **revocable** with a signed revocation record (`revoke_certification`) if a certified connector later proves defective. Harness + records live in `src/lemma/services/certification.py`.
+
 ### `lemma connector run`
 
 Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).

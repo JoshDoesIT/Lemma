@@ -574,3 +574,58 @@ def verify_package_command(
         where = f" ({result.failed_path})" if result.failed_path else ""
         _fail(f"{result.detail}{where}")
     console.print(f"[green]OK[/green] {result.detail}")
+
+
+@connector_app.command(
+    name="certify",
+    help="Run the certification harness against a connector package; optionally sign a record.",
+)
+def certify_command(
+    path: str = typer.Argument(help="Path to a connector package (.tar.gz)."),
+    output: str = typer.Option(
+        "",
+        "--output",
+        "-o",
+        help="On pass, write a signed certification record (JSON) to this path.",
+    ),
+    certifier: str = typer.Option(
+        "Lemma", "--certifier", help="Maintainer identity that signs the certification."
+    ),
+    key_dir: str = typer.Option(
+        "",
+        "--key-dir",
+        help="Keystore for the certifier's signing key (default: ./.lemma/keys).",
+    ),
+) -> None:
+    from lemma.services.certification import issue_certification, run_certification
+
+    package = Path(path)
+    if not package.is_file():
+        _fail(f"{package} is not a connector package (.tar.gz).")
+
+    report = run_certification(package)
+    label = report.connector_name or package.name
+    console.print(
+        f"Certification report for [cyan]{label}[/cyan] "
+        f"v{report.connector_version or '?'} — {report.checks_passed}/{report.checks_total} checks:"
+    )
+    for check in report.checks:
+        mark = "[green]✓[/green]" if check.passed else "[red]✗[/red]"
+        console.print(f"  {mark} {check.name}: {check.detail}")
+
+    if not report.passed:
+        _fail("Candidate did not pass certification.")
+
+    if output:
+        record = issue_certification(
+            package,
+            certifier=certifier,
+            key_dir=Path(key_dir) if key_dir else Path(".lemma") / "keys",
+        )
+        Path(output).write_text(record.model_dump_json(indent=2))
+        console.print(
+            f"[green]Certified[/green] {report.connector_name} v{report.connector_version} "
+            f"— signed record → {output} (by {record.signer.certifier})."
+        )
+    else:
+        console.print("[green]PASS[/green] — all certification checks passed.")
