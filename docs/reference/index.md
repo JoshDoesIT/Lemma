@@ -554,6 +554,50 @@ The harness runs every check (no short-circuit, so the report lists every reason
 
 Exits `0` when every check passes, `1` otherwise. With `--output`, a passing candidate produces a `CertificationRecord` **bound to the package's SHA-256** and signed by the certifier's Ed25519 key, so it cannot be transplanted onto a different build. **Trust assumptions:** a `certified` record attests only that these mechanical checks passed for this exact package build at certification time — it is not a guarantee of runtime behavior against a live source. Certifications are **revocable** with a signed revocation record (`revoke_certification`) if a certified connector later proves defective. Harness + records live in `src/lemma/services/certification.py`.
 
+### `lemma connector registry-add`
+
+Publish a signed connector package into a **local registry** — a directory that stands in for the hosted community registry ([#34](https://github.com/JoshDoesIT/Lemma/issues/34), [#109](https://github.com/JoshDoesIT/Lemma/issues/109)), so the publish → install round-trip works end-to-end offline.
+
+```bash
+lemma connector registry-add <PACKAGE.tar.gz> [--registry <DIR>] [--tier community|verified|certified]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--registry` | `./registry` | Local registry directory (holds `index.json` + `packages/`). |
+| `--tier` | `community` | Certification tier displayed on the listing. |
+
+Verifies the package's signature + per-file integrity, revalidates its manifest with the same registry-grade rules as [`lemma connector validate`](#lemma-connector-validate), and enforces **one-version-one-upload** — republishing the same `name@version` is refused (versions are immutable). The package is copied under `packages/` and catalogued in `index.json` (name, version, producer, tier, SHA-256, capabilities).
+
+### `lemma connector registry-list`
+
+List (and search) the connectors published in a local registry.
+
+```bash
+lemma connector registry-list [--registry <DIR>] [--name <SUBSTR>] [--tier <TIER>]
+```
+
+Renders a table of every published version with its **certification tier**, producer, and capabilities. `--name` filters by name substring and `--tier` by certification tier.
+
+### `lemma connector install`
+
+Install a connector from a local registry into the current project.
+
+```bash
+lemma connector install <NAME>[==<VERSION>] [--registry <DIR>] [--dest <DIR>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `NAME` | Yes | Connector name, optionally pinned as `name==version` (defaults to the latest version). |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--registry` | `./registry` | Local registry directory to install from. |
+| `--dest` | `./connectors` | Directory to extract the connector into (as `<dest>/<name>/`). |
+
+Resolves the requested version (the numerically-latest when unpinned), **re-verifies the stored package's signature and confirms its SHA-256 matches the catalogue** before extracting (so a tampered registry file can't be installed), then extracts with tarfile's `data` filter. The local registry lives in `src/lemma/services/local_registry.py`.
+
 ### `lemma connector run`
 
 Run a configured connector on the **pull** execution model: either once now, or repeatedly on a cron schedule with no external orchestrator. Reads the same `lemma_connector_config.yaml` as [`lemma evidence collect --config`](#lemma-evidence-collect) (including `${secret:…}` / `${ENV_VAR}` interpolation), builds the connector, and appends each run's output to the project's signed evidence log (deduped by the log's per-day guard).
