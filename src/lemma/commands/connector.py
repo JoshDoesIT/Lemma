@@ -629,3 +629,106 @@ def certify_command(
         )
     else:
         console.print("[green]PASS[/green] — all certification checks passed.")
+
+
+def _registry(registry: str):
+    """Open a local registry at ``--registry`` (default ./registry)."""
+    from lemma.services.local_registry import LocalRegistry
+
+    return LocalRegistry(Path(registry) if registry else Path("registry"))
+
+
+def _parse_tier(value: str):
+    from lemma.models.registry_index import RegistryTier
+
+    try:
+        return RegistryTier(value.lower())
+    except ValueError:
+        valid = ", ".join(t.value for t in RegistryTier)
+        _fail(f"unknown tier '{value}'. Valid tiers: {valid}.")
+
+
+@connector_app.command(
+    name="registry-add",
+    help="Publish a signed connector package into a local registry.",
+)
+def registry_add_command(
+    path: str = typer.Argument(help="Path to a connector package (.tar.gz)."),
+    registry: str = typer.Option(
+        "", "--registry", help="Local registry directory (default: ./registry)."
+    ),
+    tier: str = typer.Option(
+        "community", "--tier", help="Certification tier: community, verified, or certified."
+    ),
+) -> None:
+    package = Path(path)
+    if not package.is_file():
+        _fail(f"{package} is not a connector package (.tar.gz).")
+
+    reg = _registry(registry)
+    try:
+        entry = reg.add_package(package, tier=_parse_tier(tier))
+    except ValueError as exc:
+        _fail(str(exc))
+
+    console.print(
+        f"[green]Published[/green] [cyan]{entry.name}[/cyan] v{entry.version} "
+        f"([bold]{entry.tier.value}[/bold]) to {reg.root}."
+    )
+
+
+@connector_app.command(
+    name="registry-list",
+    help="List connectors published in a local registry.",
+)
+def registry_list_command(
+    registry: str = typer.Option(
+        "", "--registry", help="Local registry directory (default: ./registry)."
+    ),
+    name: str = typer.Option("", "--name", help="Filter by name substring."),
+    tier: str = typer.Option("", "--tier", help="Filter by certification tier."),
+) -> None:
+    reg = _registry(registry)
+    entries = reg.list_packages(
+        name=name or None,
+        tier=_parse_tier(tier) if tier else None,
+    )
+    if not entries:
+        console.print("[dim]No connectors match in this registry.[/dim]")
+        return
+
+    table = Table(title=f"Registry: {reg.root} ({len(entries)})")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Version")
+    table.add_column("Tier")
+    table.add_column("Producer")
+    table.add_column("Capabilities")
+    for e in entries:
+        table.add_row(e.name, e.version, e.tier.value, e.producer, ", ".join(e.capabilities) or "—")
+    Console(width=160).print(table)
+
+
+@connector_app.command(
+    name="install",
+    help="Install a connector from a local registry (verifying its signature first).",
+)
+def install_command(
+    name: str = typer.Argument(help="Connector name, optionally pinned as name==version."),
+    registry: str = typer.Option(
+        "", "--registry", help="Local registry directory (default: ./registry)."
+    ),
+    dest: str = typer.Option(
+        "", "--dest", help="Directory to install into (default: ./connectors)."
+    ),
+) -> None:
+    connector_name, _, version = name.partition("==")
+    reg = _registry(registry)
+    target_root = Path(dest) if dest else Path("connectors")
+    try:
+        installed = reg.install(connector_name, version=version or None, dest=target_root)
+    except KeyError as exc:
+        _fail(str(exc).strip('"'))
+    except ValueError as exc:
+        _fail(str(exc))
+
+    console.print(f"[green]Installed[/green] [cyan]{connector_name}[/cyan] → {installed}.")
