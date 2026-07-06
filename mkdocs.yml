@@ -65,6 +65,7 @@ nav:
     - Graph Query Cookbook: guides/graph-queries.md
     - Connector Cookbook: guides/connector-cookbook.md
     - Agent Deployment: guides/agent-deployment.md
+    - Control Plane HA & DR: guides/control-plane-ha-dr.md
   - Reference:
     - API & CLI: reference/index.md
     - Scope-as-Code: reference/scope-as-code.md
